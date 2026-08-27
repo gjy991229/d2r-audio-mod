@@ -17,6 +17,8 @@ d2r-audio-mod.exe augment --source "D:\Mods\jcy.mpq" --track runes,keys,organs
 
 运行 `d2r-audio-mod.exe help` 查看完整参数。生成完成后，按工具输出的 `-mod ... -txt` 参数自行启用新 Mod。
 
+加工扩展物品时，工具为每个代码克隆独立实体和状态机，并同步复制其普通/低配背包 sprite；这既保留模型与物品图标，也允许原本共用同一实体的物品使用不同声纹。主界面同时覆盖五幕前端场景、营火、选角循环、前端事件与选项音乐入口。
+
 ## 仓库边界
 
 - `src/` 只包含 Mod 的创建、加工和命令行入口。

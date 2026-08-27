@@ -750,7 +750,7 @@ fn patch_rune_unit_definitions(
             action: if original_audio_id.is_some() {
                 "mix_original_audio".to_string()
             } else {
-                "clone_and_attach".to_string()
+                "attach_in_place".to_string()
             },
             detail: format!(
                 "从 {state_machine_source} 克隆；保留原动画、VFX、依赖和双向转场，仅将 Flippy.audioId 指向独立声纹{}。",
@@ -810,6 +810,44 @@ fn set_item_asset(document: &mut serde_json::Value, code: &str, asset: &str) -> 
         return Ok(());
     }
     Err(format!("items.json 缺少物品代码 {code}"))
+}
+
+fn copy_item_ui_sprites(
+    mpq_directory: &Path,
+    storage: Option<&casc_core::Storage>,
+    original_asset: &str,
+    cloned_asset: &str,
+) -> Result<usize, String> {
+    let source_stem = original_asset.replace('\\', "/");
+    let target_stem = cloned_asset.replace('\\', "/");
+    let mut copied = 0;
+    for suffix in std::iter::once(String::new()).chain((1..=16).map(|number| number.to_string())) {
+        for ending in [".sprite", ".lowend.sprite"] {
+            let source = format!("data/hd/global/ui/items/misc/{source_stem}{suffix}{ending}");
+            let local = mpq_directory.join(source.replace('/', "\\"));
+            let bytes = if local.is_file() {
+                Some(std::fs::read(&local).map_err(|error| {
+                    format!("读取源 Mod 物品图标失败 {}: {error}", local.display())
+                })?)
+            } else if let Some(storage) = storage {
+                storage.read(&casc_path(&source)).ok()
+            } else {
+                None
+            };
+            let Some(bytes) = bytes else {
+                continue;
+            };
+            let target = format!("data/hd/global/ui/items/misc/{target_stem}{suffix}{ending}");
+            write_file(&mpq_directory.join(target.replace('/', "\\")), bytes)?;
+            copied += 1;
+        }
+    }
+    if copied == 0 {
+        return Err(format!(
+            "无法找到物品 {original_asset} 的 HD 背包/仓库图标资源；拒绝生成不可见物品"
+        ));
+    }
+    Ok(copied)
 }
 
 fn read_item_entity_asset(
@@ -1063,6 +1101,8 @@ fn patch_item_unit_definitions(
             serde_json::to_vec_pretty(&document)
                 .map_err(|error| format!("序列化物品实体失败: {error}"))?,
         )?;
+        let copied_sprites =
+            copy_item_ui_sprites(mpq_directory, storage, &original_asset, &cloned_asset)?;
         set_item_asset(items_document, definition.code, &cloned_asset)?;
 
         let (name, name_en) = localization
@@ -1090,7 +1130,7 @@ fn patch_item_unit_definitions(
                 "clone_and_attach".to_string()
             },
             detail: format!(
-                "从 {entity_source} 克隆为独立实体；保留原模型、VFX、动画、依赖和双向转场，仅替换克隆体的 Flippy.audioId{}。",
+                "从 {entity_source} 克隆为独立实体；保留原模型、VFX、动画、依赖和双向转场，复制 {copied_sprites} 个背包/仓库 sprite 资源，仅替换克隆体的 Flippy.audioId{}。",
                 original_audio_id
                     .as_deref()
                     .map(|audio| format!("，并混入原声音 {audio}"))
@@ -1324,7 +1364,12 @@ fn patch_sounds(
                     || loop_column
                         .and_then(|column| row.get(column))
                         .is_some_and(|value| value.trim() == "1"));
-            (sound.eq_ignore_ascii_case("music_options") || stable_frontend_event).then_some(index)
+            let stable_frontend_scene =
+                normalized.ends_with("_front_end") || normalized == "char_select_fe_fire_loop_hd";
+            (sound.eq_ignore_ascii_case("music_options")
+                || stable_frontend_event
+                || stable_frontend_scene)
+                .then_some(index)
         })
         .collect::<Vec<_>>();
     if !frontend_rows
@@ -2042,7 +2087,6 @@ pub fn build(request: BuildAudioModRequest) -> Result<BuildAudioModReport, Strin
                 .map_err(|error| format!("序列化 items.json 失败: {error}"))?,
         )?;
     }
-
     let config = MarkerConfig {
         gain_db: request.gain_db.unwrap_or(MarkerConfig::default().gain_db),
         ..MarkerConfig::default()
@@ -2189,13 +2233,13 @@ pub fn build(request: BuildAudioModRequest) -> Result<BuildAudioModReport, Strin
         compatibility,
         notes: vec![
             format!(
-                "已按选择加工 {} 个符文与 {} 个扩展物品；每个目标均克隆原 Flippy ↔ Ground 状态机，不重建原动画、VFX、依赖或转场。",
+                "已按选择加工 {} 个符文与 {} 个扩展物品；每个目标均克隆原实体与 Flippy ↔ Ground 状态机，并同步复制其普通/低配背包 sprite，在独立 items.json 映射下保留原模型、物品图标、动画、VFX、依赖和转场。",
                 if include_runes { RUNE_COUNT } else { 0 },
                 item_catalog_entries.len()
             ),
             "misc.txt 的 dropsound 与 usesound 均保持原值；背包/仓库不进入地面状态。"
                 .to_string(),
-            "主界面使用 music_options 与专用 event_fe_act_* 条目的独立混音文件；music_desecrated_hd 及其恐惧区域资源保持不变。"
+            "主界面使用 music_options、五幕前端场景、营火、选角循环与稳定 event_fe_act_* 条目的独立混音文件；music_desecrated_hd 及其恐惧区域资源保持不变。"
                 .to_string(),
             if request.area_coverage == AudioAreaCoverage::AllAreas {
                 format!(
@@ -2220,7 +2264,7 @@ pub fn build(request: BuildAudioModRequest) -> Result<BuildAudioModReport, Strin
     write_file(
         &staging_mod_directory.join("README-安装与测试.txt"),
         format!(
-            "D2R 音频遥测 Mod 工具\r\n\r\n启动参数：{}\r\n\r\n1. 输出目录是独立组合 Mod，源 Mod 没有被修改。\r\n2. 在你的启动器中启用上面的 -mod/-txt；本工具不会修改账号或启动器配置。\r\n3. Mod 只播放 v7 协议声纹；接收、统计由兼容软件独立完成。\r\n4. 所选掉落只加工世界实体的 Flippy 音频入口，背包/仓库 usesound 与 misc.txt dropsound 保持原值。\r\n5. 原状态机、动画、VFX、依赖和转场均从源 Mod 或本机游戏克隆；原入口已有声音时保留原声并混入声纹。\r\n6. 主界面条目使用独立文件，不修改恐惧区域复用的 options_hd.flac。\r\n7. 本次地图覆盖：{}；掉落覆盖：{} 个符文、{} 个扩展物品。\r\n8. 游戏“音效”通道必须非静音；若仅依赖主界面音乐兜底，音乐通道也不能完全静音。\r\n9. 声纹只能区分基础物品代码，不能区分共享同一代码的词缀、品质或鉴定结果。\r\n",
+            "D2R 音频遥测 Mod 工具\r\n\r\n启动参数：{}\r\n\r\n1. 输出目录是独立组合 Mod，源 Mod 没有被修改。\r\n2. 在你的启动器中启用上面的 -mod/-txt；本工具不会修改账号或启动器配置。\r\n3. Mod 只播放 v7 协议声纹；接收、统计由兼容软件独立完成。\r\n4. 所选掉落只加工世界实体的 Flippy 音频入口，背包/仓库 usesound 与 misc.txt dropsound 保持原值。\r\n5. 原实体与状态机从源 Mod 或本机游戏克隆，并同步复制其普通/低配背包 sprite；原模型、物品图标、动画、VFX、依赖和转场保留，原入口已有声音时保留原声并混入声纹。\r\n6. 主界面条目使用独立文件，不修改恐惧区域复用的 options_hd.flac。\r\n7. 本次地图覆盖：{}；掉落覆盖：{} 个符文、{} 个扩展物品。\r\n8. 游戏“音效”通道必须非静音；若仅依赖主界面音乐兜底，音乐通道也不能完全静音。\r\n9. 声纹只能区分基础物品代码，不能区分共享同一代码的词缀、品质或鉴定结果。\r\n",
             report.launch_arguments,
             if report.area_coverage == AudioAreaCoverage::AllAreas { "全部区域" } else { "女伯爵路线" },
             report.rune_assets.len(),
@@ -2366,7 +2410,7 @@ mod tests {
 
         let sounds = TsvTable::parse(
             "sounds",
-            "Sound\t*Index\tRedirect\tFileName\tIsAmbientScene\tIsAmbientEvent\tGroup Weight\tLoop\tHDOptOut\nitem_rune_hd\t10\t\titem\\rune.flac\t0\t0\t0\t0\t0\nscene_wilderness_day\t11\t\tambient\\scene.flac\t1\t0\t0\t1\t0\nmusic_options\t12\t\tcommon\\options.flac\t0\t0\t0\t1\t0\n",
+            "Sound\t*Index\tRedirect\tFileName\tIsAmbientScene\tIsAmbientEvent\tGroup Weight\tLoop\tHDOptOut\nitem_rune_hd\t10\t\titem\\rune.flac\t0\t0\t0\t0\t0\nscene_wilderness_day\t11\t\tambient\\scene.flac\t1\t0\t0\t1\t0\nmusic_options\t12\t\tcommon\\options.flac\t0\t0\t0\t1\t0\nact1_scene_front_end\t13\t\tfrontend\\act1.flac\t1\t0\t0\t1\t0\ncampfire_front_end\t14\t\tfrontend\\campfire.flac\t1\t0\t0\t1\t0\nchar_select_fe_fire_loop_hd\t15\t\tfrontend\\fire.flac\t1\t0\t0\t1\t0\n",
         )
         .unwrap();
         let rune_plans = (1..=RUNE_COUNT)
@@ -2399,6 +2443,18 @@ mod tests {
             sounds.row_by("Sound", "music_options").unwrap()[sounds.column("FileName").unwrap()],
             "audio_telemetry\\frontend\\music_options.flac"
         );
+        assert_eq!(
+            sounds.row_by("Sound", "act1_scene_front_end").unwrap()
+                [sounds.column("FileName").unwrap()],
+            "audio_telemetry\\frontend\\act1_scene_front_end.flac"
+        );
+        assert_eq!(
+            definitions
+                .iter()
+                .filter(|definition| definition.marker == TelemetryMarker::Frontend)
+                .count(),
+            4
+        );
     }
 
     #[test]
@@ -2415,6 +2471,40 @@ mod tests {
         .unwrap();
         assert!(path.is_file());
         assert!(confidence > 0.7);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn cloned_item_assets_include_inventory_sprite_variants() {
+        let root = std::env::temp_dir().join(format!(
+            "d2rhub-audio-item-sprites-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let source = root.join("data/hd/global/ui/items/misc/jewel/jewel1.sprite");
+        let lowend = root.join("data/hd/global/ui/items/misc/jewel/jewel1.lowend.sprite");
+        write_file(&source, b"hd-sprite").unwrap();
+        write_file(&lowend, b"lowend-sprite").unwrap();
+
+        let copied =
+            copy_item_ui_sprites(&root, None, "jewel/jewel", "audio_telemetry/items/i39_jew")
+                .unwrap();
+        assert_eq!(copied, 2);
+        assert_eq!(
+            std::fs::read(
+                root.join("data/hd/global/ui/items/misc/audio_telemetry/items/i39_jew1.sprite")
+            )
+            .unwrap(),
+            b"hd-sprite"
+        );
+        assert_eq!(
+            std::fs::read(
+                root.join(
+                    "data/hd/global/ui/items/misc/audio_telemetry/items/i39_jew1.lowend.sprite"
+                )
+            )
+            .unwrap(),
+            b"lowend-sprite"
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 

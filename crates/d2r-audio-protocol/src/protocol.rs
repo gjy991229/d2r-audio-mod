@@ -626,12 +626,15 @@ fn detect_ready_samples(samples: &[f32], plan: &DetectorPlan, threshold: f32) ->
             for (marker, signature_confidence) in
                 decode_rune_signatures(&signature_i, &signature_q, plan, start, threshold)
             {
-                raw.push(Detection {
-                    marker,
-                    confidence: (rune_preamble_confidence * 0.60 + signature_confidence * 0.40)
-                        .min(1.0),
-                    start_frame: start as u64,
-                });
+                let confidence =
+                    (rune_preamble_confidence * 0.60 + signature_confidence * 0.40).min(1.0);
+                if confidence >= threshold {
+                    raw.push(Detection {
+                        marker,
+                        confidence,
+                        start_frame: start as u64,
+                    });
+                }
             }
         }
     }
@@ -842,6 +845,62 @@ mod tests {
             .map(|detection| detection.marker)
             .collect::<std::collections::HashSet<_>>();
         assert_eq!(markers, expected.into_iter().collect());
+    }
+
+    #[test]
+    fn drop_detections_never_bypass_the_configured_final_threshold() {
+        let threshold = 0.56;
+        let signals = [
+            tagged(rune(2), 48_000, -24.0),
+            tagged(rune(5), 48_000, -24.0),
+            tagged(rune(8), 48_000, -24.0),
+            tagged(item(33), 48_000, -24.0),
+        ];
+        let mut mixed = vec![0.0f32; signals[0].len()];
+        for signal in signals {
+            for (target, sample) in mixed.iter_mut().zip(signal) {
+                *target += sample;
+            }
+        }
+        let detections = detect_markers(&mixed, 48_000, threshold);
+        assert!(!detections.is_empty());
+        assert!(
+            detections
+                .iter()
+                .all(|detection| detection.confidence >= threshold),
+            "{detections:?}"
+        );
+    }
+
+    #[test]
+    #[ignore = "requires D2RHUB_V7_FALSE_POSITIVE_WAV"]
+    fn countess_overlap_recording_does_not_invent_item_47() {
+        let path = std::env::var("D2RHUB_V7_FALSE_POSITIVE_WAV")
+            .expect("set D2RHUB_V7_FALSE_POSITIVE_WAV to the diagnostic WAV path");
+        let mut reader = hound::WavReader::open(path).unwrap();
+        let spec = reader.spec();
+        assert_eq!(spec.sample_format, hound::SampleFormat::Int);
+        assert_eq!(spec.bits_per_sample, 16);
+        let interleaved = reader
+            .samples::<i16>()
+            .map(|sample| sample.unwrap() as i32)
+            .collect::<Vec<_>>();
+        let mono = interleaved_i32_to_mono(&interleaved, spec.channels as usize, 16).unwrap();
+        let detections = detect_markers(&mono, spec.sample_rate, 0.56);
+        assert!(detections
+            .iter()
+            .any(|detection| detection.marker == item(33)));
+        for expected in [rune(2), rune(5), rune(8)] {
+            assert!(detections
+                .iter()
+                .any(|detection| detection.marker == expected));
+        }
+        assert!(
+            detections
+                .iter()
+                .all(|detection| detection.marker != item(47)),
+            "{detections:?}"
+        );
     }
 
     #[test]

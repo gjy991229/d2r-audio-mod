@@ -1,0 +1,63 @@
+{
+  "contract_format": "d2r-audio-telemetry-contract/1",
+  "name": "D2R Audio Telemetry Protocol",
+  "protocol_version": 7,
+  "compatibility": {
+    "major_version_rule": "exact",
+    "unknown_fields": "ignore",
+    "stable_ids": "never_reorder_or_reuse"
+  },
+  "discovery": {
+    "root": "<game>/mods/<active-mod-name>/",
+    "active_mod_source": "-mod <active-mod-name>",
+    "area_catalog": "audio-telemetry-area-catalog.json",
+    "item_catalog": "audio-telemetry-item-catalog.json",
+    "producer_manifest": "audio-telemetry-manifest.json"
+  },
+  "audio": {
+    "minimum_sample_rate_hz": 44100,
+    "recommended_sample_rate_hz": 48000,
+    "default_gain_dbfs": -30,
+    "gain_range_dbfs": [-42, -12],
+    "packet_repetitions": 2,
+    "preamble_chips": 63,
+    "drop_signature_chips": 127,
+    "preamble_carrier_hz": 18000,
+    "drop_signature_carrier_hz": 19600,
+    "bit_zero_hz": 17000,
+    "bit_one_hz": 19000,
+    "chip_seconds": 0.00075,
+    "symbol_seconds": 0.003,
+    "marker_offset_seconds": 0.008
+  },
+  "packet": {
+    "payload_bits": 20,
+    "magic": 2,
+    "magic_bits": 2,
+    "type_bits": 2,
+    "id_bits": 10,
+    "crc_bits": 6,
+    "crc_polynomial_without_high_term": 3
+  },
+  "identities": {
+    "item": { "type": 0, "minimum_id": 1, "maximum_id": 94 },
+    "rune": { "type": 1, "minimum_id": 1, "maximum_id": 33 },
+    "area": { "type": 2, "minimum_id": 1, "maximum_id": 1023 },
+    "frontend": { "type": 3, "id": 0 },
+    "drop_signature": {
+      "rune": "rune_number",
+      "item": "33 + item_id",
+      "minimum": 1,
+      "maximum": 127
+    }
+  },
+  "tracking_categories": [
+    "runes",
+    "gems",
+    "charms",
+    "jewels",
+    "keys",
+    "organs",
+    "essences"
+  ]
+}

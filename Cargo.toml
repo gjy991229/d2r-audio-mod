@@ -1,0 +1,26 @@
+[package]
+name = "d2r-audio-mod"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Headless D2R audio telemetry Mod generator and processor"
+
+[[bin]]
+name = "d2r-audio-mod"
+path = "src/main.rs"
+
+[dependencies]
+d2r-audio-protocol = { path = "crates/d2r-audio-protocol" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4"] }
+claxon = "0.4.3"
+flacenc = { version = "0.5.1", default-features = false }
+casc-core = { git = "https://github.com/TrayHard/casc-modern.git", rev = "a7fe4095f4ce445b9135b26509c5f60ae63d8c21" }
+
+[profile.release]
+opt-level = "s"
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+strip = true

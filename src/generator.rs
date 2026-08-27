@@ -16,6 +16,7 @@ use d2r_audio_protocol::rune_data;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const MINIMAL_MOD_NAME: &str = "D2RAudioTelemetry";
 const AUDIO_MOD_SUFFIX: &str = "AudioTelemetry";
@@ -51,6 +52,9 @@ pub struct BuildAudioModRequest {
     #[serde(default = "default_tracked_categories")]
     pub tracked_categories: Vec<String>,
     pub output_directory: Option<String>,
+    /// Optional output Mod name. It becomes both the outer directory and `.mpq` directory name.
+    #[serde(default)]
+    pub mod_name: Option<String>,
     pub sound_environment_file: Option<String>,
     pub gain_db: Option<f32>,
 }
@@ -68,9 +72,16 @@ pub struct AudioModAsset {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BuildAudioModReport {
+    /// Stable machine-readable manifest identity. Receivers should validate this before trusting
+    /// the generated catalogs.
+    pub manifest_format: String,
+    pub producer: String,
+    pub producer_version: String,
+    pub generated_at_unix: u64,
     pub protocol_version: u8,
     pub build_mode: AudioModBuildMode,
     pub area_coverage: AudioAreaCoverage,
+    pub mod_name: String,
     pub mod_directory: String,
     pub mpq_directory: String,
     pub source_excel_directory: String,
@@ -84,6 +95,23 @@ pub struct BuildAudioModReport {
     pub area_catalog: Vec<AreaCatalogEntry>,
     pub compatibility: Vec<AudioModCompatibility>,
     pub notes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BuildProgress {
+    pub phase: String,
+    pub percent: u8,
+    pub message: String,
+}
+
+impl BuildProgress {
+    fn new(phase: &str, percent: u8, message: impl Into<String>) -> Self {
+        Self {
+            phase: phase.to_string(),
+            percent: percent.min(100),
+            message: message.into(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -371,6 +399,38 @@ fn default_mod_name(mode: AudioModBuildMode, layout: Option<&SourceLayout>) -> S
             .map(|value| sanitize_mod_name(&format!("{value}-{AUDIO_MOD_SUFFIX}")))
             .unwrap_or_else(|| format!("Mod-{AUDIO_MOD_SUFFIX}")),
     }
+}
+
+fn requested_mod_name(
+    value: Option<&str>,
+    mode: AudioModBuildMode,
+    layout: Option<&SourceLayout>,
+) -> Result<String, String> {
+    let Some(value) = value else {
+        return Ok(default_mod_name(mode, layout));
+    };
+    let value = value.trim();
+    if value.is_empty() {
+        return Err("--name 不能为空".to_string());
+    }
+    if value.len() > 128 {
+        return Err("--name 不能超过 128 个 ASCII 字符".to_string());
+    }
+    if !value
+        .chars()
+        .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
+    {
+        return Err("--name 仅允许 ASCII 字母、数字、连字符 (-) 和下划线 (_)".to_string());
+    }
+    let uppercase = value.to_ascii_uppercase();
+    let reserved = matches!(uppercase.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || (uppercase.len() == 4
+            && (uppercase.starts_with("COM") || uppercase.starts_with("LPT"))
+            && matches!(uppercase.as_bytes()[3], b'1'..=b'9'));
+    if reserved {
+        return Err(format!("--name 不能使用 Windows 保留名称: {value}"));
+    }
+    Ok(value.to_string())
 }
 
 fn available_mod_name(output_parent: &Path, base_name: &str) -> String {
@@ -1864,6 +1924,17 @@ fn asset_label(
 }
 
 pub fn build(request: BuildAudioModRequest) -> Result<BuildAudioModReport, String> {
+    build_with_progress(request, |_| {})
+}
+
+pub fn build_with_progress<F>(
+    request: BuildAudioModRequest,
+    mut progress: F,
+) -> Result<BuildAudioModReport, String>
+where
+    F: FnMut(BuildProgress),
+{
+    progress(BuildProgress::new("validate", 2, "正在检查游戏与 Mod…"));
     let tracked_categories = normalize_tracked_categories(&request.tracked_categories);
     let include_runes = tracked_categories
         .iter()
@@ -1878,6 +1949,11 @@ pub fn build(request: BuildAudioModRequest) -> Result<BuildAudioModReport, Strin
             })?)?)
         }
     };
+    let base_mod_name = requested_mod_name(
+        request.mod_name.as_deref(),
+        request.build_mode,
+        source_layout.as_ref(),
+    )?;
     let explicit_game_directory = non_empty_path(request.game_directory.as_deref());
     let game_root_hint = explicit_game_directory
         .as_deref()
@@ -1900,6 +1976,7 @@ pub fn build(request: BuildAudioModRequest) -> Result<BuildAudioModReport, Strin
     if request.build_mode == AudioModBuildMode::Minimal && game_root.is_none() {
         return Err("创建最小 Mod 需要有效的 D2R 游戏目录（含 .build.info 与 Data）".to_string());
     }
+    progress(BuildProgress::new("game_data", 8, "正在读取游戏资源…"));
     let storage = game_root
         .as_deref()
         .map(casc_core::Storage::open)
@@ -1913,7 +1990,6 @@ pub fn build(request: BuildAudioModRequest) -> Result<BuildAudioModReport, Strin
                     .display()
             )
         })?;
-    let base_mod_name = default_mod_name(request.build_mode, source_layout.as_ref());
     let mod_name = available_mod_name(&output_parent, &base_mod_name);
     let final_mod_directory = output_parent.join(&mod_name);
     let staging = StagingDirectory::create(&output_parent, &mod_name)?;
@@ -1931,6 +2007,15 @@ pub fn build(request: BuildAudioModRequest) -> Result<BuildAudioModReport, Strin
     let mpq_directory = staging_mod_directory.join(format!("{mod_name}.mpq"));
     let final_mpq_directory = final_mod_directory.join(format!("{mod_name}.mpq"));
     let source_mod_copied = request.build_mode == AudioModBuildMode::Augment;
+    progress(BuildProgress::new(
+        "baseline",
+        15,
+        if source_mod_copied {
+            "正在复制现有 Mod，原文件不会被修改…"
+        } else {
+            "正在创建纯净识别 Mod…"
+        },
+    ));
     let layout = match request.build_mode {
         AudioModBuildMode::Augment => {
             let layout = source_layout.ok_or_else(|| "缺少源 Mod 布局".to_string())?;
@@ -1999,6 +2084,7 @@ pub fn build(request: BuildAudioModRequest) -> Result<BuildAudioModReport, Strin
     let environments = TsvTable::parse("soundenviron.txt", &sound_environment_text)?;
     let area_ambience_filenames =
         collect_area_ambience_filenames(&levels, &environments, &sounds, &areas)?;
+    progress(BuildProgress::new("areas", 28, "正在准备全部场景声纹…"));
     let casc_cache = staging_mod_directory.join(".audio-telemetry-casc-cache");
     validate_misc(&misc, include_runes, &selected_items)?;
     let mut compatibility = vec![AudioModCompatibility {
@@ -2059,6 +2145,11 @@ pub fn build(request: BuildAudioModRequest) -> Result<BuildAudioModReport, Strin
         &item_localization,
         &mut compatibility,
     )?;
+    progress(BuildProgress::new(
+        "items",
+        42,
+        "正在保留物品模型并附加掉落声纹…",
+    ));
     let item_catalog_entries = item_plans
         .iter()
         .map(|plan| plan.entry.clone())
@@ -2096,7 +2187,19 @@ pub fn build(request: BuildAudioModRequest) -> Result<BuildAudioModReport, Strin
     let mut item_assets = Vec::new();
     let mut area_assets = Vec::new();
     let mut frontend_assets = Vec::new();
-    for definition in definitions {
+    let definition_count = definitions.len().max(1);
+    for (definition_index, definition) in definitions.into_iter().enumerate() {
+        if definition_index == 0 || definition_index % 16 == 0 {
+            let percent = 46 + ((definition_index * 42) / definition_count) as u8;
+            progress(BuildProgress::new(
+                "audio",
+                percent,
+                format!(
+                    "正在加工声纹资源（{}/{definition_count}）…",
+                    definition_index + 1
+                ),
+            ));
+        }
         let marker = definition.marker;
         let resolved_source = definition
             .source_filename
@@ -2141,6 +2244,12 @@ pub fn build(request: BuildAudioModRequest) -> Result<BuildAudioModReport, Strin
             format!("清理 CASC 环境音缓存失败 {}: {error}", casc_cache.display())
         })?;
     }
+
+    progress(BuildProgress::new(
+        "catalogs",
+        90,
+        "正在生成识别清单并自检…",
+    ));
 
     let modinfo_path = mpq_directory.join("modinfo.json");
     let mut modinfo = if modinfo_path.is_file() {
@@ -2209,9 +2318,17 @@ pub fn build(request: BuildAudioModRequest) -> Result<BuildAudioModReport, Strin
 
     let area_count = areas.len();
     let report = BuildAudioModReport {
+        manifest_format: "d2r-audio-telemetry-mod".to_string(),
+        producer: "d2r-audio-mod".to_string(),
+        producer_version: env!("CARGO_PKG_VERSION").to_string(),
+        generated_at_unix: SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs(),
         protocol_version: PROTOCOL_VERSION,
         build_mode: request.build_mode,
         area_coverage: request.area_coverage,
+        mod_name: mod_name.clone(),
         mod_directory: final_mod_directory.to_string_lossy().to_string(),
         mpq_directory: final_mpq_directory.to_string_lossy().to_string(),
         source_excel_directory: if request.build_mode == AudioModBuildMode::Minimal {
@@ -2271,13 +2388,29 @@ pub fn build(request: BuildAudioModRequest) -> Result<BuildAudioModReport, Strin
             report.item_assets.len()
         ),
     )?;
+    progress(BuildProgress::new("finish", 98, "正在完成 Mod…"));
     staging.commit(&final_mod_directory)?;
+    progress(BuildProgress::new("complete", 100, "Mod 已准备完成"));
     Ok(report)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn validates_explicit_mod_names_without_rewriting_them() {
+        assert_eq!(
+            requested_mod_name(Some("MyAudio-Mod_2"), AudioModBuildMode::Minimal, None).unwrap(),
+            "MyAudio-Mod_2"
+        );
+        for invalid in ["", "bad name", "../escape", "中文名", "CON", "COM1"] {
+            assert!(
+                requested_mod_name(Some(invalid), AudioModBuildMode::Minimal, None).is_err(),
+                "unexpectedly accepted {invalid:?}"
+            );
+        }
+    }
 
     fn write_rune_unit_definitions(mpq: &Path) {
         let directory = mpq.join("data/hd/items/misc/rune");
@@ -2542,6 +2675,7 @@ mod tests {
             source_directory: Some(source.to_string_lossy().to_string()),
             game_directory: None,
             output_directory: Some(output.to_string_lossy().to_string()),
+            mod_name: None,
             sound_environment_file: None,
             gain_db: None,
         })
@@ -2603,6 +2737,7 @@ mod tests {
             source_directory: Some(source.to_string_lossy().to_string()),
             game_directory: None,
             output_directory: Some(output.to_string_lossy().to_string()),
+            mod_name: Some("Countess-Audio-Test".to_string()),
             sound_environment_file: None,
             gain_db: Some(-26.0),
         })
@@ -2618,9 +2753,11 @@ mod tests {
                 .count(),
             0
         );
+        assert_eq!(report.mod_name, "Countess-Audio-Test");
+        assert_eq!(report.launch_arguments, "-mod Countess-Audio-Test -txt");
         let output_mpq = output
-            .join("jcy-AudioTelemetry")
-            .join("jcy-AudioTelemetry.mpq");
+            .join("Countess-Audio-Test")
+            .join("Countess-Audio-Test.mpq");
         assert!(output_mpq
             .join("data/global/excel/soundenviron.txt")
             .is_file());
@@ -2697,6 +2834,7 @@ mod tests {
             source_directory: Some(source),
             game_directory: std::env::var("D2RHUB_AUDIO_GAME_ROOT").ok(),
             output_directory: Some(output.to_string_lossy().to_string()),
+            mod_name: None,
             sound_environment_file: std::env::var("D2RHUB_AUDIO_REAL_SOUND_ENVIRON").ok(),
             gain_db: Some(-30.0),
         })
@@ -2737,6 +2875,7 @@ mod tests {
             source_directory: None,
             game_directory: Some(game_root),
             output_directory: Some(output.to_string_lossy().to_string()),
+            mod_name: None,
             sound_environment_file: None,
             gain_db: Some(-30.0),
         })

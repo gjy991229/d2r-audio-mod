@@ -1,5 +1,7 @@
 mod audio;
 mod generator;
+#[cfg(target_os = "windows")]
+mod gui;
 
 use audio::BatchRequest;
 use d2r_audio_protocol::catalog::AREA_CATALOG_FILE_NAME;
@@ -10,6 +12,7 @@ use d2r_audio_protocol::item_catalog::{
 use d2r_audio_protocol::protocol::PROTOCOL_VERSION;
 use generator::{AudioAreaCoverage, AudioModBuildMode, BuildAudioModRequest};
 use std::ffi::{OsStr, OsString};
+use std::io::Write;
 use std::path::PathBuf;
 
 #[derive(Default)]
@@ -18,11 +21,13 @@ struct Options {
     source: Option<PathBuf>,
     input: Option<PathBuf>,
     output: Option<PathBuf>,
+    name: Option<String>,
     sound_environment: Option<PathBuf>,
     areas: Option<String>,
     track: Option<String>,
     gain_db: Option<f32>,
     json: bool,
+    events: bool,
 }
 
 fn value_after(args: &[OsString], index: &mut usize, option: &str) -> Result<OsString, String> {
@@ -44,6 +49,13 @@ fn parse_options(args: &[OsString]) -> Result<Options, String> {
             "--source" => options.source = Some(value_after(args, &mut index, key)?.into()),
             "--input" => options.input = Some(value_after(args, &mut index, key)?.into()),
             "--output" => options.output = Some(value_after(args, &mut index, key)?.into()),
+            "--name" => {
+                options.name = Some(
+                    value_after(args, &mut index, key)?
+                        .to_string_lossy()
+                        .into_owned(),
+                )
+            }
             "--sound-environment" => {
                 options.sound_environment = Some(value_after(args, &mut index, key)?.into())
             }
@@ -69,6 +81,7 @@ fn parse_options(args: &[OsString]) -> Result<Options, String> {
                     })?);
             }
             "--json" => options.json = true,
+            "--events" => options.events = true,
             "-h" | "--help" => return Err("__help__".to_string()),
             _ => return Err(format!("未知选项: {key}")),
         }
@@ -135,6 +148,9 @@ fn run_build(mode: AudioModBuildMode, options: Options) -> Result<(), String> {
     if options.input.is_some() {
         return Err("--input 只用于 tag-files 命令".to_string());
     }
+    if options.json && options.events {
+        return Err("--json 与 --events 不能同时使用".to_string());
+    }
     let request = BuildAudioModRequest {
         build_mode: mode,
         source_directory: path_text(options.source),
@@ -142,10 +158,45 @@ fn run_build(mode: AudioModBuildMode, options: Options) -> Result<(), String> {
         area_coverage: parse_area_coverage(options.areas.as_deref())?,
         tracked_categories: parse_tracking(options.track.as_deref())?,
         output_directory: path_text(options.output),
+        mod_name: options.name,
         sound_environment_file: path_text(options.sound_environment),
         gain_db: options.gain_db,
     };
-    let report = generator::build(request)?;
+    let report = if options.events {
+        match generator::build_with_progress(request, |progress| {
+            let event = serde_json::json!({
+                "type": "progress",
+                "phase": progress.phase,
+                "percent": progress.percent,
+                "message": progress.message,
+            });
+            println!("{event}");
+            let _ = std::io::stdout().flush();
+        }) {
+            Ok(report) => {
+                let event = serde_json::json!({
+                    "type": "completed",
+                    "report": {
+                        "protocol_version": report.protocol_version,
+                        "mod_name": report.mod_name,
+                        "mod_directory": report.mod_directory,
+                        "launch_arguments": report.launch_arguments,
+                    }
+                });
+                println!("{event}");
+                let _ = std::io::stdout().flush();
+                return Ok(());
+            }
+            Err(error) => {
+                let event = serde_json::json!({ "type": "error", "message": error });
+                println!("{event}");
+                let _ = std::io::stdout().flush();
+                return Err(error);
+            }
+        }
+    } else {
+        generator::build(request)?
+    };
     if options.json {
         println!(
             "{}",
@@ -174,6 +225,7 @@ fn run_tag_files(options: Options) -> Result<(), String> {
         || options.sound_environment.is_some()
         || options.areas.is_some()
         || options.track.is_some()
+        || options.name.is_some()
     {
         return Err("tag-files 仅接受 --input、--output、--gain 和 --json".to_string());
     }
@@ -207,9 +259,11 @@ fn print_protocol() {
 
 fn print_help() {
     println!(
-        r#"D2R 音频遥测 Mod 工具（无界面、独立于任何接收软件）
+        r#"D2R 音频遥测 Mod 工具（独立于任何接收软件）
 
 用法：
+  d2r-audio-mod                 打开轻量生成界面（Windows）
+  d2r-audio-mod gui             打开轻量生成界面（Windows）
   d2r-audio-mod minimal --game <游戏目录> [选项]
   d2r-audio-mod augment --source <源 Mod/.mpq> [--game <游戏目录>] [选项]
   d2r-audio-mod tag-files --input <FLAC 目录> [--output <目录>] [--gain -30]
@@ -217,11 +271,13 @@ fn print_help() {
 
 Mod 选项：
   --output <目录>             输出父目录；省略时优先使用游戏的 mods 目录
+  --name <名称>              自定义 Mod 名；仅允许 ASCII 字母、数字、- 和 _
   --areas all|countess       地图覆盖，默认 all
   --track all|none|类别列表   默认 all；列表以英文逗号分隔
   --gain <dBFS>              声纹增益，范围 -42 到 -12，默认 -30
   --sound-environment <文件> 显式指定 soundenviron.txt
   --json                     将完整结果写到标准输出
+  --events                   逐行输出进度/完成/错误 JSON 事件，供外部程序调用
 
 类别：runes,gems,charms,jewels,keys,organs,essences
 
@@ -233,11 +289,29 @@ fn real_main() -> Result<(), String> {
     let mut args = std::env::args_os();
     let _program = args.next();
     let Some(command) = args.next() else {
-        print_help();
-        return Ok(());
+        #[cfg(target_os = "windows")]
+        return gui::run(true);
+        #[cfg(not(target_os = "windows"))]
+        {
+            print_help();
+            return Ok(());
+        }
     };
     let rest = args.collect::<Vec<_>>();
     match command.to_string_lossy().to_ascii_lowercase().as_str() {
+        "gui" => {
+            if !rest.is_empty() {
+                return Err("gui 命令不接受其他参数".to_string());
+            }
+            #[cfg(target_os = "windows")]
+            {
+                gui::run(false)
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                Err("图形界面目前仅支持 Windows".to_string())
+            }
+        }
         "minimal" => match parse_options(&rest) {
             Ok(options) => run_build(AudioModBuildMode::Minimal, options),
             Err(error) if error == "__help__" => {

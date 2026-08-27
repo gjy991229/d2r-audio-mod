@@ -3,7 +3,7 @@ name = "d2r-audio-mod"
 version = "0.1.1"
 edition = "2021"
 license = "MIT"
-description = "Headless D2R audio telemetry Mod generator and processor"
+description = "Lightweight D2R audio telemetry Mod generator and processor"
 
 [[bin]]
 name = "d2r-audio-mod"
@@ -17,6 +17,21 @@ uuid = { version = "1", features = ["v4"] }
 claxon = "0.4.3"
 flacenc = { version = "0.5.1", default-features = false }
 casc-core = { git = "https://github.com/TrayHard/casc-modern.git", rev = "a7fe4095f4ce445b9135b26509c5f60ae63d8c21" }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Com",
+    "Win32_System_Console",
+    "Win32_System_LibraryLoader",
+    "Win32_System_WindowsProgramming",
+    "Win32_UI_Shell",
+    "Win32_UI_Shell_Common",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging",
+] }
 
 [profile.release]
 opt-level = "s"

@@ -58,3 +58,5 @@ cargo build --release
 ```
 
 发布文件为 `target/release/d2r-audio-mod.exe`。仓库不包含生成出的 Mod、游戏资源或构建目录。
+
+Windows 下游戏安装目录、源 Mod 与输出目录均支持中文、空格及 Windows 允许的特殊字符。新 Mod 名称仍仅允许 ASCII 字母、数字、`-` 和 `_`，以兼容 D2R 的启动参数与 Mod 目录约定。

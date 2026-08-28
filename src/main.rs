@@ -1,4 +1,5 @@
 mod audio;
+mod casc_path;
 mod generator;
 #[cfg(target_os = "windows")]
 mod gui;

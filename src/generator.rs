@@ -2157,9 +2157,13 @@ where
         return Err("创建最小 Mod 需要有效的 D2R 游戏目录（含 .build.info 与 Data）".to_string());
     }
     progress(BuildProgress::new("game_data", 8, "正在读取游戏资源…"));
-    let storage = game_root
+    let casc_storage_path = game_root
         .as_deref()
-        .map(casc_core::Storage::open)
+        .map(crate::casc_path::CascStoragePath::prepare)
+        .transpose()?;
+    let storage = casc_storage_path
+        .as_ref()
+        .map(|path| casc_core::Storage::open(path.as_path()))
         .transpose()
         .map_err(|error| {
             format!(

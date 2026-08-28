@@ -699,6 +699,16 @@ fn rune_unit_definition_candidates(mpq_directory: &Path, rune_number: u32) -> Ve
         .collect()
 }
 
+fn parse_json_value(text: &str) -> Result<serde_json::Value, String> {
+    let normalized = text.strip_prefix('\u{feff}').unwrap_or(text);
+    match serde_json::from_str(normalized) {
+        Ok(document) => Ok(document),
+        Err(strict_error) => json5::from_str(normalized).map_err(|relaxed_error| {
+            format!("严格 JSON: {strict_error}；宽松 JSON5: {relaxed_error}")
+        }),
+    }
+}
+
 fn read_json_asset(
     mpq_directory: &Path,
     storage: Option<&casc_core::Storage>,
@@ -718,8 +728,8 @@ fn read_json_asset(
             "源 Mod 未包含 {normalized}，且没有可用的 D2R CASC；无法保留原状态机"
         ));
     };
-    let document = serde_json::from_str(&text)
-        .map_err(|error| format!("解析 JSON 资源失败 {source}: {error}"))?;
+    let document =
+        parse_json_value(&text).map_err(|error| format!("解析 JSON 资源失败 {source}: {error}"))?;
     Ok((document, source))
 }
 
@@ -756,7 +766,7 @@ fn patch_rune_unit_definitions(
             .find(|candidate| candidate.is_file())
             .unwrap_or_else(|| mpq_directory.join(&relative));
         let mut document: serde_json::Value = if path.is_file() {
-            serde_json::from_str(&read_utf8(&path)?)
+            parse_json_value(&read_utf8(&path)?)
                 .map_err(|error| format!("解析 HD 符文实体失败 {}: {error}", path.display()))?
         } else {
             let (document, _) = read_json_asset(mpq_directory, storage, &relative)?;
@@ -2872,6 +2882,28 @@ mod tests {
         )
         .unwrap();
         write_rune_unit_definitions(&source);
+        std::fs::write(
+            source.join("data/hd/items/misc/rune/el_rune.json"),
+            r#"{
+                // Some existing Mods use the JSON5 syntax accepted by the game tools.
+                dependencies: {
+                    json: [{ path: 'data/hd/items/dropped_items/dropped_items_helms_flip_ne.json' }],
+                },
+                type: 'UnitDefinition',
+                name: 'el_rune',
+                entities: [{
+                    type: 'Entity',
+                    name: 'entity_root',
+                    id: 1000,
+                    components: [{
+                        type: 'UnitRootComponent',
+                        name: 'component_root',
+                        state_machine_filename: 'data/hd/items/dropped_items/dropped_items_helms_flip_ne.json',
+                    }],
+                }],
+            }"#,
+        )
+        .unwrap();
         let samples = (0..24_000)
             .map(|index| {
                 ((std::f32::consts::TAU * 880.0 * index as f32 / 48_000.0).sin() * 4_000.0) as i32

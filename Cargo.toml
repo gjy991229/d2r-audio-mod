@@ -1,6 +1,6 @@
 [package]
 name = "d2r-audio-mod"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2021"
 license = "MIT"
 description = "Lightweight D2R audio telemetry Mod generator and processor"
@@ -13,6 +13,7 @@ path = "src/main.rs"
 d2r-audio-protocol = { path = "crates/d2r-audio-protocol" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+json5 = "1.3.1"
 uuid = { version = "1", features = ["v4"] }
 claxon = "0.4.3"
 flacenc = { version = "0.5.1", default-features = false }

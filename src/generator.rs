@@ -209,6 +209,13 @@ struct SourceLayout {
     mpq: Option<PathBuf>,
 }
 
+#[derive(Debug)]
+struct ResolvedTextFile {
+    text: String,
+    source: String,
+    from_source_mod: bool,
+}
+
 #[derive(Debug, Clone)]
 struct SoundDefinition {
     marker: TelemetryMarker,
@@ -296,14 +303,40 @@ impl Drop for StagingDirectory {
     }
 }
 
-fn has_excel_files(path: &Path) -> bool {
-    path.join("misc.txt").is_file()
-        && path.join("sounds.txt").is_file()
-        && path.join("levels.txt").is_file()
+fn has_any_excel_file(path: &Path) -> bool {
+    ["misc.txt", "sounds.txt", "levels.txt", "soundenviron.txt"]
+        .iter()
+        .any(|name| path.join(name).is_file())
+}
+
+fn is_mpq_directory(path: &Path) -> bool {
+    path.is_dir()
+        && path
+            .extension()
+            .and_then(|value| value.to_str())
+            .is_some_and(|value| value.eq_ignore_ascii_case("mpq"))
+}
+
+fn layout_from_mpq(mpq: PathBuf) -> SourceLayout {
+    SourceLayout {
+        excel: mpq.join("data/global/excel"),
+        mpq: Some(mpq),
+    }
 }
 
 fn find_source_layout(source: &Path) -> Result<SourceLayout, String> {
-    if has_excel_files(source) {
+    if !source.is_dir() {
+        return Err(format!(
+            "源 Mod 目录不存在或不是文件夹: {}",
+            source.display()
+        ));
+    }
+    if has_any_excel_file(source)
+        || source
+            .file_name()
+            .and_then(|value| value.to_str())
+            .is_some_and(|value| value.eq_ignore_ascii_case("excel"))
+    {
         let mpq = source.ancestors().find(|ancestor| {
             ancestor
                 .extension()
@@ -315,31 +348,37 @@ fn find_source_layout(source: &Path) -> Result<SourceLayout, String> {
             mpq: mpq.map(Path::to_path_buf),
         });
     }
-    let direct = source.join("data/global/excel");
-    if has_excel_files(&direct) {
-        return Ok(SourceLayout {
-            excel: direct,
-            mpq: Some(source.to_path_buf()),
-        });
+    if is_mpq_directory(source) || source.join("data/global/excel").is_dir() {
+        return Ok(layout_from_mpq(source.to_path_buf()));
     }
-    if source.is_dir() {
-        for entry in std::fs::read_dir(source)
-            .map_err(|error| format!("读取源目录失败 {}: {error}", source.display()))?
-        {
-            let path = entry
-                .map_err(|error| format!("读取源目录项失败: {error}"))?
-                .path();
-            let candidate = path.join("data/global/excel");
-            if path.is_dir() && has_excel_files(&candidate) {
-                return Ok(SourceLayout {
-                    excel: candidate,
-                    mpq: Some(path),
-                });
-            }
+
+    let mut mpq_directories = std::fs::read_dir(source)
+        .map_err(|error| format!("读取源目录失败 {}: {error}", source.display()))?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| is_mpq_directory(path))
+        .collect::<Vec<_>>();
+    mpq_directories.sort();
+    if let Some(source_name) = source.file_name().and_then(|value| value.to_str()) {
+        if let Some(matching) = mpq_directories.iter().find(|path| {
+            path.file_stem()
+                .and_then(|value| value.to_str())
+                .is_some_and(|value| value.eq_ignore_ascii_case(source_name))
+        }) {
+            return Ok(layout_from_mpq(matching.clone()));
         }
     }
+    if mpq_directories.len() == 1 {
+        return Ok(layout_from_mpq(mpq_directories.remove(0)));
+    }
+    if mpq_directories.len() > 1 {
+        return Err(format!(
+            "{} 中存在多个 .mpq 文件夹，请直接选择需要加工的 .mpq 文件夹",
+            source.display()
+        ));
+    }
     Err(format!(
-        "在 {} 中找不到 data/global/excel/misc.txt、sounds.txt、levels.txt",
+        "在 {} 中找不到可加工的 .mpq 文件夹",
         source.display()
     ))
 }
@@ -502,6 +541,50 @@ fn extract_minimal_baseline(
 
 fn read_utf8(path: &Path) -> Result<String, String> {
     std::fs::read_to_string(path).map_err(|error| format!("读取失败 {}: {error}", path.display()))
+}
+
+fn read_text_with_fallback<F>(
+    local_path: &Path,
+    fallback_source: String,
+    fallback: F,
+) -> Result<ResolvedTextFile, String>
+where
+    F: FnOnce() -> Result<String, String>,
+{
+    if local_path.is_file() {
+        return Ok(ResolvedTextFile {
+            text: read_utf8(local_path)?,
+            source: local_path.to_string_lossy().into_owned(),
+            from_source_mod: true,
+        });
+    }
+    Ok(ResolvedTextFile {
+        text: fallback()?,
+        source: fallback_source,
+        from_source_mod: false,
+    })
+}
+
+fn read_excel_with_game_fallback(
+    layout: &SourceLayout,
+    storage: Option<&casc_core::Storage>,
+    game_root: Option<&Path>,
+    name: &str,
+) -> Result<ResolvedTextFile, String> {
+    let local_path = layout.excel.join(name);
+    let internal_path = format!("data/global/excel/{name}");
+    let fallback_source = format!(
+        "CASC:{}:{internal_path}",
+        game_root.unwrap_or_else(|| Path::new("?")).display()
+    );
+    read_text_with_fallback(&local_path, fallback_source, || {
+        let storage = storage.ok_or_else(|| {
+            format!(
+                "源 Mod 缺少 data/global/excel/{name}，且没有可用的 D2R 游戏数据；请在本机游戏目录中运行或显式提供 --game"
+            )
+        })?;
+        read_casc_utf8(storage, &internal_path)
+    })
 }
 
 fn set_if_present(table: &TsvTable, row: &mut [String], name: &str, value: &str) {
@@ -2036,9 +2119,23 @@ where
     };
     let excel_output = mpq_directory.join("data/global/excel");
 
-    let misc = TsvTable::parse("misc.txt", &read_utf8(&layout.excel.join("misc.txt"))?)?;
-    let sounds = TsvTable::parse("sounds.txt", &read_utf8(&layout.excel.join("sounds.txt"))?)?;
-    let levels = TsvTable::parse("levels.txt", &read_utf8(&layout.excel.join("levels.txt"))?)?;
+    let misc_baseline =
+        read_excel_with_game_fallback(&layout, storage.as_ref(), game_root.as_deref(), "misc.txt")?;
+    let sounds_baseline = read_excel_with_game_fallback(
+        &layout,
+        storage.as_ref(),
+        game_root.as_deref(),
+        "sounds.txt",
+    )?;
+    let levels_baseline = read_excel_with_game_fallback(
+        &layout,
+        storage.as_ref(),
+        game_root.as_deref(),
+        "levels.txt",
+    )?;
+    let misc = TsvTable::parse("misc.txt", &misc_baseline.text)?;
+    let sounds = TsvTable::parse("sounds.txt", &sounds_baseline.text)?;
+    let levels = TsvTable::parse("levels.txt", &levels_baseline.text)?;
     let area_localization = load_area_localization(&mpq_directory, storage.as_ref())?;
     let mut areas = collect_areas_localized(&levels, &area_localization)?;
     if request.area_coverage == AudioAreaCoverage::CountessRoute {
@@ -2058,30 +2155,21 @@ where
         .as_deref()
         .filter(|value| !value.trim().is_empty())
         .map(PathBuf::from);
-    let local_sound_environment = layout.excel.join("soundenviron.txt");
-    let (sound_environment_text, sound_environment_source) =
-        if let Some(path) = explicit_sound_environment {
-            (read_utf8(&path)?, path.to_string_lossy().to_string())
-        } else if local_sound_environment.is_file() {
-            (
-                read_utf8(&local_sound_environment)?,
-                local_sound_environment.to_string_lossy().to_string(),
-            )
-        } else if let Some(storage) = storage.as_ref() {
-            (
-                read_casc_utf8(storage, "data/global/excel/soundenviron.txt")?,
-                format!(
-                    "CASC:{}:data/global/excel/soundenviron.txt",
-                    game_root
-                        .as_deref()
-                        .unwrap_or_else(|| Path::new("?"))
-                        .display()
-                ),
-            )
-        } else {
-            return Err("源 Mod 缺少 soundenviron.txt，且没有可用的 D2R CASC 基线".to_string());
-        };
-    let environments = TsvTable::parse("soundenviron.txt", &sound_environment_text)?;
+    let sound_environment_baseline = if let Some(path) = explicit_sound_environment {
+        ResolvedTextFile {
+            text: read_utf8(&path)?,
+            source: path.to_string_lossy().into_owned(),
+            from_source_mod: true,
+        }
+    } else {
+        read_excel_with_game_fallback(
+            &layout,
+            storage.as_ref(),
+            game_root.as_deref(),
+            "soundenviron.txt",
+        )?
+    };
+    let environments = TsvTable::parse("soundenviron.txt", &sound_environment_baseline.text)?;
     let area_ambience_filenames =
         collect_area_ambience_filenames(&levels, &environments, &sounds, &areas)?;
     progress(BuildProgress::new("areas", 28, "正在准备全部场景声纹…"));
@@ -2110,6 +2198,24 @@ where
             "源 Mod 未被修改；加工结果写入新的组合 Mod 目录。".to_string()
         },
     }];
+    if request.build_mode == AudioModBuildMode::Augment {
+        for (name, baseline) in [
+            ("misc.txt", &misc_baseline),
+            ("sounds.txt", &sounds_baseline),
+            ("levels.txt", &levels_baseline),
+            ("soundenviron.txt", &sound_environment_baseline),
+        ] {
+            if !baseline.from_source_mod {
+                compatibility.push(AudioModCompatibility {
+                    target: format!("数据表 {name}"),
+                    action: "use_game_baseline".to_string(),
+                    detail: format!(
+                        "源 Mod 未提供 {name}，已从本机 D2R 游戏数据补齐；源 Mod 中其他文件保持不变。"
+                    ),
+                });
+            }
+        }
+    }
     let rune_plans = if include_runes {
         patch_rune_unit_definitions(&mpq_directory, storage.as_ref(), &mut compatibility)?
     } else {
@@ -2294,11 +2400,7 @@ where
                     .display()
             )
         } else {
-            layout
-                .excel
-                .join("levels.txt")
-                .to_string_lossy()
-                .to_string()
+            levels_baseline.source.clone()
         },
         areas: areas.clone(),
     };
@@ -2336,11 +2438,19 @@ where
                 "CASC:{}:data/global/excel",
                 game_root.as_deref().unwrap_or_else(|| Path::new("?" )).display()
             )
+        } else if misc_baseline.from_source_mod
+            && sounds_baseline.from_source_mod
+            && levels_baseline.from_source_mod
+        {
+            layout.excel.to_string_lossy().into_owned()
         } else {
-            layout.excel.to_string_lossy().to_string()
+            format!(
+                "mixed:misc.txt={};sounds.txt={};levels.txt={}",
+                misc_baseline.source, sounds_baseline.source, levels_baseline.source
+            )
         },
         source_mod_copied,
-        sound_environment_source,
+        sound_environment_source: sound_environment_baseline.source,
         launch_arguments: format!("-mod {mod_name} -txt"),
         rune_assets,
         item_assets,
@@ -2410,6 +2520,51 @@ mod tests {
                 "unexpectedly accepted {invalid:?}"
             );
         }
+    }
+
+    #[test]
+    fn accepts_an_outer_mod_directory_with_partial_excel_overrides() {
+        let root =
+            std::env::temp_dir().join(format!("d2rhub-audio-layout-{}", uuid::Uuid::new_v4()));
+        let outer = root.join("hongye");
+        let mpq = outer.join("hongye.mpq");
+        let excel = mpq.join("data/global/excel");
+        std::fs::create_dir_all(&excel).unwrap();
+        std::fs::write(excel.join("misc.txt"), "name\tcode\n").unwrap();
+
+        let layout = find_source_layout(&outer).unwrap();
+        assert_eq!(layout.mpq.as_deref(), Some(mpq.as_path()));
+        assert_eq!(layout.excel, excel);
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn reads_each_table_from_the_mod_or_fallback_independently() {
+        let root =
+            std::env::temp_dir().join(format!("d2rhub-audio-table-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let local = root.join("misc.txt");
+        std::fs::write(&local, "mod-version").unwrap();
+
+        let local_result = read_text_with_fallback(&local, "CASC:misc.txt".to_string(), || {
+            panic!("fallback must not run when the Mod provides the table")
+        })
+        .unwrap();
+        assert_eq!(local_result.text, "mod-version");
+        assert!(local_result.from_source_mod);
+
+        let missing = root.join("levels.txt");
+        let fallback_result =
+            read_text_with_fallback(&missing, "CASC:levels.txt".to_string(), || {
+                Ok("game-version".to_string())
+            })
+            .unwrap();
+        assert_eq!(fallback_result.text, "game-version");
+        assert_eq!(fallback_result.source, "CASC:levels.txt");
+        assert!(!fallback_result.from_source_mod);
+
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     fn write_rune_unit_definitions(mpq: &Path) {

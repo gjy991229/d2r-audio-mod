@@ -9,8 +9,8 @@ use d2r_audio_protocol::item_catalog::{
     SupportedItemDefinition, CATEGORY_RUNES, ITEM_CATALOG_FILE_NAME,
 };
 use d2r_audio_protocol::protocol::{
-    detect_markers, embed_marker, interleaved_i32_to_mono, MarkerConfig, MIN_SAMPLE_RATE,
-    PROTOCOL_VERSION,
+    detect_markers, embed_marker, interleaved_i32_to_mono, marker_frames, MarkerConfig,
+    MARKER_OFFSET_SECONDS, MIN_SAMPLE_RATE, PACKET_GAP_SECONDS, PROTOCOL_VERSION,
 };
 use d2r_audio_protocol::rune_data;
 use serde::{Deserialize, Serialize};
@@ -21,6 +21,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 const MINIMAL_MOD_NAME: &str = "D2RAudioTelemetry";
 const AUDIO_MOD_SUFFIX: &str = "AudioTelemetry";
 const COUNTESS_AREA_IDS: [u32; 8] = [1, 6, 20, 21, 22, 23, 24, 25];
+const TERROR_PROBE_MARKER_AREA_ID: u32 = MAX_AREA_ID;
+const TERROR_PROBE_REFLECTION_BASE_MS: u32 = 160;
+const TERROR_PROBE_SD_SOUND: &str = "audio_telemetry_tz_probe_sd";
+const TERROR_PROBE_HD_SOUND: &str = "audio_telemetry_tz_probe_hd";
+const TERROR_PROBE_RELATIVE_PATH: &str = "audio_telemetry\\terror\\tz_probe.flac";
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -670,10 +675,12 @@ fn validate_misc(
 enum SoundRole {
     RuneGroundHeartbeat,
     AreaAmbience,
+    TerrorZoneProbe,
 }
 
 fn configure_sound_row(table: &TsvTable, row: &mut [String], role: SoundRole) {
     let is_ambience = matches!(role, SoundRole::AreaAmbience);
+    let is_terror_probe = matches!(role, SoundRole::TerrorZoneProbe);
     for (column, value) in [
         ("Redirect", ""),
         ("Volume Min", "255"),
@@ -690,11 +697,16 @@ fn configure_sound_row(table: &TsvTable, row: &mut [String], role: SoundRole) {
         ("Compound", "0"),
         ("Stream", "0"),
         ("Tracking", "0"),
-        ("Is2D", "1"),
+        ("Is2D", if is_terror_probe { "0" } else { "1" }),
         ("IsAmbientScene", if is_ambience { "1" } else { "0" }),
-        ("IsAmbientEvent", "0"),
+        ("IsAmbientEvent", if is_terror_probe { "1" } else { "0" }),
     ] {
         set_if_present(table, row, column, value);
+    }
+    if is_terror_probe {
+        for (column, value) in [("Falloff", "0"), ("Priority", "255"), ("Solo", "0")] {
+            set_if_present(table, row, column, value);
+        }
     }
 }
 
@@ -1588,6 +1600,24 @@ fn patch_sounds(
         next_index += 1;
     }
 
+    let terror_probe_template = table
+        .row_by("Sound", "desecrated_enter_hd")
+        .or_else(|_| table.row_by("Sound", "desecrated_enter"))
+        .unwrap_or_else(|_| area_template.clone());
+    for (sound, channel) in [
+        (TERROR_PROBE_SD_SOUND, "vo/eax/dialog_sd"),
+        (TERROR_PROBE_HD_SOUND, "vo/eax/dialog_hd"),
+    ] {
+        let mut row = terror_probe_template.clone();
+        table.set(&mut row, "Sound", sound)?;
+        table.set(&mut row, "*Index", next_index.to_string())?;
+        table.set(&mut row, "FileName", TERROR_PROBE_RELATIVE_PATH)?;
+        set_if_present(&table, &mut row, "Channel", channel);
+        configure_sound_row(&table, &mut row, SoundRole::TerrorZoneProbe);
+        table.rows.push(row);
+        next_index += 1;
+    }
+
     let sound_column = table.column("Sound")?;
     let filename_column = table.column("FileName")?;
     let hd_opt_out_column = table.column("HDOptOut").ok();
@@ -1851,9 +1881,55 @@ fn patch_sound_environ_and_levels(
         ] {
             environments.set(&mut row, column, &sound)?;
         }
+        // A desecrated SoundEnv overwrites ambience and events, but deliberately
+        // inherits the current area's VOX EAX parameters. A short VOX probe can
+        // therefore carry the Area id in its early-reflection delay even while
+        // the Terror Zone ambience is active.
+        for (column, value) in [
+            ("VOX EAX Environ", "0".to_string()),
+            ("VOX EAX Room Vol", "-1000".to_string()),
+            ("VOX EAX Room HF", "0".to_string()),
+            ("VOX EAX Decay Time", "100".to_string()),
+            ("VOX EAX Decay HF", "1000".to_string()),
+            ("VOX EAX Reflect", "-1000".to_string()),
+            (
+                "VOX EAX Reflect Delay",
+                (TERROR_PROBE_REFLECTION_BASE_MS + area_id).to_string(),
+            ),
+            ("VOX EAX Reverb", "-10000".to_string()),
+            ("VOX EAX Rev Delay", "0".to_string()),
+        ] {
+            set_if_present(&environments, &mut row, column, &value);
+        }
         environments.rows.push(row);
         level_row[level_environment] = next_index.to_string();
         next_index += 1;
+    }
+
+    if let Ok(handle) = environments.column("Handle") {
+        if let Some(row_index) = environments
+            .rows
+            .iter()
+            .position(|row| row[handle].eq_ignore_ascii_case("ESOUNDENVIRON_INHERIT_DESECRATED"))
+        {
+            let assignments = [
+                ("Day Event", TERROR_PROBE_SD_SOUND),
+                ("HD Day Event", TERROR_PROBE_HD_SOUND),
+                ("Night Event", TERROR_PROBE_SD_SOUND),
+                ("HD Night Event", TERROR_PROBE_HD_SOUND),
+                ("Event Delay", "25"),
+                ("HD Event Delay", "25"),
+            ]
+            .into_iter()
+            .filter_map(|(column, value)| {
+                environments.column(column).ok().map(|index| (index, value))
+            })
+            .collect::<Vec<_>>();
+            let row = &mut environments.rows[row_index];
+            for (column, value) in assignments {
+                row[column] = value.to_string();
+            }
+        }
     }
     Ok((environments, levels))
 }
@@ -2067,6 +2143,61 @@ fn write_marker_flac(
         .iter()
         .map(|detection| detection.confidence)
         .fold(f32::INFINITY, f32::min))
+}
+
+fn write_terror_probe_flac(path: &Path) -> Result<f32, String> {
+    const SAMPLE_RATE: u32 = 48_000;
+    const CHANNELS: usize = 2;
+    const BITS_PER_SAMPLE: u32 = 16;
+    let marker = TelemetryMarker::Area {
+        area_id: TERROR_PROBE_MARKER_AREA_ID,
+    };
+    let config = MarkerConfig {
+        gain_db: -18.0,
+        ..MarkerConfig::default()
+    };
+    let mut samples = Vec::new();
+    embed_marker(
+        &mut samples,
+        CHANNELS,
+        BITS_PER_SAMPLE,
+        SAMPLE_RATE,
+        marker,
+        config,
+    )?;
+
+    // The ordinary v7 marker contains two redundant packets. The probe needs
+    // one packet only so D2RHub can pair it unambiguously with the EAX-created
+    // reflection and measure the delay between them.
+    let packet_gap_frames = (SAMPLE_RATE as f32 * PACKET_GAP_SECONDS).round() as usize;
+    let packet_frames = (marker_frames(SAMPLE_RATE) - packet_gap_frames) / 2;
+    let marker_offset_frames = (SAMPLE_RATE as f32 * MARKER_OFFSET_SECONDS).round() as usize;
+    samples.truncate((marker_offset_frames + packet_frames) * CHANNELS);
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("创建恐惧区域探针目录失败 {}: {error}", parent.display()))?;
+    }
+    encode_flac(
+        path,
+        &samples,
+        SAMPLE_RATE,
+        CHANNELS as u32,
+        BITS_PER_SAMPLE,
+    )?;
+    let (verified, rate, channels, bits) = decode_flac(path)?;
+    let mono = interleaved_i32_to_mono(&verified, channels as usize, bits)?;
+    let detections = detect_markers(&mono, rate, config.detection_threshold)
+        .into_iter()
+        .filter(|detection| detection.marker == marker)
+        .collect::<Vec<_>>();
+    if detections.len() != 1 {
+        return Err(format!(
+            "恐惧区域探针自检失败：期望 1 个探针包，实际识别到 {} 个",
+            detections.len()
+        ));
+    }
+    Ok(detections[0].confidence)
 }
 
 fn default_output_parent(game_root: Option<&Path>, source: Option<&Path>) -> PathBuf {
@@ -2455,6 +2586,18 @@ where
             TelemetryMarker::Frontend => frontend_assets.push(asset),
         }
     }
+    let terror_probe_path = mpq_directory
+        .join("data/hd/global/sfx")
+        .join(TERROR_PROBE_RELATIVE_PATH.replace('\\', "/"));
+    let terror_probe_confidence = write_terror_probe_flac(&terror_probe_path)?;
+    compatibility.push(AudioModCompatibility {
+        target: "恐惧区域地点识别".to_string(),
+        action: "encode_inherited_vox_reflection".to_string(),
+        detail: format!(
+            "保留恐惧区域音乐与持续环境声；随机环境事件改为约每秒一次的高频 VOX 探针，并通过当前 Area 继承的早期反射延迟编码地点（本地自检置信度 {:.1}%）。",
+            terror_probe_confidence * 100.0
+        ),
+    });
     if casc_cache.is_dir() {
         std::fs::remove_dir_all(&casc_cache).map_err(|error| {
             format!("清理 CASC 环境音缓存失败 {}: {error}", casc_cache.display())

@@ -238,6 +238,15 @@ struct ItemStatePlan {
 }
 
 #[derive(Debug)]
+struct ResolvedItemEntityAsset {
+    document: serde_json::Value,
+    source: String,
+    asset: String,
+    used_baseline_mapping: bool,
+    preferred_error: Option<String>,
+}
+
+#[derive(Debug)]
 struct ResolvedAudioSource {
     path: PathBuf,
     label: String,
@@ -733,6 +742,16 @@ fn read_json_asset(
     Ok((document, source))
 }
 
+fn read_casc_json_asset(
+    storage: &casc_core::Storage,
+    internal_path: &str,
+) -> Result<serde_json::Value, String> {
+    let normalized = internal_path.replace('\\', "/");
+    let text = read_casc_utf8(storage, &normalized)?;
+    parse_json_value(&text)
+        .map_err(|error| format!("解析 D2R CASC JSON 资源失败 {normalized}: {error}"))
+}
+
 fn state_transition_exists(document: &serde_json::Value, from: i64, to: i64) -> bool {
     document
         .get("transitions")
@@ -968,25 +987,31 @@ fn set_item_asset(document: &mut serde_json::Value, code: &str, asset: &str) -> 
 fn copy_item_ui_sprites(
     mpq_directory: &Path,
     storage: Option<&casc_core::Storage>,
-    original_asset: &str,
+    source_assets: &[&str],
     cloned_asset: &str,
 ) -> Result<usize, String> {
-    let source_stem = original_asset.replace('\\', "/");
     let target_stem = cloned_asset.replace('\\', "/");
     let mut copied = 0;
     for suffix in std::iter::once(String::new()).chain((1..=16).map(|number| number.to_string())) {
         for ending in [".sprite", ".lowend.sprite"] {
-            let source = format!("data/hd/global/ui/items/misc/{source_stem}{suffix}{ending}");
-            let local = mpq_directory.join(source.replace('/', "\\"));
-            let bytes = if local.is_file() {
-                Some(std::fs::read(&local).map_err(|error| {
-                    format!("读取源 Mod 物品图标失败 {}: {error}", local.display())
-                })?)
-            } else if let Some(storage) = storage {
-                storage.read(&casc_path(&source)).ok()
-            } else {
-                None
-            };
+            let mut bytes = None;
+            for asset in source_assets {
+                let source_stem = asset.replace('\\', "/");
+                let source = format!("data/hd/global/ui/items/misc/{source_stem}{suffix}{ending}");
+                let local = mpq_directory.join(source.replace('/', "\\"));
+                bytes = if local.is_file() {
+                    Some(std::fs::read(&local).map_err(|error| {
+                        format!("读取源 Mod 物品图标失败 {}: {error}", local.display())
+                    })?)
+                } else if let Some(storage) = storage {
+                    storage.read(&casc_path(&source)).ok()
+                } else {
+                    None
+                };
+                if bytes.is_some() {
+                    break;
+                }
+            }
             let Some(bytes) = bytes else {
                 continue;
             };
@@ -997,7 +1022,8 @@ fn copy_item_ui_sprites(
     }
     if copied == 0 {
         return Err(format!(
-            "无法找到物品 {original_asset} 的 HD 背包/仓库图标资源；拒绝生成不可见物品"
+            "无法从候选映射 [{}] 找到 HD 背包/仓库图标资源；拒绝生成不可见物品",
+            source_assets.join(", ")
         ));
     }
     Ok(copied)
@@ -1028,6 +1054,44 @@ fn read_item_entity_asset(
         "无法解析 items.json 资源映射 {asset}: {}",
         errors.join("；")
     ))
+}
+
+fn resolve_item_entity_asset(
+    mpq_directory: &Path,
+    storage: Option<&casc_core::Storage>,
+    preferred_asset: &str,
+    baseline_asset: Option<&str>,
+) -> Result<ResolvedItemEntityAsset, String> {
+    match read_item_entity_asset(mpq_directory, storage, preferred_asset) {
+        Ok((document, source, _)) => Ok(ResolvedItemEntityAsset {
+            document,
+            source,
+            asset: preferred_asset.to_string(),
+            used_baseline_mapping: false,
+            preferred_error: None,
+        }),
+        Err(preferred_error) => {
+            let baseline_asset = baseline_asset
+                .map(str::trim)
+                .filter(|asset| !asset.is_empty())
+                .filter(|asset| !asset.eq_ignore_ascii_case(preferred_asset));
+            let Some(baseline_asset) = baseline_asset else {
+                return Err(preferred_error);
+            };
+            match read_item_entity_asset(mpq_directory, storage, baseline_asset) {
+                Ok((document, source, _)) => Ok(ResolvedItemEntityAsset {
+                    document,
+                    source,
+                    asset: baseline_asset.to_string(),
+                    used_baseline_mapping: true,
+                    preferred_error: Some(preferred_error),
+                }),
+                Err(baseline_error) => Err(format!(
+                    "源 Mod 映射与游戏基线映射均无法解析。源映射：{preferred_error}；基线映射：{baseline_error}"
+                )),
+            }
+        }
+    }
 }
 
 fn strip_item_formatting(value: &str) -> String {
@@ -1105,6 +1169,7 @@ fn patch_item_unit_definitions(
     mpq_directory: &Path,
     storage: Option<&casc_core::Storage>,
     items_document: &mut serde_json::Value,
+    baseline_items_document: Option<&serde_json::Value>,
     definitions: &[SupportedItemDefinition],
     localization: &HashMap<String, (String, String)>,
     compatibility: &mut Vec<AudioModCompatibility>,
@@ -1122,8 +1187,19 @@ fn patch_item_unit_definitions(
                 definition.code
             ));
         }
-        let (mut document, entity_source, _source_entity_path) =
-            read_item_entity_asset(mpq_directory, storage, &original_asset)?;
+        let baseline_asset =
+            baseline_items_document.and_then(|document| item_asset(document, definition.code));
+        let resolved_entity = resolve_item_entity_asset(
+            mpq_directory,
+            storage,
+            &original_asset,
+            baseline_asset.as_deref(),
+        )?;
+        let entity_source = resolved_entity.source.clone();
+        let entity_asset = resolved_entity.asset.clone();
+        let used_baseline_mapping = resolved_entity.used_baseline_mapping;
+        let preferred_error = resolved_entity.preferred_error.clone();
+        let mut document = resolved_entity.document;
         let entities = document
             .get_mut("entities")
             .and_then(serde_json::Value::as_array_mut)
@@ -1254,8 +1330,12 @@ fn patch_item_unit_definitions(
             serde_json::to_vec_pretty(&document)
                 .map_err(|error| format!("序列化物品实体失败: {error}"))?,
         )?;
+        let mut sprite_assets = vec![original_asset.as_str()];
+        if !entity_asset.eq_ignore_ascii_case(&original_asset) {
+            sprite_assets.push(entity_asset.as_str());
+        }
         let copied_sprites =
-            copy_item_ui_sprites(mpq_directory, storage, &original_asset, &cloned_asset)?;
+            copy_item_ui_sprites(mpq_directory, storage, &sprite_assets, &cloned_asset)?;
         set_item_asset(items_document, definition.code, &cloned_asset)?;
 
         let (name, name_en) = localization
@@ -1277,16 +1357,23 @@ fn patch_item_unit_definitions(
         };
         compatibility.push(AudioModCompatibility {
             target: format!("{} ({})", entry.name, entry.code),
-            action: if original_audio_id.is_some() {
+            action: if used_baseline_mapping {
+                "clone_with_baseline_entity_mapping".to_string()
+            } else if original_audio_id.is_some() {
                 "mix_original_audio".to_string()
             } else {
                 "clone_and_attach".to_string()
             },
             detail: format!(
-                "从 {entity_source} 克隆为独立实体；保留原模型、VFX、动画、依赖和双向转场，复制 {copied_sprites} 个背包/仓库 sprite 资源，仅替换克隆体的 Flippy.audioId{}。",
+                "从 {entity_source} 克隆为独立实体；保留原模型、VFX、动画、依赖和双向转场，按 [{}] 的优先级复制 {copied_sprites} 个背包/仓库 sprite 资源，仅替换克隆体的 Flippy.audioId{}{}。",
+                sprite_assets.join(", "),
                 original_audio_id
                     .as_deref()
                     .map(|audio| format!("，并混入原声音 {audio}"))
+                    .unwrap_or_default(),
+                preferred_error
+                    .as_deref()
+                    .map(|error| format!("；源映射缺少可解析世界实体，已按同一物品代码使用游戏基线映射 {entity_asset}。原解析信息：{error}"))
                     .unwrap_or_default()
             ),
         });
@@ -2236,6 +2323,14 @@ where
     } else {
         read_json_asset(&mpq_directory, storage.as_ref(), "data/hd/items/items.json")?
     };
+    let baseline_items_document = if selected_items.is_empty() {
+        None
+    } else {
+        storage
+            .as_ref()
+            .map(|storage| read_casc_json_asset(storage, "data/hd/items/items.json"))
+            .transpose()?
+    };
     let item_localization = if selected_items.is_empty() {
         HashMap::new()
     } else {
@@ -2257,6 +2352,7 @@ where
         &mpq_directory,
         storage.as_ref(),
         &mut items_document,
+        baseline_items_document.as_ref(),
         &selected_items,
         &item_localization,
         &mut compatibility,
@@ -2783,9 +2879,13 @@ mod tests {
         write_file(&source, b"hd-sprite").unwrap();
         write_file(&lowend, b"lowend-sprite").unwrap();
 
-        let copied =
-            copy_item_ui_sprites(&root, None, "jewel/jewel", "audio_telemetry/items/i39_jew")
-                .unwrap();
+        let copied = copy_item_ui_sprites(
+            &root,
+            None,
+            &["jewel/jewel"],
+            "audio_telemetry/items/i39_jew",
+        )
+        .unwrap();
         assert_eq!(copied, 2);
         assert_eq!(
             std::fs::read(
@@ -2802,6 +2902,58 @@ mod tests {
             )
             .unwrap(),
             b"lowend-sprite"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn item_entity_resolution_falls_back_by_item_code_mapping() {
+        let root = std::env::temp_dir().join(format!(
+            "d2rhub-audio-item-entity-fallback-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let baseline = root.join("data/hd/items/misc/key/base_key.json");
+        write_file(&baseline, br#"{"entities":[]}"#).unwrap();
+
+        let resolved =
+            resolve_item_entity_asset(&root, None, "key/custom_icon_only", Some("key/base_key"))
+                .unwrap();
+
+        assert_eq!(resolved.asset, "key/base_key");
+        assert!(resolved.used_baseline_mapping);
+        assert!(resolved.preferred_error.is_some());
+        assert_eq!(resolved.document["entities"], serde_json::json!([]));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn item_sprite_resolution_uses_each_candidates_available_variant() {
+        let root = std::env::temp_dir().join(format!(
+            "d2rhub-audio-item-sprite-fallback-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let preferred = root.join("data/hd/global/ui/items/misc/key/custom_icon_only.sprite");
+        let baseline = root.join("data/hd/global/ui/items/misc/key/base_key.lowend.sprite");
+        write_file(&preferred, b"custom-hd-sprite").unwrap();
+        write_file(&baseline, b"baseline-lowend-sprite").unwrap();
+
+        let copied = copy_item_ui_sprites(
+            &root,
+            None,
+            &["key/custom_icon_only", "key/base_key"],
+            "audio_telemetry/items/i43_key",
+        )
+        .unwrap();
+
+        assert_eq!(copied, 2);
+        let target = root.join("data/hd/global/ui/items/misc/audio_telemetry/items");
+        assert_eq!(
+            std::fs::read(target.join("i43_key.sprite")).unwrap(),
+            b"custom-hd-sprite"
+        );
+        assert_eq!(
+            std::fs::read(target.join("i43_key.lowend.sprite")).unwrap(),
+            b"baseline-lowend-sprite"
         );
         std::fs::remove_dir_all(root).unwrap();
     }

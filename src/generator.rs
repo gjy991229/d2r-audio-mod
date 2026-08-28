@@ -22,7 +22,6 @@ const MINIMAL_MOD_NAME: &str = "D2RAudioTelemetry";
 const AUDIO_MOD_SUFFIX: &str = "AudioTelemetry";
 const COUNTESS_AREA_IDS: [u32; 8] = [1, 6, 20, 21, 22, 23, 24, 25];
 const TERROR_PROBE_MARKER_AREA_ID: u32 = MAX_AREA_ID;
-const TERROR_PROBE_REFLECTION_BASE_MS: u32 = 160;
 const TERROR_PROBE_SD_SOUND: &str = "audio_telemetry_tz_probe_sd";
 const TERROR_PROBE_HD_SOUND: &str = "audio_telemetry_tz_probe_hd";
 const TERROR_PROBE_RELATIVE_PATH: &str = "audio_telemetry\\terror\\tz_probe.flac";
@@ -1605,8 +1604,8 @@ fn patch_sounds(
         .or_else(|_| table.row_by("Sound", "desecrated_enter"))
         .unwrap_or_else(|_| area_template.clone());
     for (sound, channel) in [
-        (TERROR_PROBE_SD_SOUND, "vo/eax/dialog_sd"),
-        (TERROR_PROBE_HD_SOUND, "vo/eax/dialog_hd"),
+        (TERROR_PROBE_SD_SOUND, "sfx/ambient/event-3d_sd"),
+        (TERROR_PROBE_HD_SOUND, "sfx/ambient/event-3d_hd"),
     ] {
         let mut row = terror_probe_template.clone();
         table.set(&mut row, "Sound", sound)?;
@@ -1881,26 +1880,6 @@ fn patch_sound_environ_and_levels(
         ] {
             environments.set(&mut row, column, &sound)?;
         }
-        // A desecrated SoundEnv overwrites ambience and events, but deliberately
-        // inherits the current area's VOX EAX parameters. A short VOX probe can
-        // therefore carry the Area id in its early-reflection delay even while
-        // the Terror Zone ambience is active.
-        for (column, value) in [
-            ("VOX EAX Environ", "0".to_string()),
-            ("VOX EAX Room Vol", "-1000".to_string()),
-            ("VOX EAX Room HF", "0".to_string()),
-            ("VOX EAX Decay Time", "100".to_string()),
-            ("VOX EAX Decay HF", "1000".to_string()),
-            ("VOX EAX Reflect", "-1000".to_string()),
-            (
-                "VOX EAX Reflect Delay",
-                (TERROR_PROBE_REFLECTION_BASE_MS + area_id).to_string(),
-            ),
-            ("VOX EAX Reverb", "-10000".to_string()),
-            ("VOX EAX Rev Delay", "0".to_string()),
-        ] {
-            set_if_present(&environments, &mut row, column, &value);
-        }
         environments.rows.push(row);
         level_row[level_environment] = next_index.to_string();
         next_index += 1;
@@ -2166,9 +2145,9 @@ fn write_terror_probe_flac(path: &Path) -> Result<f32, String> {
         config,
     )?;
 
-    // The ordinary v7 marker contains two redundant packets. The probe needs
-    // one packet only so D2RHub can pair it unambiguously with the EAX-created
-    // reflection and measure the delay between them.
+    // The desecrated event repeats for as long as the player is in a Terror
+    // Zone. One compact packet per replay is sufficient to signal TZ presence
+    // and avoids turning the redundant packet into a second logical heartbeat.
     let packet_gap_frames = (SAMPLE_RATE as f32 * PACKET_GAP_SECONDS).round() as usize;
     let packet_frames = (marker_frames(SAMPLE_RATE) - packet_gap_frames) / 2;
     let marker_offset_frames = (SAMPLE_RATE as f32 * MARKER_OFFSET_SECONDS).round() as usize;
@@ -2176,7 +2155,7 @@ fn write_terror_probe_flac(path: &Path) -> Result<f32, String> {
 
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
-            .map_err(|error| format!("创建恐惧区域探针目录失败 {}: {error}", parent.display()))?;
+            .map_err(|error| format!("创建恐怖区域探针目录失败 {}: {error}", parent.display()))?;
     }
     encode_flac(
         path,
@@ -2193,7 +2172,7 @@ fn write_terror_probe_flac(path: &Path) -> Result<f32, String> {
         .collect::<Vec<_>>();
     if detections.len() != 1 {
         return Err(format!(
-            "恐惧区域探针自检失败：期望 1 个探针包，实际识别到 {} 个",
+            "恐怖区域探针自检失败：期望 1 个探针包，实际识别到 {} 个",
             detections.len()
         ));
     }
@@ -2591,10 +2570,10 @@ where
         .join(TERROR_PROBE_RELATIVE_PATH.replace('\\', "/"));
     let terror_probe_confidence = write_terror_probe_flac(&terror_probe_path)?;
     compatibility.push(AudioModCompatibility {
-        target: "恐惧区域地点识别".to_string(),
-        action: "encode_inherited_vox_reflection".to_string(),
+        target: "恐怖区域状态识别".to_string(),
+        action: "emit_shared_terror_zone_marker".to_string(),
         detail: format!(
-            "保留恐惧区域音乐与持续环境声；随机环境事件改为约每秒一次的高频 VOX 探针，并通过当前 Area 继承的早期反射延迟编码地点（本地自检置信度 {:.1}%）。",
+            "保留恐怖区域音乐与持续环境声；所有恐怖区域共用同一个短促声纹，只表示当前处于 TZ，不再编码具体 Area（本地自检置信度 {:.1}%）。",
             terror_probe_confidence * 100.0
         ),
     });

@@ -13,6 +13,7 @@ use d2r_audio_protocol::protocol::{
     MARKER_OFFSET_SECONDS, MIN_SAMPLE_RATE, PACKET_GAP_SECONDS, PROTOCOL_VERSION,
 };
 use d2r_audio_protocol::rune_data;
+use encoding_rs::{Encoding, GB18030, UTF_16BE, UTF_16LE, WINDOWS_1252};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -25,6 +26,9 @@ const TERROR_PROBE_MARKER_AREA_ID: u32 = MAX_AREA_ID;
 const TERROR_PROBE_SD_SOUND: &str = "audio_telemetry_tz_probe_sd";
 const TERROR_PROBE_HD_SOUND: &str = "audio_telemetry_tz_probe_hd";
 const TERROR_PROBE_RELATIVE_PATH: &str = "audio_telemetry\\terror\\tz_probe.flac";
+const TERROR_MARKER_GAIN_DB: f32 = -18.0;
+pub const AUDIO_MOD_RECIPE_VERSION: u32 = 2;
+const TERROR_IMMEDIATE_ENTRY_CAPABILITY: &str = "terror_zone_immediate_entry_marker_v1";
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -81,6 +85,10 @@ pub struct BuildAudioModReport {
     pub manifest_format: String,
     pub producer: String,
     pub producer_version: String,
+    /// Incremented only when an existing generated Mod must be rebuilt to gain required assets.
+    pub recipe_version: u32,
+    /// Additive feature identifiers help newer consumers explain why a rebuild is recommended.
+    pub capabilities: Vec<String>,
     pub generated_at_unix: u64,
     pub protocol_version: u8,
     pub build_mode: AudioModBuildMode,
@@ -90,15 +98,30 @@ pub struct BuildAudioModReport {
     pub mpq_directory: String,
     pub source_excel_directory: String,
     pub source_mod_copied: bool,
+    /// Best-effort source Mod hint for future guided rebuilds. Older manifests omit this field.
+    pub source_mod_name: Option<String>,
     pub sound_environment_source: String,
     pub launch_arguments: String,
     pub rune_assets: Vec<AudioModAsset>,
     pub item_assets: Vec<AudioModAsset>,
     pub area_assets: Vec<AudioModAsset>,
+    pub terror_assets: Vec<AudioModAsset>,
     pub frontend_assets: Vec<AudioModAsset>,
     pub area_catalog: Vec<AreaCatalogEntry>,
     pub compatibility: Vec<AudioModCompatibility>,
     pub notes: Vec<String>,
+}
+
+fn inferred_source_mod_name(source_directory: Option<&str>) -> Option<String> {
+    let path = Path::new(source_directory?.trim());
+    let leaf = path.file_name()?.to_string_lossy();
+    if leaf.to_ascii_lowercase().ends_with(".mpq") {
+        path.file_stem()
+            .map(|value| value.to_string_lossy().into_owned())
+    } else {
+        Some(leaf.into_owned())
+    }
+    .filter(|value| !value.trim().is_empty())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -223,10 +246,20 @@ struct ResolvedTextFile {
 #[derive(Debug, Clone)]
 struct SoundDefinition {
     marker: TelemetryMarker,
+    group: SoundAssetGroup,
     sound: String,
     relative_path: String,
     source_filename: Option<String>,
     output_root: &'static str,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SoundAssetGroup {
+    Rune,
+    Item,
+    Area,
+    Terror,
+    Frontend,
 }
 
 #[derive(Debug, Clone)]
@@ -556,6 +589,104 @@ fn read_utf8(path: &Path) -> Result<String, String> {
     std::fs::read_to_string(path).map_err(|error| format!("读取失败 {}: {error}", path.display()))
 }
 
+fn decode_without_replacement(encoding: &'static Encoding, bytes: &[u8]) -> Option<String> {
+    encoding
+        .decode_without_bom_handling_and_without_replacement(bytes)
+        .map(|text| text.into_owned())
+}
+
+fn likely_utf16_encoding(bytes: &[u8]) -> Option<&'static Encoding> {
+    let sample_len = bytes.len().min(1024) & !1;
+    if sample_len < 8 {
+        return None;
+    }
+    let pairs = sample_len / 2;
+    let even_zeroes = bytes[..sample_len]
+        .iter()
+        .step_by(2)
+        .filter(|&&byte| byte == 0)
+        .count();
+    let odd_zeroes = bytes[1..sample_len]
+        .iter()
+        .step_by(2)
+        .filter(|&&byte| byte == 0)
+        .count();
+    if odd_zeroes * 3 >= pairs && even_zeroes * 20 <= pairs {
+        Some(UTF_16LE)
+    } else if even_zeroes * 3 >= pairs && odd_zeroes * 20 <= pairs {
+        Some(UTF_16BE)
+    } else {
+        None
+    }
+}
+
+fn contains_cjk(text: &str) -> bool {
+    text.chars().any(|character| {
+        matches!(
+            character as u32,
+            0x3400..=0x9fff | 0x20000..=0x2fa1f
+        )
+    })
+}
+
+fn decode_gb18030_source_mod(bytes: &[u8]) -> Option<String> {
+    // Legacy Diablo tables may mix GBK text with the raw 0xFF byte used by
+    // the game's `ÿc` color controls. 0xFF is not a valid GBK/GB18030 byte,
+    // so decode the valid spans and restore that established control byte.
+    let mut decoded = String::new();
+    let mut start = 0;
+    for (index, &byte) in bytes.iter().enumerate() {
+        if byte != 0xff {
+            continue;
+        }
+        decoded.push_str(&decode_without_replacement(GB18030, &bytes[start..index])?);
+        decoded.push('\u{00ff}');
+        start = index + 1;
+    }
+    decoded.push_str(&decode_without_replacement(GB18030, &bytes[start..])?);
+    contains_cjk(&decoded).then_some(decoded)
+}
+
+/// Source Mods are commonly saved by spreadsheet editors as UTF-8, UTF-16,
+/// GBK/GB18030, or the current Western "ANSI" encoding. Decode those inputs
+/// without modifying the source; generated tables are always written as UTF-8.
+fn decode_excel_text(bytes: &[u8]) -> Result<String, String> {
+    let decoded = if let Some(bytes) = bytes.strip_prefix(&[0xef, 0xbb, 0xbf]) {
+        std::str::from_utf8(bytes)
+            .map(str::to_owned)
+            .map_err(|error| format!("UTF-8 BOM 后的数据无效: {error}"))?
+    } else if let Some(bytes) = bytes.strip_prefix(&[0xff, 0xfe]) {
+        decode_without_replacement(UTF_16LE, bytes)
+            .ok_or_else(|| "UTF-16 LE 文本包含无效字符".to_string())?
+    } else if let Some(bytes) = bytes.strip_prefix(&[0xfe, 0xff]) {
+        decode_without_replacement(UTF_16BE, bytes)
+            .ok_or_else(|| "UTF-16 BE 文本包含无效字符".to_string())?
+    } else if let Some(encoding) = likely_utf16_encoding(bytes) {
+        decode_without_replacement(encoding, bytes)
+            .ok_or_else(|| format!("疑似 {} 文本，但内容无效", encoding.name()))?
+    } else if let Ok(text) = std::str::from_utf8(bytes) {
+        text.to_owned()
+    } else if let Some(text) = decode_gb18030_source_mod(bytes) {
+        text
+    } else {
+        decode_without_replacement(WINDOWS_1252, bytes)
+            .ok_or_else(|| "不是受支持的 UTF-8、UTF-16、GBK 或 ANSI 文本".to_string())?
+    };
+    if decoded.contains('\0') {
+        return Err("文本包含 NUL 字节，疑似不是有效的数据表".to_string());
+    }
+    Ok(decoded
+        .strip_prefix('\u{feff}')
+        .unwrap_or(&decoded)
+        .to_string())
+}
+
+fn read_excel_text(path: &Path) -> Result<String, String> {
+    let bytes =
+        std::fs::read(path).map_err(|error| format!("读取失败 {}: {error}", path.display()))?;
+    decode_excel_text(&bytes).map_err(|error| format!("读取文本表失败 {}: {error}", path.display()))
+}
+
 fn read_text_with_fallback<F>(
     local_path: &Path,
     fallback_source: String,
@@ -566,7 +697,7 @@ where
 {
     if local_path.is_file() {
         return Ok(ResolvedTextFile {
-            text: read_utf8(local_path)?,
+            text: read_excel_text(local_path)?,
             source: local_path.to_string_lossy().into_owned(),
             from_source_mod: true,
         });
@@ -1487,6 +1618,7 @@ fn patch_sounds(
         table.rows.push(row);
         definitions.push(SoundDefinition {
             marker,
+            group: SoundAssetGroup::Rune,
             sound,
             relative_path,
             source_filename: (!source_filename.is_empty()).then_some(source_filename),
@@ -1569,6 +1701,7 @@ fn patch_sounds(
         table.rows.push(row);
         definitions.push(SoundDefinition {
             marker,
+            group: SoundAssetGroup::Item,
             sound,
             relative_path,
             source_filename: (!source_filename.is_empty()).then_some(source_filename),
@@ -1591,6 +1724,7 @@ fn patch_sounds(
         table.rows.push(row);
         definitions.push(SoundDefinition {
             marker,
+            group: SoundAssetGroup::Area,
             sound,
             relative_path,
             source_filename: area_ambience_filenames.get(&area.area_id).cloned(),
@@ -1617,8 +1751,99 @@ fn patch_sounds(
         next_index += 1;
     }
 
+    // The shared ambient event is only a delayed heartbeat. Primary TZ
+    // detection must ride the one-shot sound that D2R plays immediately when
+    // entering a desecrated zone. Follow redirects so SD->HD layouts patch the
+    // actual terminal sound once while preserving the original event names,
+    // channels and audible content.
     let sound_column = table.column("Sound")?;
     let filename_column = table.column("FileName")?;
+    let redirect_column = table.column("Redirect").ok();
+    let mut terror_entry_rows = Vec::new();
+    for entry_sound in ["desecrated_enter_hd", "desecrated_enter"] {
+        let mut current = entry_sound.to_string();
+        let mut visited = Vec::new();
+        let mut found_entry = false;
+        let mut resolved = false;
+        for _ in 0..8 {
+            let normalized = current.to_ascii_lowercase();
+            if visited.contains(&normalized) {
+                return Err(format!(
+                    "恐怖区域入场声音 {entry_sound} 的 Redirect 形成循环: {} -> {current}",
+                    visited.join(" -> ")
+                ));
+            }
+            visited.push(normalized);
+            let row_index = table
+                .rows
+                .iter()
+                .position(|row| row[sound_column].eq_ignore_ascii_case(&current))
+                .ok_or_else(|| {
+                    if found_entry {
+                        format!("恐怖区域入场声音 {entry_sound} 重定向到不存在的声音 {current}")
+                    } else {
+                        String::new()
+                    }
+                });
+            let row_index = match row_index {
+                Ok(row_index) => row_index,
+                Err(_) if !found_entry => break,
+                Err(error) => return Err(error),
+            };
+            found_entry = true;
+            let redirect = redirect_column
+                .and_then(|column| table.rows[row_index].get(column))
+                .map(|value| value.trim())
+                .filter(|value| !value.is_empty());
+            if let Some(redirect) = redirect {
+                current = redirect.to_string();
+                continue;
+            }
+            if !terror_entry_rows.contains(&row_index) {
+                terror_entry_rows.push(row_index);
+            }
+            resolved = true;
+            break;
+        }
+        if found_entry && !resolved {
+            return Err(format!(
+                "恐怖区域入场声音 {entry_sound} 的 Redirect 链超过 8 层"
+            ));
+        }
+    }
+    if terror_entry_rows.is_empty() {
+        return Err(
+            "sounds.txt 缺少恐怖区域即时入场声音 desecrated_enter_hd / desecrated_enter"
+                .to_string(),
+        );
+    }
+    for row_index in terror_entry_rows {
+        let sound = table.rows[row_index][sound_column].trim().to_string();
+        let source_filename = table.rows[row_index][filename_column].trim().to_string();
+        if source_filename.is_empty() {
+            return Err(format!("恐怖区域入场声音 {sound} 没有可保留的 FileName"));
+        }
+        let relative_path = format!("audio_telemetry\\terror\\{sound}.flac");
+        table.rows[row_index][filename_column] = relative_path.clone();
+        definitions.push(SoundDefinition {
+            marker: TelemetryMarker::Area {
+                area_id: TERROR_PROBE_MARKER_AREA_ID,
+            },
+            group: SoundAssetGroup::Terror,
+            sound: sound.clone(),
+            relative_path,
+            source_filename: Some(source_filename.clone()),
+            output_root: "data/hd/global/sfx",
+        });
+        compatibility.push(AudioModCompatibility {
+            target: format!("恐怖区域即时入场声音 {sound}"),
+            action: "mix_immediate_terror_presence_marker".to_string(),
+            detail: format!(
+                "保留原入场声音 {source_filename}、事件名、通道与播放参数，只向同一次立即播放中混入固定 {TERROR_MARKER_GAIN_DB:.0} dBFS 的 TZ 1023 声纹；延迟环境事件仅作为后续兜底。"
+            ),
+        });
+    }
+
     let hd_opt_out_column = table.column("HDOptOut").ok();
     let loop_column = table.column("Loop").ok();
     let frontend_rows = table
@@ -1680,6 +1905,7 @@ fn patch_sounds(
         }
         definitions.push(SoundDefinition {
             marker: TelemetryMarker::Frontend,
+            group: SoundAssetGroup::Frontend,
             sound: sound.clone(),
             relative_path,
             source_filename: Some(source_filename.clone()),
@@ -2132,7 +2358,7 @@ fn write_terror_probe_flac(path: &Path) -> Result<f32, String> {
         area_id: TERROR_PROBE_MARKER_AREA_ID,
     };
     let config = MarkerConfig {
-        gain_db: -18.0,
+        gain_db: TERROR_MARKER_GAIN_DB,
         ..MarkerConfig::default()
     };
     let mut samples = Vec::new();
@@ -2368,7 +2594,7 @@ where
         .map(PathBuf::from);
     let sound_environment_baseline = if let Some(path) = explicit_sound_environment {
         ResolvedTextFile {
-            text: read_utf8(&path)?,
+            text: read_excel_text(&path)?,
             source: path.to_string_lossy().into_owned(),
             from_source_mod: true,
         }
@@ -2512,6 +2738,7 @@ where
     let mut rune_assets = Vec::new();
     let mut item_assets = Vec::new();
     let mut area_assets = Vec::new();
+    let mut terror_assets = Vec::new();
     let mut frontend_assets = Vec::new();
     let definition_count = definitions.len().max(1);
     for (definition_index, definition) in definitions.into_iter().enumerate() {
@@ -2527,6 +2754,7 @@ where
             ));
         }
         let marker = definition.marker;
+        let group = definition.group;
         let resolved_source = definition
             .source_filename
             .as_deref()
@@ -2544,13 +2772,23 @@ where
         let output_path = mpq_directory
             .join(definition.output_root)
             .join(definition.relative_path.replace('\\', "/"));
-        let confidence = write_marker_flac(&output_path, marker, source_audio, config)?;
+        let marker_config = if group == SoundAssetGroup::Terror {
+            MarkerConfig {
+                gain_db: TERROR_MARKER_GAIN_DB,
+                ..config
+            }
+        } else {
+            config
+        };
+        let confidence = write_marker_flac(&output_path, marker, source_audio, marker_config)?;
         let asset = AudioModAsset {
             marker,
-            label: if marker == TelemetryMarker::Frontend {
-                format!("主界面 · {}", definition.sound)
-            } else {
-                asset_label(marker, &areas, &item_catalog_entries)
+            label: match group {
+                SoundAssetGroup::Terror => "恐怖区域即时入场 · TZ 1023".to_string(),
+                SoundAssetGroup::Frontend => format!("主界面 · {}", definition.sound),
+                SoundAssetGroup::Rune | SoundAssetGroup::Item | SoundAssetGroup::Area => {
+                    asset_label(marker, &areas, &item_catalog_entries)
+                }
             },
             sound: definition.sound,
             relative_path: definition.relative_path,
@@ -2558,22 +2796,35 @@ where
             preserved_source_audio: source_audio.is_some(),
             confidence,
         };
-        match marker {
-            TelemetryMarker::Rune { .. } => rune_assets.push(asset),
-            TelemetryMarker::Item { .. } => item_assets.push(asset),
-            TelemetryMarker::Area { .. } => area_assets.push(asset),
-            TelemetryMarker::Frontend => frontend_assets.push(asset),
+        match group {
+            SoundAssetGroup::Rune => rune_assets.push(asset),
+            SoundAssetGroup::Item => item_assets.push(asset),
+            SoundAssetGroup::Area => area_assets.push(asset),
+            SoundAssetGroup::Terror => terror_assets.push(asset),
+            SoundAssetGroup::Frontend => frontend_assets.push(asset),
         }
     }
     let terror_probe_path = mpq_directory
         .join("data/hd/global/sfx")
         .join(TERROR_PROBE_RELATIVE_PATH.replace('\\', "/"));
     let terror_probe_confidence = write_terror_probe_flac(&terror_probe_path)?;
+    terror_assets.push(AudioModAsset {
+        marker: TelemetryMarker::Area {
+            area_id: TERROR_PROBE_MARKER_AREA_ID,
+        },
+        label: "恐怖区域延迟兜底 · TZ 1023".to_string(),
+        sound: TERROR_PROBE_HD_SOUND.to_string(),
+        relative_path: TERROR_PROBE_RELATIVE_PATH.to_string(),
+        source_audio: None,
+        preserved_source_audio: false,
+        confidence: terror_probe_confidence,
+    });
     compatibility.push(AudioModCompatibility {
         target: "恐怖区域状态识别".to_string(),
         action: "emit_shared_terror_zone_marker".to_string(),
         detail: format!(
-            "保留恐怖区域音乐与持续环境声；所有恐怖区域共用同一个短促声纹，只表示当前处于 TZ，不再编码具体 Area（本地自检置信度 {:.1}%）。",
+            "保留恐怖区域音乐与持续环境声；所有恐怖区域共用同一个短促声纹，只表示当前处于 TZ，不再编码具体 Area。即时入场与延迟兜底为保证 3D 混音后的可靠性固定使用 {:.0} dBFS（兜底本地自检置信度 {:.1}%）。",
+            TERROR_MARKER_GAIN_DB,
             terror_probe_confidence * 100.0
         ),
     });
@@ -2655,6 +2906,8 @@ where
         manifest_format: "d2r-audio-telemetry-mod".to_string(),
         producer: "d2r-audio-mod".to_string(),
         producer_version: env!("CARGO_PKG_VERSION").to_string(),
+        recipe_version: AUDIO_MOD_RECIPE_VERSION,
+        capabilities: vec![TERROR_IMMEDIATE_ENTRY_CAPABILITY.to_string()],
         generated_at_unix: SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -2682,11 +2935,17 @@ where
             )
         },
         source_mod_copied,
+        source_mod_name: if request.build_mode == AudioModBuildMode::Augment {
+            inferred_source_mod_name(request.source_directory.as_deref())
+        } else {
+            None
+        },
         sound_environment_source: sound_environment_baseline.source,
         launch_arguments: format!("-mod {mod_name} -txt"),
         rune_assets,
         item_assets,
         area_assets,
+        terror_assets,
         frontend_assets,
         area_catalog: areas,
         compatibility,
@@ -2739,6 +2998,19 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn records_a_stable_source_mod_hint() {
+        assert_eq!(
+            inferred_source_mod_name(Some(r"C:\Games\D2R\mods\jcy")),
+            Some("jcy".to_string())
+        );
+        assert_eq!(
+            inferred_source_mod_name(Some(r"C:\Games\D2R\mods\jcy\jcy.mpq")),
+            Some("jcy".to_string())
+        );
+        assert_eq!(inferred_source_mod_name(None), None);
+    }
 
     #[test]
     fn validates_explicit_mod_names_without_rewriting_them() {
@@ -2797,6 +3069,40 @@ mod tests {
         assert!(!fallback_result.from_source_mod);
 
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn decodes_common_source_mod_table_encodings() {
+        assert_eq!(
+            decode_excel_text(b"\xef\xbb\xbfName\tCode\n").unwrap(),
+            "Name\tCode\n"
+        );
+
+        let utf16_le = [
+            0xff, 0xfe, b'N', 0, b'a', 0, b'm', 0, b'e', 0, b'\t', 0, b'C', 0, b'o', 0, b'd', 0,
+            b'e', 0, b'\n', 0,
+        ];
+        assert_eq!(decode_excel_text(&utf16_le).unwrap(), "Name\tCode\n");
+
+        let utf16_be_without_bom = [
+            0, b'N', 0, b'a', 0, b'm', 0, b'e', 0, b'\t', 0, b'C', 0, b'o', 0, b'd', 0, b'e', 0,
+            b'\n',
+        ];
+        assert_eq!(
+            decode_excel_text(&utf16_be_without_bom).unwrap(),
+            "Name\tCode\n"
+        );
+
+        let gbk = [
+            0xc3, 0xfb, 0xb3, 0xc6, b'\t', 0xb4, 0xfa, 0xc2, 0xeb, b'\n', 0xb7, 0xfb, 0xce, 0xc4,
+            b'\t', 0xff, b'c', b'1', b'1', b'\n',
+        ];
+        assert_eq!(decode_excel_text(&gbk).unwrap(), "名称\t代码\n符文\tÿc11\n");
+
+        assert_eq!(
+            decode_excel_text(b"name\tcode\n\xffc1Unique\tabc\n").unwrap(),
+            "name\tcode\nÿc1Unique\tabc\n"
+        );
     }
 
     fn write_rune_unit_definitions(mpq: &Path) {
@@ -2930,7 +3236,7 @@ mod tests {
 
         let sounds = TsvTable::parse(
             "sounds",
-            "Sound\t*Index\tRedirect\tFileName\tIsAmbientScene\tIsAmbientEvent\tGroup Weight\tLoop\tHDOptOut\nitem_rune_hd\t10\t\titem\\rune.flac\t0\t0\t0\t0\t0\nscene_wilderness_day\t11\t\tambient\\scene.flac\t1\t0\t0\t1\t0\nmusic_options\t12\t\tcommon\\options.flac\t0\t0\t0\t1\t0\nact1_scene_front_end\t13\t\tfrontend\\act1.flac\t1\t0\t0\t1\t0\ncampfire_front_end\t14\t\tfrontend\\campfire.flac\t1\t0\t0\t1\t0\nchar_select_fe_fire_loop_hd\t15\t\tfrontend\\fire.flac\t1\t0\t0\t1\t0\n",
+            "Sound\t*Index\tRedirect\tFileName\tIsAmbientScene\tIsAmbientEvent\tGroup Weight\tLoop\tHDOptOut\nitem_rune_hd\t10\t\titem\\rune.flac\t0\t0\t0\t0\t0\nscene_wilderness_day\t11\t\tambient\\scene.flac\t1\t0\t0\t1\t0\nmusic_options\t12\t\tcommon\\options.flac\t0\t0\t0\t1\t0\nact1_scene_front_end\t13\t\tfrontend\\act1.flac\t1\t0\t0\t1\t0\ncampfire_front_end\t14\t\tfrontend\\campfire.flac\t1\t0\t0\t1\t0\nchar_select_fe_fire_loop_hd\t15\t\tfrontend\\fire.flac\t1\t0\t0\t1\t0\ndesecrated_enter\t16\tdesecrated_enter_hd\tquest\\desecrated_enter.flac\t0\t0\t0\t0\t0\ndesecrated_enter_hd\t17\t\tquest\\desecrated_enter_hd.flac\t0\t0\t0\t0\t0\n",
         )
         .unwrap();
         let rune_plans = (1..=RUNE_COUNT)
@@ -2992,6 +3298,83 @@ mod tests {
         assert!(path.is_file());
         assert!(confidence > 0.7);
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn terror_entry_sound_is_tagged_at_the_immediate_redirect_target() {
+        let sounds = TsvTable::parse(
+            "sounds",
+            "Sound\t*Index\tRedirect\tFileName\tChannel\tIsAmbientScene\tIsAmbientEvent\tVolume Min\tVolume Max\tPitch Min\tPitch Max\tGroup Size\tGroup Weight\tLoop\tDefer Inst\tStop Inst\tCompound\tStream\tTracking\tIs2D\tHDOptOut\nitem_rune_hd\t1\t\titem\\rune.flac\tsfx/items_hd\t0\t0\t200\t200\t100\t100\t0\t0\t0\t0\t1\t0\t0\t0\t0\t0\nscene_wilderness_day\t2\t\tambient\\scene.flac\tsfx/ambient/scene-2d_hd\t1\t0\t200\t200\t100\t100\t0\t0\t1\t0\t0\t0\t1\t0\t1\t0\nmusic_options\t3\t\tcommon\\options.flac\tmusic_sd\t0\t0\t127\t127\t100\t100\t0\t0\t1\t1\t0\t0\t1\t0\t1\t0\ndesecrated_enter\t4\tdesecrated_enter_hd\tquest\\desecrated_enter.flac\tsfx/ambient/event-3d_sd\t0\t0\t255\t255\t100\t100\t0\t0\t0\t1\t0\t0\t1\t0\t0\t0\ndesecrated_enter_hd\t5\t\tquest\\desecrated_enter_hd.flac\tsfx/ambient/event-3d_hd\t0\t0\t255\t255\t100\t100\t0\t0\t0\t1\t0\t0\t1\t0\t0\t0\n",
+        )
+        .unwrap();
+        let mut compatibility = Vec::new();
+        let (sounds, definitions) =
+            patch_sounds(sounds, &[], &[], &[], &HashMap::new(), &mut compatibility).unwrap();
+
+        let sd = sounds.row_by("Sound", "desecrated_enter").unwrap();
+        assert_eq!(sounds.get(&sd, "Redirect"), Some("desecrated_enter_hd"));
+        let hd = sounds.row_by("Sound", "desecrated_enter_hd").unwrap();
+        assert_eq!(
+            sounds.get(&hd, "FileName"),
+            Some("audio_telemetry\\terror\\desecrated_enter_hd.flac")
+        );
+        let immediate = definitions
+            .iter()
+            .filter(|definition| {
+                definition.marker
+                    == (TelemetryMarker::Area {
+                        area_id: TERROR_PROBE_MARKER_AREA_ID,
+                    })
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(immediate.len(), 1);
+        assert_eq!(
+            immediate[0].source_filename.as_deref(),
+            Some("quest\\desecrated_enter_hd.flac")
+        );
+        assert!(compatibility
+            .iter()
+            .any(|item| { item.action == "mix_immediate_terror_presence_marker" }));
+    }
+
+    #[test]
+    fn missing_terror_entry_sound_fails_instead_of_silently_using_delayed_probe() {
+        let sounds = TsvTable::parse(
+            "sounds",
+            "Sound\t*Index\tRedirect\tFileName\tIsAmbientScene\nitem_rune_hd\t1\t\titem\\rune.flac\t0\nscene_wilderness_day\t2\t\tambient\\scene.flac\t1\nmusic_options\t3\t\tcommon\\options.flac\t0\n",
+        )
+        .unwrap();
+        let error =
+            patch_sounds(sounds, &[], &[], &[], &HashMap::new(), &mut Vec::new()).unwrap_err();
+        assert!(error.contains("缺少恐怖区域即时入场声音"));
+    }
+
+    #[test]
+    fn invalid_terror_entry_redirects_fail_with_a_specific_error() {
+        let missing_target = TsvTable::parse(
+            "sounds",
+            "Sound\t*Index\tRedirect\tFileName\tIsAmbientScene\nitem_rune_hd\t1\t\titem\\rune.flac\t0\nscene_wilderness_day\t2\t\tambient\\scene.flac\t1\nmusic_options\t3\t\tcommon\\options.flac\t0\ndesecrated_enter\t4\tmissing_enter_sound\tquest\\desecrated_enter.flac\t0\n",
+        )
+        .unwrap();
+        let missing_error = patch_sounds(
+            missing_target,
+            &[],
+            &[],
+            &[],
+            &HashMap::new(),
+            &mut Vec::new(),
+        )
+        .unwrap_err();
+        assert!(missing_error.contains("重定向到不存在的声音 missing_enter_sound"));
+
+        let cycle = TsvTable::parse(
+            "sounds",
+            "Sound\t*Index\tRedirect\tFileName\tIsAmbientScene\nitem_rune_hd\t1\t\titem\\rune.flac\t0\nscene_wilderness_day\t2\t\tambient\\scene.flac\t1\nmusic_options\t3\t\tcommon\\options.flac\t0\ndesecrated_enter\t4\tdesecrated_enter_hd\tquest\\desecrated_enter.flac\t0\ndesecrated_enter_hd\t5\tdesecrated_enter\tquest\\desecrated_enter_hd.flac\t0\n",
+        )
+        .unwrap();
+        let cycle_error =
+            patch_sounds(cycle, &[], &[], &[], &HashMap::new(), &mut Vec::new()).unwrap_err();
+        assert!(cycle_error.contains("Redirect 形成循环"));
     }
 
     #[test]
@@ -3146,7 +3529,7 @@ mod tests {
         std::fs::write(excel.join("misc.txt"), misc).unwrap();
         std::fs::write(
             excel.join("sounds.txt"),
-            "Sound\t*Index\tRedirect\tFileName\tChannel\tIsAmbientScene\tIsAmbientEvent\tVolume Min\tVolume Max\tPitch Min\tPitch Max\tGroup Size\tGroup Weight\tLoop\tDefer Inst\tStop Inst\tCompound\tStream\tTracking\tIs2D\tHDOptOut\nitem_rune_hd\t10\t\titem\\rune.flac\tsfx/items_hd\t0\t0\t200\t200\t100\t100\t0\t0\t0\t0\t1\t0\t0\t0\t0\t0\nscene_wilderness_day\t11\t\tambient\\scene.flac\tsfx/ambient/scene-2d_hd\t1\t0\t200\t200\t100\t100\t0\t0\t1\t0\t0\t0\t1\t0\t1\t0\nmusic_options\t12\t\tcommon\\options.flac\tmusic_sd\t0\t0\t127\t127\t100\t100\t0\t0\t1\t1\t0\t0\t1\t0\t1\t0\n",
+            "Sound\t*Index\tRedirect\tFileName\tChannel\tIsAmbientScene\tIsAmbientEvent\tVolume Min\tVolume Max\tPitch Min\tPitch Max\tGroup Size\tGroup Weight\tLoop\tDefer Inst\tStop Inst\tCompound\tStream\tTracking\tIs2D\tHDOptOut\nitem_rune_hd\t10\t\titem\\rune.flac\tsfx/items_hd\t0\t0\t200\t200\t100\t100\t0\t0\t0\t0\t1\t0\t0\t0\t0\t0\nscene_wilderness_day\t11\t\tambient\\scene.flac\tsfx/ambient/scene-2d_hd\t1\t0\t200\t200\t100\t100\t0\t0\t1\t0\t0\t0\t1\t0\t1\t0\nmusic_options\t12\t\tcommon\\options.flac\tmusic_sd\t0\t0\t127\t127\t100\t100\t0\t0\t1\t1\t0\t0\t1\t0\t1\t0\ndesecrated_enter\t13\tdesecrated_enter_hd\tquest\\desecrated_enter.flac\tsfx/ambient/event-3d_sd\t0\t0\t255\t255\t100\t100\t0\t0\t0\t1\t0\t0\t1\t0\t0\t0\ndesecrated_enter_hd\t14\t\tquest\\desecrated_enter_hd.flac\tsfx/ambient/event-3d_hd\t0\t0\t255\t255\t100\t100\t0\t0\t0\t1\t0\t0\t1\t0\t0\t0\n",
         )
         .unwrap();
         std::fs::write(
@@ -3189,6 +3572,7 @@ mod tests {
             .collect::<Vec<_>>();
         for source_audio in [
             source.join("data/hd/global/sfx/ambient/scene.flac"),
+            source.join("data/hd/global/sfx/quest/desecrated_enter_hd.flac"),
             source.join("data/hd/global/music/common/options_hd.flac"),
         ] {
             std::fs::create_dir_all(source_audio.parent().unwrap()).unwrap();
@@ -3209,6 +3593,11 @@ mod tests {
         .unwrap();
         assert_eq!(report.rune_assets.len(), 33);
         assert_eq!(report.area_assets.len(), COUNTESS_AREA_IDS.len());
+        assert_eq!(report.terror_assets.len(), 2);
+        assert!(report
+            .terror_assets
+            .iter()
+            .all(|asset| asset.confidence > 0.7));
         assert_eq!(report.frontend_assets.len(), 1);
         assert_eq!(
             report
@@ -3220,6 +3609,12 @@ mod tests {
         );
         assert_eq!(report.mod_name, "Countess-Audio-Test");
         assert_eq!(report.launch_arguments, "-mod Countess-Audio-Test -txt");
+        assert_eq!(report.recipe_version, AUDIO_MOD_RECIPE_VERSION);
+        assert!(report
+            .capabilities
+            .iter()
+            .any(|value| value == TERROR_IMMEDIATE_ENTRY_CAPABILITY));
+        assert_eq!(report.source_mod_name.as_deref(), Some("jcy"));
         let output_mpq = output
             .join("Countess-Audio-Test")
             .join("Countess-Audio-Test.mpq");

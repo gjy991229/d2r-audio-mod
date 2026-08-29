@@ -179,6 +179,7 @@ fn run_build(mode: AudioModBuildMode, options: Options) -> Result<(), String> {
                     "type": "completed",
                     "report": {
                         "protocol_version": report.protocol_version,
+                        "recipe_version": report.recipe_version,
                         "mod_name": report.mod_name,
                         "mod_directory": report.mod_directory,
                         "launch_arguments": report.launch_arguments,
@@ -208,9 +209,10 @@ fn run_build(mode: AudioModBuildMode, options: Options) -> Result<(), String> {
         println!("完成：{}", report.mod_directory);
         println!("启动参数：{}", report.launch_arguments);
         println!(
-            "协议 v{}；区域 {}；符文 {}；其他物品 {}；主界面资源 {}",
+            "协议 v{}；区域 {}；恐怖区域资源 {}；符文 {}；其他物品 {}；主界面资源 {}",
             report.protocol_version,
             report.area_assets.len(),
+            report.terror_assets.len(),
             report.rune_assets.len(),
             report.item_assets.len(),
             report.frontend_assets.len()
@@ -275,7 +277,7 @@ Mod 选项：
   --name <名称>              自定义 Mod 名；仅允许 ASCII 字母、数字、- 和 _
   --areas all|countess       地图覆盖，默认 all
   --track all|none|类别列表   默认 all；列表以英文逗号分隔
-  --gain <dBFS>              声纹增益，范围 -42 到 -12，默认 -30
+  --gain <dBFS>              普通声纹增益，范围 -42 到 -12，默认 -30；TZ 为可靠性固定 -18
   --sound-environment <文件> 显式指定 soundenviron.txt
   --json                     将完整结果写到标准输出
   --events                   逐行输出进度/完成/错误 JSON 事件，供外部程序调用

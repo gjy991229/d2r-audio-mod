@@ -13,7 +13,7 @@
 
 ## Mod 根目录文件
 
-- `audio-telemetry-manifest.json`：生产报告，仅供人或工具诊断，接收端不依赖其内部布局。
+- `audio-telemetry-manifest.json`：生产报告；`protocol_version` 判断能否解码，`recipe_version` 判断是否建议重新生成，其他未知字段必须忽略。
 - `audio-telemetry-area-catalog.json`：Area Id 到场景名称、稳定键和地点类型的映射。
 - `audio-telemetry-item-catalog.json`：物品协议 Id 到基础物品代码、类别和显示名的映射。
 
@@ -41,6 +41,10 @@
 
 ## 清单兼容规则
 
+- `protocol_version` 是硬兼容边界：不匹配时不能启动接收；`recipe_version` 是生成内容版本，只在缺少当前必需资源时递增。
+- 早期正式清单没有 `recipe_version`，接收端必须继续允许其原有识别能力，同时可以非阻断地提示生成新版。
+- 高于接收端已知值的 `recipe_version` 在协议主版本相同时按兼容处理，避免软件降级产生误报。
+- 新清单可记录 `source_mod_name` 作为下次生成的选择提示；它不是可信路径，接收端使用前必须重新验证对应 Mod。
 - 两份目录文件都必须含 `protocol_version: 7`。
 - Area 条目必须含 `area_id`、`scene_key`、中英文名称和 `kind`；`kind` 为 `town`、`wilderness` 或 `frontend`。
 - Item 条目必须含 `item_id`、D2R 基础代码 `code`、`category`、中英文名称和资源路径 `asset`。

@@ -33,7 +33,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 };
 
 const WINDOW_CLASS: &str = "D2RAudioModGeneratorWindow";
-const WINDOW_TITLE: &str = "D2R 声纹 MOD 生成器";
+const WINDOW_TITLE: &str = concat!("D2R 声纹 MOD 生成器 v", env!("CARGO_PKG_VERSION"));
 const DEFAULT_MOD_NAME: &str = "D2RAudioTelemetry";
 
 const ID_SOURCE_EDIT: usize = 101;

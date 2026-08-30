@@ -285,7 +285,9 @@ struct ResolvedItemEntityAsset {
 
 #[derive(Debug)]
 struct ResolvedAudioSource {
-    path: PathBuf,
+    // Some Mods intentionally override a game sound with an empty FLAC file.
+    // Keep that as silence instead of falling back to the game's original audio.
+    path: Option<PathBuf>,
     label: String,
 }
 
@@ -1975,9 +1977,12 @@ fn load_area_localization(
     } else {
         return Ok(HashMap::new());
     };
-    let normalized = text.strip_prefix('\u{feff}').unwrap_or(&text);
-    let rows = serde_json::from_str::<Vec<serde_json::Value>>(normalized)
+    let document = parse_json_value(&text)
         .map_err(|error| format!("解析地图本地化 levels.json 失败: {error}"))?;
+    let rows = match document {
+        serde_json::Value::Array(rows) => rows,
+        _ => return Err("解析地图本地化 levels.json 失败: 顶层必须是数组".to_string()),
+    };
     Ok(rows
         .into_iter()
         .filter_map(|row| {
@@ -2223,9 +2228,18 @@ fn resolve_audio_source(
         for candidate in &candidates {
             let local = mpq_directory.join(root).join(candidate);
             if local.is_file() {
+                let is_empty = local
+                    .metadata()
+                    .map_err(|error| format!("读取声音资源信息失败 {}: {error}", local.display()))?
+                    .len()
+                    == 0;
                 return Ok(ResolvedAudioSource {
-                    path: local,
-                    label: format!("Mod:{root}/{candidate}"),
+                    path: (!is_empty).then_some(local),
+                    label: if is_empty {
+                        format!("Mod:{root}/{candidate}（空文件静音占位）")
+                    } else {
+                        format!("Mod:{root}/{candidate}")
+                    },
                 });
             }
         }
@@ -2241,6 +2255,12 @@ fn resolve_audio_source(
         for candidate in &candidates {
             let internal = format!("{root}\\{}", candidate.replace('/', "\\"));
             if let Ok(bytes) = storage.read(&internal) {
+                if bytes.is_empty() {
+                    return Ok(ResolvedAudioSource {
+                        path: None,
+                        label: format!("CASC:{root}\\{candidate}（空文件静音占位）"),
+                    });
+                }
                 let safe_key = cache_key
                     .chars()
                     .map(|character| {
@@ -2254,7 +2274,7 @@ fn resolve_audio_source(
                 let path = cache_directory.join(format!("{safe_key}.flac"));
                 write_file(&path, bytes)?;
                 return Ok(ResolvedAudioSource {
-                    path,
+                    path: Some(path),
                     label: format!("CASC:{root}\\{candidate}"),
                 });
             }
@@ -2273,7 +2293,15 @@ fn write_marker_flac(
         if let Some(source) = source_audio {
             decode_flac(source)?
         } else {
-            (vec![0i32; 48_000 / 3 * 2], 48_000, 2, 16)
+            let frames = if matches!(
+                marker,
+                TelemetryMarker::Area { .. } | TelemetryMarker::Frontend
+            ) {
+                48_000 * 5
+            } else {
+                48_000 / 3
+            };
+            (vec![0i32; frames * 2], 48_000, 2, 16)
         };
     if sample_rate < MIN_SAMPLE_RATE {
         samples = resample_interleaved_i32(&samples, channels as usize, sample_rate, 48_000);
@@ -2768,7 +2796,9 @@ where
                 )
             })
             .transpose()?;
-        let source_audio = resolved_source.as_ref().map(|source| source.path.as_path());
+        let source_audio = resolved_source
+            .as_ref()
+            .and_then(|source| source.path.as_deref());
         let output_path = mpq_directory
             .join(definition.output_root)
             .join(definition.relative_path.replace('\\', "/"));
@@ -2842,7 +2872,7 @@ where
 
     let modinfo_path = mpq_directory.join("modinfo.json");
     let mut modinfo = if modinfo_path.is_file() {
-        serde_json::from_str::<serde_json::Value>(&read_utf8(&modinfo_path)?)
+        parse_json_value(&read_utf8(&modinfo_path)?)
             .map_err(|error| format!("解析源 Mod modinfo.json 失败: {error}"))?
     } else {
         serde_json::json!({})
@@ -3024,6 +3054,60 @@ mod tests {
                 "unexpectedly accepted {invalid:?}"
             );
         }
+    }
+
+    #[test]
+    fn accepts_commented_json5_area_localization() {
+        let root = std::env::temp_dir().join(format!(
+            "d2rhub-audio-level-localization-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let path = root.join("data/local/lng/strings/levels.json");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            "\u{feff}// levels with map level\n[{ Key: 'Black Marsh', enUS: 'Black Marsh', zhCN: '黑色荒地', },]",
+        )
+        .unwrap();
+
+        let localization = load_area_localization(&root, None).unwrap();
+        assert_eq!(
+            localization.get("black marsh"),
+            Some(&("黑色荒地".to_string(), "Black Marsh".to_string()))
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn treats_an_empty_mod_flac_as_silence_without_restoring_game_audio() {
+        let root =
+            std::env::temp_dir().join(format!("d2rhub-audio-empty-flac-{}", uuid::Uuid::new_v4()));
+        let source = root.join("data/hd/global/sfx/ambient/scene.flac");
+        std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+        std::fs::write(&source, []).unwrap();
+
+        let resolved = resolve_audio_source(
+            &root,
+            None,
+            "ambient\\scene.flac",
+            &root.join("cache"),
+            "area-6",
+        )
+        .unwrap();
+        assert!(resolved.path.is_none());
+        assert!(resolved.label.contains("空文件静音占位"));
+
+        let tagged = root.join("tagged.flac");
+        write_marker_flac(
+            &tagged,
+            TelemetryMarker::Area { area_id: 6 },
+            resolved.path.as_deref(),
+            MarkerConfig::default(),
+        )
+        .unwrap();
+        let (samples, sample_rate, channels, _) = decode_flac(&tagged).unwrap();
+        assert_eq!(samples.len(), sample_rate as usize * channels as usize * 5);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -3578,6 +3662,11 @@ mod tests {
             std::fs::create_dir_all(source_audio.parent().unwrap()).unwrap();
             encode_flac(&source_audio, &samples, 48_000, 1, 16).unwrap();
         }
+        std::fs::write(
+            source.join("modinfo.json"),
+            "{ name: 'Original Mod', author: 'Preserved Author', savepath: '../', }",
+        )
+        .unwrap();
 
         let report = build(BuildAudioModRequest {
             build_mode: AudioModBuildMode::Augment,
@@ -3610,6 +3699,13 @@ mod tests {
         assert_eq!(report.mod_name, "Countess-Audio-Test");
         assert_eq!(report.launch_arguments, "-mod Countess-Audio-Test -txt");
         assert_eq!(report.recipe_version, AUDIO_MOD_RECIPE_VERSION);
+        let output_modinfo = serde_json::from_str::<serde_json::Value>(
+            &read_utf8(&output.join("Countess-Audio-Test/Countess-Audio-Test.mpq/modinfo.json"))
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(output_modinfo["author"], "Preserved Author");
+        assert_eq!(output_modinfo["name"], "Countess-Audio-Test");
         assert!(report
             .capabilities
             .iter()

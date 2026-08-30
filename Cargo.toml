@@ -1,6 +1,6 @@
 [package]
 name = "d2r-audio-mod"
-version = "0.1.4"
+version = "0.1.5"
 edition = "2021"
 license = "MIT"
 description = "Lightweight D2R audio telemetry Mod generator and processor"

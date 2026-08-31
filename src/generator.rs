@@ -27,9 +27,9 @@ const TERROR_PROBE_SD_SOUND: &str = "audio_telemetry_tz_probe_sd";
 const TERROR_PROBE_HD_SOUND: &str = "audio_telemetry_tz_probe_hd";
 const TERROR_PROBE_RELATIVE_PATH: &str = "audio_telemetry\\terror\\tz_probe.flac";
 const TERROR_MARKER_GAIN_DB: f32 = -18.0;
-pub const AUDIO_MOD_RECIPE_VERSION: u32 = 5;
+pub const AUDIO_MOD_RECIPE_VERSION: u32 = 6;
 const TERROR_IMMEDIATE_ENTRY_CAPABILITY: &str = "terror_zone_immediate_entry_marker_v1";
-const IN_GAME_ROOM_TOOLS_CAPABILITY: &str = "in_game_room_tools_v3";
+const IN_GAME_ROOM_TOOLS_CAPABILITY: &str = "in_game_room_tools_v4";
 const UI_LAYOUTS_DIRECTORY: &str = "data/global/ui/layouts";
 const HUD_WARNINGS_LAYOUT: &str = "data/global/ui/layouts/HudWarningshd.json";
 const ROOM_TOOLBAR_PANEL: &str = "D2RHubRoomToolbar";
@@ -952,29 +952,28 @@ fn room_panel_opener_layout(create: bool) -> serde_json::Value {
     serde_json::json!({
         "type": "Panel",
         "name": name,
-        "fields": { "rect": { "x": -9999, "y": -9999, "scale": 0.01 } },
         "children": [
-            {
-                "type": "TimerWidget",
-                "name": "D2RHubCloseOppositeRoomPanel",
-                "fields": {
-                    "time": 0.01,
-                    "message": format!("PanelManager:ClosePanel:{opposite_panel}")
-                }
-            },
             {
                 "type": "TimerWidget",
                 "name": "D2RHubOpenRoomPanel",
                 "fields": {
-                    "time": 0.02,
+                    "time": 0.1,
                     "message": format!("PanelManager:TogglePanel:{target_panel}")
+                }
+            },
+            {
+                "type": "TimerWidget",
+                "name": "D2RHubCloseOppositeRoomPanel",
+                "fields": {
+                    "time": 0.1,
+                    "message": format!("PanelManager:ClosePanel:{opposite_panel}")
                 }
             },
             {
                 "type": "TimerWidget",
                 "name": "D2RHubCloseRoomPanelOpener",
                 "fields": {
-                    "time": 0.03,
+                    "time": 0.1,
                     "message": format!("PanelManager:ClosePanel:{name}")
                 }
             }
@@ -1044,7 +1043,7 @@ fn patch_room_form_layout(
     mpq_directory: &Path,
     storage: Option<&casc_core::Storage>,
     relative_path: &str,
-    default_widget: &str,
+    primary_input_name: &str,
 ) -> Result<(), String> {
     let mut document = read_local_or_casc_json(mpq_directory, storage, relative_path)?;
     let fields = document
@@ -1055,33 +1054,33 @@ fn patch_room_form_layout(
         .as_object_mut()
         .ok_or_else(|| format!("{relative_path}.fields 必须是 JSON 对象"))?;
     fields.insert("priority".to_string(), serde_json::json!(2));
-    fields.insert(
-        "defaultWidget".to_string(),
-        serde_json::Value::String(default_widget.to_string()),
-    );
+    fields.remove("defaultWidget");
     fields.insert("isDismissable".to_string(), serde_json::json!(true));
     fields.insert(
         "acceptsEscKeyEverywhere".to_string(),
         serde_json::json!(true),
     );
 
-    let (panel_name, input_names) = if default_widget == "NameInput" {
-        ("JoinGamePanel", ["NameInput", "PasswordInput"])
+    let (panel_name, input_names): (&str, &[&str]) = if primary_input_name == "NameInput" {
+        ("JoinGamePanel", &["NameInput", "PasswordInput"])
     } else {
-        ("CreateGamePanel", ["GameNameInput", "PasswordInput"])
+        (
+            "CreateGamePanel",
+            &["GameNameInput", "PasswordInput", "DescriptionInput"],
+        )
     };
-    for input_name in input_names {
+    for &input_name in input_names {
         let input_fields = find_layout_node_mut(&mut document, input_name)
             .and_then(|node| node.get_mut("fields"))
             .and_then(serde_json::Value::as_object_mut)
             .ok_or_else(|| format!("{relative_path} 缺少输入框 {input_name}"))?;
-        // D2R's active-game shortcut layer continues receiving letter keys
-        // unless the native input widget keeps its full IME/input context.
-        // MDK and the stock lobby use imeEnabled=true for these fields; the
-        // flag is therefore required even when room credentials are ASCII.
+        // D2R's in-game chat input uses alwaysAcceptsKeyInput so a focused
+        // text box receives letters and digits before the skill-hotkey layer.
+        // Keep IME enabled as the native lobby and MDK forms do.
         input_fields.insert("imeEnabled".to_string(), serde_json::json!(true));
+        input_fields.insert("alwaysAcceptsKeyInput".to_string(), serde_json::json!(true));
     }
-    if default_widget == "NameInput" {
+    if primary_input_name == "NameInput" {
         if let Some(join_button_fields) = document
             .get_mut("children")
             .and_then(serde_json::Value::as_array_mut)
@@ -1250,7 +1249,7 @@ fn install_in_game_room_tools(
     compatibility.push(AudioModCompatibility {
         target: "局内房间工具".to_string(),
         action: "add_in_game_create_join_and_recreate".to_string(),
-        detail: "保留源 HUD 与原生建房/加入逻辑，仅追加常驻的“下一局 / 创建房间 / 加入房间”工具栏；下一局需要二次确认，房名/密码输入框使用原生完整键盘上下文以阻止局内快捷键抢键，表单支持 Esc、关闭按钮和再次点击工具栏关闭。".to_string(),
+        detail: "保留源 HUD 与原生建房/加入逻辑，仅追加常驻的“下一局 / 创建房间 / 加入房间”工具栏；下一局需要二次确认；打开表单的辅助面板沿用 MDK 的原生尺寸上下文，输入框沿用局内聊天框的键盘独占规则，阻止技能快捷键抢走房名、密码和描述按键；表单支持 Esc、关闭按钮和再次点击工具栏关闭。".to_string(),
     });
     Ok(true)
 }
@@ -3487,7 +3486,7 @@ where
             "v7 使用独立地点/掉落同步码与 127 路 Gold 掉落签名；主界面标记会立即结束未完成的刷图计时。"
                 .to_string(),
             if room_tools_installed {
-                "局内顶部工具栏可在确认后开始下一局，或打开原生创建/加入房间面板；房名/密码输入框会完整捕获键盘输入，不再触发局内技能快捷键，表单支持同键、Esc 与关闭按钮退出，并继续使用 D2R 自带的缓存与回车提交。".to_string()
+                "局内顶部工具栏可在确认后开始下一局，或打开原生创建/加入房间面板；房名、密码与描述输入框沿用局内聊天框的键盘独占规则，不再触发技能快捷键，表单支持同键、Esc 与关闭按钮退出，并继续使用 D2R 自带的缓存与回车提交。".to_string()
             } else {
                 "本次没有可安全复用的完整游戏 UI 布局，未追加局内房间工具。".to_string()
             },
@@ -3507,7 +3506,7 @@ where
             report.rune_assets.len(),
             report.item_assets.len(),
             if room_tools_installed {
-                "进入在线游戏后，顶部工具栏可在二次确认后开始下一局；创建/加入面板会完整捕获房名与密码的键盘输入，并可用同一按钮、Esc 或面板关闭按钮退出。"
+                "进入在线游戏后，顶部工具栏可在二次确认后开始下一局；创建/加入面板会像聊天框一样优先接收房名、密码与描述的键盘输入，并可用同一按钮、Esc 或面板关闭按钮退出。"
             } else {
                 "本次未追加局内房间工具；加工现有 Mod 时请同时提供有效的 D2R 游戏目录。"
             }
@@ -3545,7 +3544,7 @@ mod tests {
             br#"{
                 type: 'CreateGamePanel',
                 name: 'CreateGamePanel',
-                fields: { anchor: '$LobbyAnchor' },
+                fields: { anchor: '$LobbyAnchor', defaultWidget: 'GameNameInput' },
                 children: [
                     {
                         type: 'TextBoxWidget',
@@ -3553,6 +3552,7 @@ mod tests {
                         children: [
                             { type: 'TextBoxWidget', name: 'GameNameInput', fields: { imeEnabled: true } },
                             { type: 'TextBoxWidget', name: 'PasswordInput', fields: { imeEnabled: true } },
+                            { type: 'TextBoxWidget', name: 'DescriptionInput', fields: { imeEnabled: true } },
                         ],
                     },
                 ],
@@ -3564,7 +3564,7 @@ mod tests {
             br#"{
                 type: 'JoinGamePanel',
                 name: 'JoinGamePanel',
-                fields: { anchor: '$LobbyAnchor' },
+                fields: { anchor: '$LobbyAnchor', defaultWidget: 'NameInput' },
                 children: [
                     { type: 'TextBoxWidget', name: 'NameInput', fields: { imeEnabled: true } },
                     { type: 'TextBoxWidget', name: 'PasswordInput', fields: { imeEnabled: true } },
@@ -3642,26 +3642,27 @@ mod tests {
             ("D2RHubOpenJoinGamehd.json", "JoinGamePanel"),
         ] {
             let helper = parse_json_value(&read_utf8(&layouts.join(helper_name)).unwrap()).unwrap();
+            assert!(helper.get("fields").is_none());
             assert_eq!(
                 find_layout_node(&helper, "D2RHubOpenRoomPanel").unwrap()["fields"]["message"],
                 format!("PanelManager:TogglePanel:{target}")
             );
+            for child in helper["children"].as_array().unwrap() {
+                assert_eq!(child["fields"]["time"], 0.1);
+            }
         }
 
         let create =
             parse_json_value(&read_utf8(&layouts.join("creategamepanelhd.json")).unwrap()).unwrap();
         assert_eq!(create["fields"]["priority"], 2);
-        assert_eq!(create["fields"]["defaultWidget"], "GameNameInput");
+        assert!(create["fields"].get("defaultWidget").is_none());
         assert_eq!(create["fields"]["isDismissable"], true);
         assert_eq!(create["fields"]["acceptsEscKeyEverywhere"], true);
-        assert_eq!(
-            find_layout_node(&create, "GameNameInput").unwrap()["fields"]["imeEnabled"],
-            true
-        );
-        assert_eq!(
-            find_layout_node(&create, "PasswordInput").unwrap()["fields"]["imeEnabled"],
-            true
-        );
+        for input_name in ["GameNameInput", "PasswordInput", "DescriptionInput"] {
+            let input = find_layout_node(&create, input_name).unwrap();
+            assert_eq!(input["fields"]["imeEnabled"], true);
+            assert_eq!(input["fields"]["alwaysAcceptsKeyInput"], true);
+        }
         assert_eq!(
             find_layout_node(&create, "D2RHubCloseRoomForm").unwrap()["fields"]["onClickMessage"],
             "PanelManager:ClosePanel:CreateGamePanel"
@@ -3669,17 +3670,14 @@ mod tests {
         let join =
             parse_json_value(&read_utf8(&layouts.join("joingamepanelhd.json")).unwrap()).unwrap();
         assert_eq!(join["fields"]["priority"], 2);
-        assert_eq!(join["fields"]["defaultWidget"], "NameInput");
+        assert!(join["fields"].get("defaultWidget").is_none());
         assert_eq!(join["fields"]["isDismissable"], true);
         assert_eq!(join["fields"]["acceptsEscKeyEverywhere"], true);
-        assert_eq!(
-            find_layout_node(&join, "NameInput").unwrap()["fields"]["imeEnabled"],
-            true
-        );
-        assert_eq!(
-            find_layout_node(&join, "PasswordInput").unwrap()["fields"]["imeEnabled"],
-            true
-        );
+        for input_name in ["NameInput", "PasswordInput"] {
+            let input = find_layout_node(&join, input_name).unwrap();
+            assert_eq!(input["fields"]["imeEnabled"], true);
+            assert_eq!(input["fields"]["alwaysAcceptsKeyInput"], true);
+        }
         assert_eq!(
             find_layout_node(&join, "JoinButton").unwrap()["fields"]["rect"]["x"],
             330

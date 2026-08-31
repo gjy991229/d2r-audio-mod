@@ -27,9 +27,9 @@ const TERROR_PROBE_SD_SOUND: &str = "audio_telemetry_tz_probe_sd";
 const TERROR_PROBE_HD_SOUND: &str = "audio_telemetry_tz_probe_hd";
 const TERROR_PROBE_RELATIVE_PATH: &str = "audio_telemetry\\terror\\tz_probe.flac";
 const TERROR_MARKER_GAIN_DB: f32 = -18.0;
-pub const AUDIO_MOD_RECIPE_VERSION: u32 = 4;
+pub const AUDIO_MOD_RECIPE_VERSION: u32 = 5;
 const TERROR_IMMEDIATE_ENTRY_CAPABILITY: &str = "terror_zone_immediate_entry_marker_v1";
-const IN_GAME_ROOM_TOOLS_CAPABILITY: &str = "in_game_room_tools_v2";
+const IN_GAME_ROOM_TOOLS_CAPABILITY: &str = "in_game_room_tools_v3";
 const UI_LAYOUTS_DIRECTORY: &str = "data/global/ui/layouts";
 const HUD_WARNINGS_LAYOUT: &str = "data/global/ui/layouts/HudWarningshd.json";
 const ROOM_TOOLBAR_PANEL: &str = "D2RHubRoomToolbar";
@@ -802,8 +802,7 @@ fn room_toolbar_layout() -> serde_json::Value {
                     "rect": { "x": -1510, "y": 12, "scale": 0.36 },
                     "filename": "FrontEnd\\HD\\Final\\FrontEnd_ButtonLarge",
                     "textString": "下一局",
-                    "tooltipString": "@cyc1下一局\n@cyc9首次点击只打开确认条；确认后才会离开当前房间。",
-                    "tooltipOffset": { "y": 90 },
+                    "tooltipString": "首次点击只打开确认条；再次确认才会离开当前房间，4 秒后自动取消。",
                     "onClickMessage": "PanelManager:TogglePanel:D2RHubQuickRecreateConfirm",
                     "text/style": "$StyleFEButtonText",
                     "pointSize": 53,
@@ -1076,10 +1075,11 @@ fn patch_room_form_layout(
             .and_then(|node| node.get_mut("fields"))
             .and_then(serde_json::Value::as_object_mut)
             .ok_or_else(|| format!("{relative_path} 缺少输入框 {input_name}"))?;
-        // Game names and passwords are ASCII-only. When these lobby forms are
-        // opened directly from an active game, the normal lobby IME setup is
-        // skipped and imeEnabled=true inherits the user's current IME.
-        input_fields.insert("imeEnabled".to_string(), serde_json::json!(false));
+        // D2R's active-game shortcut layer continues receiving letter keys
+        // unless the native input widget keeps its full IME/input context.
+        // MDK and the stock lobby use imeEnabled=true for these fields; the
+        // flag is therefore required even when room credentials are ASCII.
+        input_fields.insert("imeEnabled".to_string(), serde_json::json!(true));
     }
     if default_widget == "NameInput" {
         if let Some(join_button_fields) = document
@@ -1250,7 +1250,7 @@ fn install_in_game_room_tools(
     compatibility.push(AudioModCompatibility {
         target: "局内房间工具".to_string(),
         action: "add_in_game_create_join_and_recreate".to_string(),
-        detail: "保留源 HUD 与原生建房/加入逻辑，仅追加常驻的“下一局 / 创建房间 / 加入房间”工具栏；下一局需要二次确认，房名/密码固定为 ASCII 输入，表单支持 Esc、关闭按钮和再次点击工具栏关闭。".to_string(),
+        detail: "保留源 HUD 与原生建房/加入逻辑，仅追加常驻的“下一局 / 创建房间 / 加入房间”工具栏；下一局需要二次确认，房名/密码输入框使用原生完整键盘上下文以阻止局内快捷键抢键，表单支持 Esc、关闭按钮和再次点击工具栏关闭。".to_string(),
     });
     Ok(true)
 }
@@ -3487,7 +3487,7 @@ where
             "v7 使用独立地点/掉落同步码与 127 路 Gold 掉落签名；主界面标记会立即结束未完成的刷图计时。"
                 .to_string(),
             if room_tools_installed {
-                "局内顶部工具栏可在确认后开始下一局，或打开原生创建/加入房间面板；房名/密码固定为英文数字输入，表单支持同键、Esc 与关闭按钮退出，并继续使用 D2R 自带的缓存与回车提交。".to_string()
+                "局内顶部工具栏可在确认后开始下一局，或打开原生创建/加入房间面板；房名/密码输入框会完整捕获键盘输入，不再触发局内技能快捷键，表单支持同键、Esc 与关闭按钮退出，并继续使用 D2R 自带的缓存与回车提交。".to_string()
             } else {
                 "本次没有可安全复用的完整游戏 UI 布局，未追加局内房间工具。".to_string()
             },
@@ -3507,7 +3507,7 @@ where
             report.rune_assets.len(),
             report.item_assets.len(),
             if room_tools_installed {
-                "进入在线游戏后，顶部工具栏可在二次确认后开始下一局；创建/加入面板使用英文数字输入，并可用同一按钮、Esc 或面板关闭按钮退出。"
+                "进入在线游戏后，顶部工具栏可在二次确认后开始下一局；创建/加入面板会完整捕获房名与密码的键盘输入，并可用同一按钮、Esc 或面板关闭按钮退出。"
             } else {
                 "本次未追加局内房间工具；加工现有 Mod 时请同时提供有效的 D2R 游戏目录。"
             }
@@ -3620,6 +3620,12 @@ mod tests {
             find_layout_node(&toolbar, "D2RHubNextGame").unwrap()["fields"]["onClickMessage"],
             "PanelManager:TogglePanel:D2RHubQuickRecreateConfirm"
         );
+        let next_game = find_layout_node(&toolbar, "D2RHubNextGame").unwrap();
+        assert!(next_game["fields"]["tooltipOffset"].is_null());
+        assert!(!next_game["fields"]["tooltipString"]
+            .as_str()
+            .unwrap()
+            .starts_with('@'));
         let confirmation = parse_json_value(
             &read_utf8(&layouts.join("D2RHubQuickRecreateConfirmhd.json")).unwrap(),
         )
@@ -3650,11 +3656,11 @@ mod tests {
         assert_eq!(create["fields"]["acceptsEscKeyEverywhere"], true);
         assert_eq!(
             find_layout_node(&create, "GameNameInput").unwrap()["fields"]["imeEnabled"],
-            false
+            true
         );
         assert_eq!(
             find_layout_node(&create, "PasswordInput").unwrap()["fields"]["imeEnabled"],
-            false
+            true
         );
         assert_eq!(
             find_layout_node(&create, "D2RHubCloseRoomForm").unwrap()["fields"]["onClickMessage"],
@@ -3668,11 +3674,11 @@ mod tests {
         assert_eq!(join["fields"]["acceptsEscKeyEverywhere"], true);
         assert_eq!(
             find_layout_node(&join, "NameInput").unwrap()["fields"]["imeEnabled"],
-            false
+            true
         );
         assert_eq!(
             find_layout_node(&join, "PasswordInput").unwrap()["fields"]["imeEnabled"],
-            false
+            true
         );
         assert_eq!(
             find_layout_node(&join, "JoinButton").unwrap()["fields"]["rect"]["x"],

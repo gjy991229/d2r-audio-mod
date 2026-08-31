@@ -27,12 +27,13 @@ const TERROR_PROBE_SD_SOUND: &str = "audio_telemetry_tz_probe_sd";
 const TERROR_PROBE_HD_SOUND: &str = "audio_telemetry_tz_probe_hd";
 const TERROR_PROBE_RELATIVE_PATH: &str = "audio_telemetry\\terror\\tz_probe.flac";
 const TERROR_MARKER_GAIN_DB: f32 = -18.0;
-pub const AUDIO_MOD_RECIPE_VERSION: u32 = 6;
+pub const AUDIO_MOD_RECIPE_VERSION: u32 = 7;
 const TERROR_IMMEDIATE_ENTRY_CAPABILITY: &str = "terror_zone_immediate_entry_marker_v1";
-const IN_GAME_ROOM_TOOLS_CAPABILITY: &str = "in_game_room_tools_v4";
+const IN_GAME_ROOM_TOOLS_CAPABILITY: &str = "in_game_room_tools_v5";
 const UI_LAYOUTS_DIRECTORY: &str = "data/global/ui/layouts";
 const HUD_WARNINGS_LAYOUT: &str = "data/global/ui/layouts/HudWarningshd.json";
 const ROOM_TOOLBAR_PANEL: &str = "D2RHubRoomToolbar";
+const ROOM_FORM_INPUT_PRIORITY: i64 = 1_999_999_999;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -803,6 +804,7 @@ fn room_toolbar_layout() -> serde_json::Value {
                     "filename": "FrontEnd\\HD\\Final\\FrontEnd_ButtonLarge",
                     "textString": "下一局",
                     "tooltipString": "首次点击只打开确认条；再次确认才会离开当前房间，4 秒后自动取消。",
+                    "tooltipOffset": { "y": 93 },
                     "onClickMessage": "PanelManager:TogglePanel:D2RHubQuickRecreateConfirm",
                     "text/style": "$StyleFEButtonText",
                     "pointSize": 53,
@@ -1053,7 +1055,14 @@ fn patch_room_form_layout(
         .or_insert_with(|| serde_json::json!({}))
         .as_object_mut()
         .ok_or_else(|| format!("{relative_path}.fields 必须是 JSON 对象"))?;
-    fields.insert("priority".to_string(), serde_json::json!(2));
+    // The native lobby panels use priority 2 because the lobby has no gameplay
+    // hotkey layer beneath them. In game, that lets bound skill keys win before
+    // the focused text box sees them. Match ChatPanel's priority while the form
+    // is open so the focused widget handles the key first.
+    fields.insert(
+        "priority".to_string(),
+        serde_json::json!(ROOM_FORM_INPUT_PRIORITY),
+    );
     fields.remove("defaultWidget");
     fields.insert("isDismissable".to_string(), serde_json::json!(true));
     fields.insert(
@@ -1074,11 +1083,38 @@ fn patch_room_form_layout(
             .and_then(|node| node.get_mut("fields"))
             .and_then(serde_json::Value::as_object_mut)
             .ok_or_else(|| format!("{relative_path} 缺少输入框 {input_name}"))?;
-        // D2R's in-game chat input uses alwaysAcceptsKeyInput so a focused
-        // text box receives letters and digits before the skill-hotkey layer.
-        // Keep IME enabled as the native lobby and MDK forms do.
+        // alwaysAcceptsKeyInput means every such widget receives every key even
+        // without focus. Applying it to a multi-field form therefore mirrors
+        // typing and deletion into all fields. Normal focus plus the panel's
+        // chat-level priority provides exclusive input without that side effect.
         input_fields.insert("imeEnabled".to_string(), serde_json::json!(true));
-        input_fields.insert("alwaysAcceptsKeyInput".to_string(), serde_json::json!(true));
+        input_fields.remove("alwaysAcceptsKeyInput");
+    }
+
+    // Blizzard's source layout intentionally declares fontStyle twice: first
+    // $StyleSettingsNumeric, then an object that overrides only fontFace. D2R's
+    // layout reader merges those declarations, while a standard JSON round trip
+    // keeps only the latter. Recreate the merged style explicitly so digits and
+    // letters retain their size and vertical alignment instead of being clipped.
+    let single_line_input_names: &[&str] = if primary_input_name == "NameInput" {
+        &["NameInput", "PasswordInput", "SearchInput"]
+    } else {
+        &["GameNameInput", "PasswordInput"]
+    };
+    for &input_name in single_line_input_names {
+        let input_fields = find_layout_node_mut(&mut document, input_name)
+            .and_then(|node| node.get_mut("fields"))
+            .and_then(serde_json::Value::as_object_mut)
+            .ok_or_else(|| format!("{relative_path} 缺少单行输入框 {input_name}"))?;
+        input_fields.insert(
+            "fontStyle".to_string(),
+            serde_json::json!({
+                "fontFace": "BlizzardGlobal",
+                "pointSize": "$MediumFontSize",
+                "fontColor": "$FontColorWhite",
+                "alignment": { "h": "center", "v": "center" }
+            }),
+        );
     }
     if primary_input_name == "NameInput" {
         if let Some(join_button_fields) = document
@@ -1249,7 +1285,7 @@ fn install_in_game_room_tools(
     compatibility.push(AudioModCompatibility {
         target: "局内房间工具".to_string(),
         action: "add_in_game_create_join_and_recreate".to_string(),
-        detail: "保留源 HUD 与原生建房/加入逻辑，仅追加常驻的“下一局 / 创建房间 / 加入房间”工具栏；下一局需要二次确认；打开表单的辅助面板沿用 MDK 的原生尺寸上下文，输入框沿用局内聊天框的键盘独占规则，阻止技能快捷键抢走房名、密码和描述按键；表单支持 Esc、关闭按钮和再次点击工具栏关闭。".to_string(),
+        detail: "保留源 HUD 与原生建房/加入逻辑，仅追加常驻的“下一局 / 创建房间 / 加入房间”工具栏；下一局需要二次确认；房间表单在打开期间使用局内聊天层级的输入优先级，仅由当前焦点框接收房名、密码和描述按键；同时显式还原原生单行输入样式，避免 JSON 重名字段解析后文字裁切；表单支持 Esc、关闭按钮和再次点击工具栏关闭。".to_string(),
     });
     Ok(true)
 }
@@ -3486,7 +3522,7 @@ where
             "v7 使用独立地点/掉落同步码与 127 路 Gold 掉落签名；主界面标记会立即结束未完成的刷图计时。"
                 .to_string(),
             if room_tools_installed {
-                "局内顶部工具栏可在确认后开始下一局，或打开原生创建/加入房间面板；房名、密码与描述输入框沿用局内聊天框的键盘独占规则，不再触发技能快捷键，表单支持同键、Esc 与关闭按钮退出，并继续使用 D2R 自带的缓存与回车提交。".to_string()
+                "局内顶部工具栏可在确认后开始下一局，或打开原生创建/加入房间面板；表单打开时提升到局内聊天框同级的输入优先级，只让当前焦点框接收房名、密码与描述按键，并继续使用 D2R 自带的缓存与回车提交。".to_string()
             } else {
                 "本次没有可安全复用的完整游戏 UI 布局，未追加局内房间工具。".to_string()
             },
@@ -3506,7 +3542,7 @@ where
             report.rune_assets.len(),
             report.item_assets.len(),
             if room_tools_installed {
-                "进入在线游戏后，顶部工具栏可在二次确认后开始下一局；创建/加入面板会像聊天框一样优先接收房名、密码与描述的键盘输入，并可用同一按钮、Esc 或面板关闭按钮退出。"
+                "进入在线游戏后，顶部工具栏可在二次确认后开始下一局；创建/加入面板打开时使用聊天层级的输入优先级，仅当前焦点框接收房名、密码与描述按键，并可用同一按钮、Esc 或面板关闭按钮退出。"
             } else {
                 "本次未追加局内房间工具；加工现有 Mod 时请同时提供有效的 D2R 游戏目录。"
             }
@@ -3568,6 +3604,7 @@ mod tests {
                 children: [
                     { type: 'TextBoxWidget', name: 'NameInput', fields: { imeEnabled: true } },
                     { type: 'TextBoxWidget', name: 'PasswordInput', fields: { imeEnabled: true } },
+                    { type: 'TextBoxWidget', name: 'SearchInput', fields: { imeEnabled: true } },
                     {
                         type: 'ButtonWidget',
                         name: 'JoinButton',
@@ -3621,7 +3658,19 @@ mod tests {
             "PanelManager:TogglePanel:D2RHubQuickRecreateConfirm"
         );
         let next_game = find_layout_node(&toolbar, "D2RHubNextGame").unwrap();
-        assert!(next_game["fields"]["tooltipOffset"].is_null());
+        assert_eq!(next_game["fields"]["tooltipOffset"]["y"], 93);
+        let next_button_y = next_game["fields"]["rect"]["y"].as_i64().unwrap();
+        let confirm_button_y = find_layout_node(
+            &quick_recreate_confirmation_layout(),
+            "D2RHubConfirmNextGame",
+        )
+        .unwrap()["fields"]["rect"]["y"]
+            .as_i64()
+            .unwrap();
+        assert_eq!(
+            next_game["fields"]["tooltipOffset"]["y"],
+            confirm_button_y - next_button_y
+        );
         assert!(!next_game["fields"]["tooltipString"]
             .as_str()
             .unwrap()
@@ -3654,14 +3703,22 @@ mod tests {
 
         let create =
             parse_json_value(&read_utf8(&layouts.join("creategamepanelhd.json")).unwrap()).unwrap();
-        assert_eq!(create["fields"]["priority"], 2);
+        assert_eq!(create["fields"]["priority"], ROOM_FORM_INPUT_PRIORITY);
         assert!(create["fields"].get("defaultWidget").is_none());
         assert_eq!(create["fields"]["isDismissable"], true);
         assert_eq!(create["fields"]["acceptsEscKeyEverywhere"], true);
         for input_name in ["GameNameInput", "PasswordInput", "DescriptionInput"] {
             let input = find_layout_node(&create, input_name).unwrap();
             assert_eq!(input["fields"]["imeEnabled"], true);
-            assert_eq!(input["fields"]["alwaysAcceptsKeyInput"], true);
+            assert!(input["fields"].get("alwaysAcceptsKeyInput").is_none());
+        }
+        for input_name in ["GameNameInput", "PasswordInput"] {
+            let style = &find_layout_node(&create, input_name).unwrap()["fields"]["fontStyle"];
+            assert_eq!(style["fontFace"], "BlizzardGlobal");
+            assert_eq!(style["pointSize"], "$MediumFontSize");
+            assert_eq!(style["fontColor"], "$FontColorWhite");
+            assert_eq!(style["alignment"]["h"], "center");
+            assert_eq!(style["alignment"]["v"], "center");
         }
         assert_eq!(
             find_layout_node(&create, "D2RHubCloseRoomForm").unwrap()["fields"]["onClickMessage"],
@@ -3669,14 +3726,20 @@ mod tests {
         );
         let join =
             parse_json_value(&read_utf8(&layouts.join("joingamepanelhd.json")).unwrap()).unwrap();
-        assert_eq!(join["fields"]["priority"], 2);
+        assert_eq!(join["fields"]["priority"], ROOM_FORM_INPUT_PRIORITY);
         assert!(join["fields"].get("defaultWidget").is_none());
         assert_eq!(join["fields"]["isDismissable"], true);
         assert_eq!(join["fields"]["acceptsEscKeyEverywhere"], true);
         for input_name in ["NameInput", "PasswordInput"] {
             let input = find_layout_node(&join, input_name).unwrap();
             assert_eq!(input["fields"]["imeEnabled"], true);
-            assert_eq!(input["fields"]["alwaysAcceptsKeyInput"], true);
+            assert!(input["fields"].get("alwaysAcceptsKeyInput").is_none());
+        }
+        for input_name in ["NameInput", "PasswordInput", "SearchInput"] {
+            let style = &find_layout_node(&join, input_name).unwrap()["fields"]["fontStyle"];
+            assert_eq!(style["fontFace"], "BlizzardGlobal");
+            assert_eq!(style["pointSize"], "$MediumFontSize");
+            assert_eq!(style["alignment"]["v"], "center");
         }
         assert_eq!(
             find_layout_node(&join, "JoinButton").unwrap()["fields"]["rect"]["x"],

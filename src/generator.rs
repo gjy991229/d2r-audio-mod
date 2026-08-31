@@ -27,8 +27,12 @@ const TERROR_PROBE_SD_SOUND: &str = "audio_telemetry_tz_probe_sd";
 const TERROR_PROBE_HD_SOUND: &str = "audio_telemetry_tz_probe_hd";
 const TERROR_PROBE_RELATIVE_PATH: &str = "audio_telemetry\\terror\\tz_probe.flac";
 const TERROR_MARKER_GAIN_DB: f32 = -18.0;
-pub const AUDIO_MOD_RECIPE_VERSION: u32 = 2;
+pub const AUDIO_MOD_RECIPE_VERSION: u32 = 4;
 const TERROR_IMMEDIATE_ENTRY_CAPABILITY: &str = "terror_zone_immediate_entry_marker_v1";
+const IN_GAME_ROOM_TOOLS_CAPABILITY: &str = "in_game_room_tools_v2";
+const UI_LAYOUTS_DIRECTORY: &str = "data/global/ui/layouts";
+const HUD_WARNINGS_LAYOUT: &str = "data/global/ui/layouts/HudWarningshd.json";
+const ROOM_TOOLBAR_PANEL: &str = "D2RHubRoomToolbar";
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -778,6 +782,477 @@ fn write_file(path: &Path, content: impl AsRef<[u8]>) -> Result<(), String> {
             .map_err(|error| format!("创建目录失败 {}: {error}", parent.display()))?;
     }
     std::fs::write(path, content).map_err(|error| format!("写入失败 {}: {error}", path.display()))
+}
+
+fn room_toolbar_layout() -> serde_json::Value {
+    serde_json::json!({
+        "type": "TooltipsPanel",
+        "name": ROOM_TOOLBAR_PANEL,
+        "fields": {
+            "priority": 5,
+            "anchor": { "x": 1.0 },
+            "rect": { "scale": 1.0 }
+        },
+        "children": [
+            {
+                "type": "ButtonWidget",
+                "name": "D2RHubNextGame",
+                "fields": {
+                    "anchor": { "x": 1.0 },
+                    "rect": { "x": -1510, "y": 12, "scale": 0.36 },
+                    "filename": "FrontEnd\\HD\\Final\\FrontEnd_ButtonLarge",
+                    "textString": "下一局",
+                    "tooltipString": "@cyc1下一局\n@cyc9首次点击只打开确认条；确认后才会离开当前房间。",
+                    "tooltipOffset": { "y": 90 },
+                    "onClickMessage": "PanelManager:TogglePanel:D2RHubQuickRecreateConfirm",
+                    "text/style": "$StyleFEButtonText",
+                    "pointSize": 53,
+                    "textColor": "$FontColorOrange",
+                    "hoveredFrame": 3,
+                    "disabledFrame": 2,
+                    "disabledTint": { "a": 1.0 },
+                    "sound": "cursor_launch_game_hd"
+                }
+            },
+            {
+                "type": "ButtonWidget",
+                "name": "D2RHubCreateGame",
+                "fields": {
+                    "anchor": { "x": 1.0 },
+                    "rect": { "x": -1160, "y": 12, "scale": 0.36 },
+                    "filename": "FrontEnd\\HD\\Final\\FrontEnd_ButtonLarge",
+                    "textString": "创建房间",
+                    "tooltipString": "打开创建房间面板；再次点击或按 Esc 关闭",
+                    "onClickMessage": "PanelManager:OpenPanel:D2RHubOpenCreateGame",
+                    "text/style": "$StyleFEButtonText",
+                    "pointSize": 53,
+                    "textColor": "$FontColorLightYellow",
+                    "hoveredFrame": 3,
+                    "disabledFrame": 2,
+                    "disabledTint": { "a": 1.0 },
+                    "sound": "cursor_select"
+                }
+            },
+            {
+                "type": "ButtonWidget",
+                "name": "D2RHubJoinGame",
+                "fields": {
+                    "anchor": { "x": 1.0 },
+                    "rect": { "x": -810, "y": 12, "scale": 0.36 },
+                    "filename": "FrontEnd\\HD\\Final\\FrontEnd_ButtonLarge",
+                    "textString": "加入房间",
+                    "tooltipString": "打开加入房间面板；再次点击或按 Esc 关闭",
+                    "onClickMessage": "PanelManager:OpenPanel:D2RHubOpenJoinGame",
+                    "text/style": "$StyleFEButtonText",
+                    "pointSize": 53,
+                    "textColor": "$FontColorLightYellow",
+                    "hoveredFrame": 3,
+                    "disabledFrame": 2,
+                    "disabledTint": { "a": 1.0 },
+                    "sound": "cursor_select"
+                }
+            }
+        ]
+    })
+}
+
+fn quick_recreate_confirmation_layout() -> serde_json::Value {
+    serde_json::json!({
+        "type": "Panel",
+        "name": "D2RHubQuickRecreateConfirm",
+        "fields": {
+            "priority": 6,
+            "anchor": { "x": 1.0 },
+            "rect": { "scale": 1.0 },
+            "isDismissable": true,
+            "acceptsEscKeyEverywhere": true
+        },
+        "children": [
+            {
+                "type": "ButtonWidget",
+                "name": "D2RHubConfirmNextGame",
+                "fields": {
+                    "anchor": { "x": 1.0 },
+                    "rect": { "x": -1510, "y": 105, "scale": 0.36 },
+                    "filename": "FrontEnd\\HD\\Final\\FrontEnd_ButtonLarge",
+                    "textString": "确认换房",
+                    "tooltipString": "立即离开当前房间并用当前角色开始下一局",
+                    "onClickMessage": "PanelManager:OpenPanel:D2RHubQuickRecreate",
+                    "text/style": "$StyleFEButtonText",
+                    "pointSize": 53,
+                    "textColor": "$FontColorOrange",
+                    "hoveredFrame": 3,
+                    "disabledFrame": 2,
+                    "disabledTint": { "a": 1.0 },
+                    "sound": "cursor_launch_game_hd"
+                }
+            },
+            {
+                "type": "ButtonWidget",
+                "name": "D2RHubCancelNextGame",
+                "fields": {
+                    "anchor": { "x": 1.0 },
+                    "rect": { "x": -1160, "y": 105, "scale": 0.36 },
+                    "filename": "FrontEnd\\HD\\Final\\FrontEnd_ButtonLarge",
+                    "textString": "取消",
+                    "onClickMessage": "PanelManager:ClosePanel:D2RHubQuickRecreateConfirm",
+                    "text/style": "$StyleFEButtonText",
+                    "pointSize": 53,
+                    "textColor": "$FontColorLightYellow",
+                    "hoveredFrame": 3,
+                    "disabledFrame": 2,
+                    "disabledTint": { "a": 1.0 },
+                    "sound": "cursor_close_window_hd"
+                }
+            },
+            {
+                "type": "TimerWidget",
+                "name": "D2RHubRecreateConfirmTimeout",
+                "fields": {
+                    "time": 4.0,
+                    "message": "PanelManager:ClosePanel:D2RHubQuickRecreateConfirm"
+                }
+            }
+        ]
+    })
+}
+
+fn quick_recreate_layout() -> serde_json::Value {
+    serde_json::json!({
+        "type": "MainMenuHDPanel",
+        "name": "D2RHubQuickRecreate",
+        "fields": {
+            "rect": { "x": -9999, "y": -9999, "scale": 0.01 }
+        },
+        "children": [
+            {
+                "type": "TimerWidget",
+                "name": "D2RHubQuickRecreateCloseConfirm",
+                "fields": { "time": 0.005, "message": "PanelManager:ClosePanel:D2RHubQuickRecreateConfirm" }
+            },
+            {
+                "type": "TimerWidget",
+                "name": "D2RHubQuickRecreateAction",
+                "fields": { "time": 0.01, "message": "CharacterSelect:LoadCharacter:2" }
+            },
+            {
+                "type": "TimerWidget",
+                "name": "D2RHubQuickRecreateClose",
+                "fields": { "time": 0.02, "message": "PanelManager:ClosePanel:D2RHubQuickRecreate" }
+            }
+        ]
+    })
+}
+
+fn room_panel_opener_layout(create: bool) -> serde_json::Value {
+    let (name, opposite_panel, target_panel) = if create {
+        ("D2RHubOpenCreateGame", "JoinGamePanel", "CreateGamePanel")
+    } else {
+        ("D2RHubOpenJoinGame", "CreateGamePanel", "JoinGamePanel")
+    };
+    serde_json::json!({
+        "type": "Panel",
+        "name": name,
+        "fields": { "rect": { "x": -9999, "y": -9999, "scale": 0.01 } },
+        "children": [
+            {
+                "type": "TimerWidget",
+                "name": "D2RHubCloseOppositeRoomPanel",
+                "fields": {
+                    "time": 0.01,
+                    "message": format!("PanelManager:ClosePanel:{opposite_panel}")
+                }
+            },
+            {
+                "type": "TimerWidget",
+                "name": "D2RHubOpenRoomPanel",
+                "fields": {
+                    "time": 0.02,
+                    "message": format!("PanelManager:TogglePanel:{target_panel}")
+                }
+            },
+            {
+                "type": "TimerWidget",
+                "name": "D2RHubCloseRoomPanelOpener",
+                "fields": {
+                    "time": 0.03,
+                    "message": format!("PanelManager:ClosePanel:{name}")
+                }
+            }
+        ]
+    })
+}
+
+fn read_local_or_casc_json(
+    mpq_directory: &Path,
+    storage: Option<&casc_core::Storage>,
+    relative_path: &str,
+) -> Result<serde_json::Value, String> {
+    let local_path = mpq_directory.join(relative_path);
+    let text = if local_path.is_file() {
+        read_utf8(&local_path)?
+    } else {
+        let storage = storage.ok_or_else(|| {
+            format!("源 Mod 缺少 {relative_path}，且没有可用的 D2R 游戏数据用于补齐局内房间工具")
+        })?;
+        read_casc_utf8(storage, relative_path)?
+    };
+    parse_json_value(&text).map_err(|error| format!("解析 {relative_path} 失败: {error}"))
+}
+
+fn write_json_layout(
+    mpq_directory: &Path,
+    relative_path: &str,
+    document: &serde_json::Value,
+) -> Result<(), String> {
+    write_file(
+        &mpq_directory.join(relative_path),
+        serde_json::to_vec_pretty(document)
+            .map_err(|error| format!("序列化 {relative_path} 失败: {error}"))?,
+    )
+}
+
+fn find_layout_node_mut<'a>(
+    document: &'a mut serde_json::Value,
+    name: &str,
+) -> Option<&'a mut serde_json::Value> {
+    if document.get("name").and_then(serde_json::Value::as_str) == Some(name) {
+        return Some(document);
+    }
+    document
+        .get_mut("children")
+        .and_then(serde_json::Value::as_array_mut)?
+        .iter_mut()
+        .find_map(|child| find_layout_node_mut(child, name))
+}
+
+#[cfg(test)]
+fn find_layout_node<'a>(
+    document: &'a serde_json::Value,
+    name: &str,
+) -> Option<&'a serde_json::Value> {
+    if document.get("name").and_then(serde_json::Value::as_str) == Some(name) {
+        return Some(document);
+    }
+    document
+        .get("children")
+        .and_then(serde_json::Value::as_array)?
+        .iter()
+        .find_map(|child| find_layout_node(child, name))
+}
+
+fn patch_room_form_layout(
+    mpq_directory: &Path,
+    storage: Option<&casc_core::Storage>,
+    relative_path: &str,
+    default_widget: &str,
+) -> Result<(), String> {
+    let mut document = read_local_or_casc_json(mpq_directory, storage, relative_path)?;
+    let fields = document
+        .as_object_mut()
+        .ok_or_else(|| format!("{relative_path} 顶层必须是 JSON 对象"))?
+        .entry("fields")
+        .or_insert_with(|| serde_json::json!({}))
+        .as_object_mut()
+        .ok_or_else(|| format!("{relative_path}.fields 必须是 JSON 对象"))?;
+    fields.insert("priority".to_string(), serde_json::json!(2));
+    fields.insert(
+        "defaultWidget".to_string(),
+        serde_json::Value::String(default_widget.to_string()),
+    );
+    fields.insert("isDismissable".to_string(), serde_json::json!(true));
+    fields.insert(
+        "acceptsEscKeyEverywhere".to_string(),
+        serde_json::json!(true),
+    );
+
+    let (panel_name, input_names) = if default_widget == "NameInput" {
+        ("JoinGamePanel", ["NameInput", "PasswordInput"])
+    } else {
+        ("CreateGamePanel", ["GameNameInput", "PasswordInput"])
+    };
+    for input_name in input_names {
+        let input_fields = find_layout_node_mut(&mut document, input_name)
+            .and_then(|node| node.get_mut("fields"))
+            .and_then(serde_json::Value::as_object_mut)
+            .ok_or_else(|| format!("{relative_path} 缺少输入框 {input_name}"))?;
+        // Game names and passwords are ASCII-only. When these lobby forms are
+        // opened directly from an active game, the normal lobby IME setup is
+        // skipped and imeEnabled=true inherits the user's current IME.
+        input_fields.insert("imeEnabled".to_string(), serde_json::json!(false));
+    }
+    if default_widget == "NameInput" {
+        if let Some(join_button_fields) = document
+            .get_mut("children")
+            .and_then(serde_json::Value::as_array_mut)
+            .and_then(|children| {
+                children.iter_mut().find(|child| {
+                    child.get("name").and_then(serde_json::Value::as_str) == Some("JoinButton")
+                })
+            })
+            .and_then(|child| child.get_mut("fields"))
+            .and_then(serde_json::Value::as_object_mut)
+        {
+            let x = join_button_fields
+                .get("rect")
+                .and_then(|rect| rect.get("x"))
+                .and_then(serde_json::Value::as_i64)
+                .unwrap_or_default();
+            let y = join_button_fields
+                .get("rect")
+                .and_then(|rect| rect.get("y"))
+                .and_then(serde_json::Value::as_i64)
+                .unwrap_or_default();
+            if x < 0 || y > 1200 {
+                join_button_fields.insert(
+                    "rect".to_string(),
+                    serde_json::json!({
+                        "x": 330,
+                        "y": 1080
+                    }),
+                );
+                join_button_fields.insert(
+                    "filename".to_string(),
+                    serde_json::Value::String(
+                        "FrontEnd\\HD\\Final\\FrontEnd_ButtonMed".to_string(),
+                    ),
+                );
+            }
+        }
+    }
+    let children = document
+        .get_mut("children")
+        .and_then(serde_json::Value::as_array_mut)
+        .ok_or_else(|| format!("{relative_path}.children 必须是 JSON 数组"))?;
+    children.retain(|child| {
+        child.get("name").and_then(serde_json::Value::as_str) != Some("D2RHubCloseRoomForm")
+    });
+    children.push(serde_json::json!({
+        "type": "ButtonWidget",
+        "name": "D2RHubCloseRoomForm",
+        "fields": {
+            "rect": { "x": 820, "y": 1080, "scale": 0.55 },
+            "filename": "FrontEnd\\HD\\Final\\FrontEnd_ButtonMed",
+            "textString": "@strClose",
+            "tooltipString": "@strClose",
+            "onClickMessage": format!("PanelManager:ClosePanel:{panel_name}"),
+            "fontType": "10ptE",
+            "pointSize": "$MediumLargeFontSize",
+            "textColor": "$LightButtonTextColor",
+            "hoveredFrame": 3,
+            "disabledFrame": 2,
+            "disabledTint": { "a": 1.0 },
+            "sound": "cursor_close_window_hd",
+            "acceptsEscKeyEverywhere": true
+        }
+    }));
+    write_json_layout(mpq_directory, relative_path, &document)
+}
+
+fn install_in_game_room_tools(
+    mpq_directory: &Path,
+    storage: Option<&casc_core::Storage>,
+    compatibility: &mut Vec<AudioModCompatibility>,
+) -> Result<bool, String> {
+    let required_game_layouts = [
+        HUD_WARNINGS_LAYOUT,
+        "data/global/ui/layouts/creategamepanelhd.json",
+        "data/global/ui/layouts/joingamepanelhd.json",
+    ];
+    if storage.is_none()
+        && required_game_layouts
+            .iter()
+            .any(|relative_path| !mpq_directory.join(relative_path).is_file())
+    {
+        compatibility.push(AudioModCompatibility {
+            target: "局内房间工具".to_string(),
+            action: "skip_without_game_layouts".to_string(),
+            detail: "源 Mod 未包含完整 HUD/建房/加入布局，且未提供可读取的 D2R 游戏目录；为避免用不完整布局覆盖游戏原界面，本次未追加局内房间工具。".to_string(),
+        });
+        return Ok(false);
+    }
+    let mut hud = read_local_or_casc_json(mpq_directory, storage, HUD_WARNINGS_LAYOUT)?;
+    let children = hud
+        .as_object_mut()
+        .ok_or_else(|| format!("{HUD_WARNINGS_LAYOUT} 顶层必须是 JSON 对象"))?
+        .entry("children")
+        .or_insert_with(|| serde_json::json!([]))
+        .as_array_mut()
+        .ok_or_else(|| format!("{HUD_WARNINGS_LAYOUT}.children 必须是 JSON 数组"))?;
+    children.retain(|child| {
+        child
+            .pointer("/fields/message")
+            .and_then(serde_json::Value::as_str)
+            != Some("PanelManager:OpenPanel:D2RHubRoomToolbar")
+    });
+    children.insert(
+        0,
+        serde_json::json!({
+            "type": "TimerWidget",
+            "name": "D2RHubRoomToolbarLauncher",
+            "fields": {
+                "time": 0.01,
+                "message": "PanelManager:OpenPanel:D2RHubRoomToolbar"
+            }
+        }),
+    );
+    write_json_layout(mpq_directory, HUD_WARNINGS_LAYOUT, &hud)?;
+
+    for (file_name, document) in [
+        ("D2RHubRoomToolbarhd.json", room_toolbar_layout()),
+        (
+            "D2RHubQuickRecreateConfirmhd.json",
+            quick_recreate_confirmation_layout(),
+        ),
+        ("D2RHubQuickRecreatehd.json", quick_recreate_layout()),
+        (
+            "D2RHubOpenCreateGamehd.json",
+            room_panel_opener_layout(true),
+        ),
+        ("D2RHubOpenJoinGamehd.json", room_panel_opener_layout(false)),
+    ] {
+        write_json_layout(
+            mpq_directory,
+            &format!("{UI_LAYOUTS_DIRECTORY}/{file_name}"),
+            &document,
+        )?;
+    }
+    for file_name in [
+        "D2RHubRoomToolbar.json",
+        "D2RHubQuickRecreateConfirm.json",
+        "D2RHubQuickRecreate.json",
+        "D2RHubOpenCreateGame.json",
+        "D2RHubOpenJoinGame.json",
+    ] {
+        write_json_layout(
+            mpq_directory,
+            &format!("{UI_LAYOUTS_DIRECTORY}/{file_name}"),
+            &serde_json::json!({
+                "type": "Panel",
+                "name": file_name.trim_end_matches(".json")
+            }),
+        )?;
+    }
+
+    patch_room_form_layout(
+        mpq_directory,
+        storage,
+        "data/global/ui/layouts/creategamepanelhd.json",
+        "GameNameInput",
+    )?;
+    patch_room_form_layout(
+        mpq_directory,
+        storage,
+        "data/global/ui/layouts/joingamepanelhd.json",
+        "NameInput",
+    )?;
+
+    compatibility.push(AudioModCompatibility {
+        target: "局内房间工具".to_string(),
+        action: "add_in_game_create_join_and_recreate".to_string(),
+        detail: "保留源 HUD 与原生建房/加入逻辑，仅追加常驻的“下一局 / 创建房间 / 加入房间”工具栏；下一局需要二次确认，房名/密码固定为 ASCII 输入，表单支持 Esc、关闭按钮和再次点击工具栏关闭。".to_string(),
+    });
+    Ok(true)
 }
 
 fn validate_misc(
@@ -2663,6 +3138,8 @@ where
             "源 Mod 未被修改；加工结果写入新的组合 Mod 目录。".to_string()
         },
     }];
+    let room_tools_installed =
+        install_in_game_room_tools(&mpq_directory, storage.as_ref(), &mut compatibility)?;
     if request.build_mode == AudioModBuildMode::Augment {
         for (name, baseline) in [
             ("misc.txt", &misc_baseline),
@@ -2937,7 +3414,14 @@ where
         producer: "d2r-audio-mod".to_string(),
         producer_version: env!("CARGO_PKG_VERSION").to_string(),
         recipe_version: AUDIO_MOD_RECIPE_VERSION,
-        capabilities: vec![TERROR_IMMEDIATE_ENTRY_CAPABILITY.to_string()],
+        capabilities: if room_tools_installed {
+            vec![
+                TERROR_IMMEDIATE_ENTRY_CAPABILITY.to_string(),
+                IN_GAME_ROOM_TOOLS_CAPABILITY.to_string(),
+            ]
+        } else {
+            vec![TERROR_IMMEDIATE_ENTRY_CAPABILITY.to_string()]
+        },
         generated_at_unix: SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -3002,6 +3486,11 @@ where
             },
             "v7 使用独立地点/掉落同步码与 127 路 Gold 掉落签名；主界面标记会立即结束未完成的刷图计时。"
                 .to_string(),
+            if room_tools_installed {
+                "局内顶部工具栏可在确认后开始下一局，或打开原生创建/加入房间面板；房名/密码固定为英文数字输入，表单支持同键、Esc 与关闭按钮退出，并继续使用 D2R 自带的缓存与回车提交。".to_string()
+            } else {
+                "本次没有可安全复用的完整游戏 UI 布局，未追加局内房间工具。".to_string()
+            },
         ],
     };
     write_file(
@@ -3012,11 +3501,16 @@ where
     write_file(
         &staging_mod_directory.join("README-安装与测试.txt"),
         format!(
-            "D2R 音频遥测 Mod 工具\r\n\r\n启动参数：{}\r\n\r\n1. 输出目录是独立组合 Mod，源 Mod 没有被修改。\r\n2. 在你的启动器中启用上面的 -mod/-txt；本工具不会修改账号或启动器配置。\r\n3. Mod 只播放 v7 协议声纹；接收、统计由兼容软件独立完成。\r\n4. 所选掉落只加工世界实体的 Flippy 音频入口，背包/仓库 usesound 与 misc.txt dropsound 保持原值。\r\n5. 原实体与状态机从源 Mod 或本机游戏克隆，并同步复制其普通/低配背包 sprite；原模型、物品图标、动画、VFX、依赖和转场保留，原入口已有声音时保留原声并混入声纹。\r\n6. 主界面条目使用独立文件，不修改恐惧区域复用的 options_hd.flac。\r\n7. 本次地图覆盖：{}；掉落覆盖：{} 个符文、{} 个扩展物品。\r\n8. 游戏“音效”通道必须非静音；若仅依赖主界面音乐兜底，音乐通道也不能完全静音。\r\n9. 声纹只能区分基础物品代码，不能区分共享同一代码的词缀、品质或鉴定结果。\r\n",
+            "D2R 音频遥测 Mod 工具\r\n\r\n启动参数：{}\r\n\r\n1. 输出目录是独立组合 Mod，源 Mod 没有被修改。\r\n2. 在你的启动器中启用上面的 -mod/-txt；本工具不会修改账号或启动器配置。\r\n3. Mod 只播放 v7 协议声纹；接收、统计由兼容软件独立完成。\r\n4. 所选掉落只加工世界实体的 Flippy 音频入口，背包/仓库 usesound 与 misc.txt dropsound 保持原值。\r\n5. 原实体与状态机从源 Mod 或本机游戏克隆，并同步复制其普通/低配背包 sprite；原模型、物品图标、动画、VFX、依赖和转场保留，原入口已有声音时保留原声并混入声纹。\r\n6. 主界面条目使用独立文件，不修改恐惧区域复用的 options_hd.flac。\r\n7. 本次地图覆盖：{}；掉落覆盖：{} 个符文、{} 个扩展物品。\r\n8. 游戏“音效”通道必须非静音；若仅依赖主界面音乐兜底，音乐通道也不能完全静音。\r\n9. 声纹只能区分基础物品代码，不能区分共享同一代码的词缀、品质或鉴定结果。\r\n10. {}\r\n",
             report.launch_arguments,
             if report.area_coverage == AudioAreaCoverage::AllAreas { "全部区域" } else { "女伯爵路线" },
             report.rune_assets.len(),
-            report.item_assets.len()
+            report.item_assets.len(),
+            if room_tools_installed {
+                "进入在线游戏后，顶部工具栏可在二次确认后开始下一局；创建/加入面板使用英文数字输入，并可用同一按钮、Esc 或面板关闭按钮退出。"
+            } else {
+                "本次未追加局内房间工具；加工现有 Mod 时请同时提供有效的 D2R 游戏目录。"
+            }
         ),
     )?;
     progress(BuildProgress::new("finish", 98, "正在完成 Mod…"));
@@ -3028,6 +3522,177 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn installs_room_tools_without_replacing_existing_hud_content() {
+        let root =
+            std::env::temp_dir().join(format!("d2rhub-room-tools-test-{}", uuid::Uuid::new_v4()));
+        let layouts = root.join(UI_LAYOUTS_DIRECTORY);
+        write_file(
+            &layouts.join("HudWarningshd.json"),
+            br#"{
+                type: 'HUDWarningsPanel',
+                name: 'HUDWarnings',
+                fields: { priority: -100 },
+                children: [
+                    { type: 'TimerWidget', name: 'ExistingLauncher', fields: { time: 0.1, message: 'PanelManager:OpenPanel:ExistingPanel' } },
+                ],
+            }"#,
+        )
+        .unwrap();
+        write_file(
+            &layouts.join("creategamepanelhd.json"),
+            br#"{
+                type: 'CreateGamePanel',
+                name: 'CreateGamePanel',
+                fields: { anchor: '$LobbyAnchor' },
+                children: [
+                    {
+                        type: 'TextBoxWidget',
+                        name: 'CreateFields',
+                        children: [
+                            { type: 'TextBoxWidget', name: 'GameNameInput', fields: { imeEnabled: true } },
+                            { type: 'TextBoxWidget', name: 'PasswordInput', fields: { imeEnabled: true } },
+                        ],
+                    },
+                ],
+            }"#,
+        )
+        .unwrap();
+        write_file(
+            &layouts.join("joingamepanelhd.json"),
+            br#"{
+                type: 'JoinGamePanel',
+                name: 'JoinGamePanel',
+                fields: { anchor: '$LobbyAnchor' },
+                children: [
+                    { type: 'TextBoxWidget', name: 'NameInput', fields: { imeEnabled: true } },
+                    { type: 'TextBoxWidget', name: 'PasswordInput', fields: { imeEnabled: true } },
+                    {
+                        type: 'ButtonWidget',
+                        name: 'JoinButton',
+                        fields: { rect: { x: -3, y: 1275 }, filename: 'Lobby\\Final\\LobbyButton' },
+                    },
+                ],
+            }"#,
+        )
+        .unwrap();
+
+        let mut compatibility = Vec::new();
+        install_in_game_room_tools(&root, None, &mut compatibility).unwrap();
+        install_in_game_room_tools(&root, None, &mut compatibility).unwrap();
+
+        let hud =
+            parse_json_value(&read_utf8(&layouts.join("HudWarningshd.json")).unwrap()).unwrap();
+        let children = hud["children"].as_array().unwrap();
+        assert!(children
+            .iter()
+            .any(|child| { child["fields"]["message"] == "PanelManager:OpenPanel:ExistingPanel" }));
+        assert_eq!(
+            children
+                .iter()
+                .filter(|child| {
+                    child["fields"]["message"] == "PanelManager:OpenPanel:D2RHubRoomToolbar"
+                })
+                .count(),
+            1
+        );
+
+        let toolbar =
+            parse_json_value(&read_utf8(&layouts.join("D2RHubRoomToolbarhd.json")).unwrap())
+                .unwrap();
+        let names = toolbar["children"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|child| child["name"].as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            names,
+            vec!["D2RHubNextGame", "D2RHubCreateGame", "D2RHubJoinGame"]
+        );
+        assert_eq!(
+            find_layout_node(&quick_recreate_layout(), "D2RHubQuickRecreateAction").unwrap()
+                ["fields"]["message"],
+            "CharacterSelect:LoadCharacter:2"
+        );
+        assert_eq!(
+            find_layout_node(&toolbar, "D2RHubNextGame").unwrap()["fields"]["onClickMessage"],
+            "PanelManager:TogglePanel:D2RHubQuickRecreateConfirm"
+        );
+        let confirmation = parse_json_value(
+            &read_utf8(&layouts.join("D2RHubQuickRecreateConfirmhd.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(confirmation["fields"]["isDismissable"], true);
+        assert_eq!(
+            find_layout_node(&confirmation, "D2RHubConfirmNextGame").unwrap()["fields"]
+                ["onClickMessage"],
+            "PanelManager:OpenPanel:D2RHubQuickRecreate"
+        );
+
+        for (helper_name, target) in [
+            ("D2RHubOpenCreateGamehd.json", "CreateGamePanel"),
+            ("D2RHubOpenJoinGamehd.json", "JoinGamePanel"),
+        ] {
+            let helper = parse_json_value(&read_utf8(&layouts.join(helper_name)).unwrap()).unwrap();
+            assert_eq!(
+                find_layout_node(&helper, "D2RHubOpenRoomPanel").unwrap()["fields"]["message"],
+                format!("PanelManager:TogglePanel:{target}")
+            );
+        }
+
+        let create =
+            parse_json_value(&read_utf8(&layouts.join("creategamepanelhd.json")).unwrap()).unwrap();
+        assert_eq!(create["fields"]["priority"], 2);
+        assert_eq!(create["fields"]["defaultWidget"], "GameNameInput");
+        assert_eq!(create["fields"]["isDismissable"], true);
+        assert_eq!(create["fields"]["acceptsEscKeyEverywhere"], true);
+        assert_eq!(
+            find_layout_node(&create, "GameNameInput").unwrap()["fields"]["imeEnabled"],
+            false
+        );
+        assert_eq!(
+            find_layout_node(&create, "PasswordInput").unwrap()["fields"]["imeEnabled"],
+            false
+        );
+        assert_eq!(
+            find_layout_node(&create, "D2RHubCloseRoomForm").unwrap()["fields"]["onClickMessage"],
+            "PanelManager:ClosePanel:CreateGamePanel"
+        );
+        let join =
+            parse_json_value(&read_utf8(&layouts.join("joingamepanelhd.json")).unwrap()).unwrap();
+        assert_eq!(join["fields"]["priority"], 2);
+        assert_eq!(join["fields"]["defaultWidget"], "NameInput");
+        assert_eq!(join["fields"]["isDismissable"], true);
+        assert_eq!(join["fields"]["acceptsEscKeyEverywhere"], true);
+        assert_eq!(
+            find_layout_node(&join, "NameInput").unwrap()["fields"]["imeEnabled"],
+            false
+        );
+        assert_eq!(
+            find_layout_node(&join, "PasswordInput").unwrap()["fields"]["imeEnabled"],
+            false
+        );
+        assert_eq!(
+            find_layout_node(&join, "JoinButton").unwrap()["fields"]["rect"]["x"],
+            330
+        );
+        assert_eq!(
+            find_layout_node(&join, "JoinButton").unwrap()["fields"]["rect"]["y"],
+            1080
+        );
+        assert_eq!(
+            find_layout_node(&join, "D2RHubCloseRoomForm").unwrap()["fields"]["onClickMessage"],
+            "PanelManager:ClosePanel:JoinGamePanel"
+        );
+        assert_eq!(
+            compatibility.last().unwrap().action,
+            "add_in_game_create_join_and_recreate"
+        );
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn records_a_stable_source_mod_hint() {

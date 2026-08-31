@@ -27,9 +27,9 @@ const TERROR_PROBE_SD_SOUND: &str = "audio_telemetry_tz_probe_sd";
 const TERROR_PROBE_HD_SOUND: &str = "audio_telemetry_tz_probe_hd";
 const TERROR_PROBE_RELATIVE_PATH: &str = "audio_telemetry\\terror\\tz_probe.flac";
 const TERROR_MARKER_GAIN_DB: f32 = -18.0;
-pub const AUDIO_MOD_RECIPE_VERSION: u32 = 7;
+pub const AUDIO_MOD_RECIPE_VERSION: u32 = 8;
 const TERROR_IMMEDIATE_ENTRY_CAPABILITY: &str = "terror_zone_immediate_entry_marker_v1";
-const IN_GAME_ROOM_TOOLS_CAPABILITY: &str = "in_game_room_tools_v5";
+const IN_GAME_ROOM_TOOLS_CAPABILITY: &str = "in_game_room_tools_v6";
 const UI_LAYOUTS_DIRECTORY: &str = "data/global/ui/layouts";
 const HUD_WARNINGS_LAYOUT: &str = "data/global/ui/layouts/HudWarningshd.json";
 const ROOM_TOOLBAR_PANEL: &str = "D2RHubRoomToolbar";
@@ -804,7 +804,10 @@ fn room_toolbar_layout() -> serde_json::Value {
                     "filename": "FrontEnd\\HD\\Final\\FrontEnd_ButtonLarge",
                     "textString": "下一局",
                     "tooltipString": "首次点击只打开确认条；再次确认才会离开当前房间，4 秒后自动取消。",
-                    "tooltipOffset": { "y": 93 },
+                    // Tooltip offsets inherit the button's 0.36 scale. Use the
+                    // scaled distance between the first- and second-stage rows
+                    // so both hover tips land at the same visual height.
+                    "tooltipOffset": { "y": 258 },
                     "onClickMessage": "PanelManager:TogglePanel:D2RHubQuickRecreateConfirm",
                     "text/style": "$StyleFEButtonText",
                     "pointSize": 53,
@@ -1055,10 +1058,10 @@ fn patch_room_form_layout(
         .or_insert_with(|| serde_json::json!({}))
         .as_object_mut()
         .ok_or_else(|| format!("{relative_path}.fields 必须是 JSON 对象"))?;
-    // The native lobby panels use priority 2 because the lobby has no gameplay
-    // hotkey layer beneath them. In game, that lets bound skill keys win before
-    // the focused text box sees them. Match ChatPanel's priority while the form
-    // is open so the focused widget handles the key first.
+    // Keep the form above ordinary HUD panels while it is open. D2R still routes
+    // configured gameplay hotkeys before a regular text box; D2RHub therefore
+    // fills production room credentials as one clipboard value instead of
+    // emitting their individual letter/digit key events.
     fields.insert(
         "priority".to_string(),
         serde_json::json!(ROOM_FORM_INPUT_PRIORITY),
@@ -1285,7 +1288,7 @@ fn install_in_game_room_tools(
     compatibility.push(AudioModCompatibility {
         target: "局内房间工具".to_string(),
         action: "add_in_game_create_join_and_recreate".to_string(),
-        detail: "保留源 HUD 与原生建房/加入逻辑，仅追加常驻的“下一局 / 创建房间 / 加入房间”工具栏；下一局需要二次确认；房间表单在打开期间使用局内聊天层级的输入优先级，仅由当前焦点框接收房名、密码和描述按键；同时显式还原原生单行输入样式，避免 JSON 重名字段解析后文字裁切；表单支持 Esc、关闭按钮和再次点击工具栏关闭。".to_string(),
+        detail: "保留源 HUD 与原生建房/加入逻辑，仅追加常驻的“下一局 / 创建房间 / 加入房间”工具栏；下一局需要二次确认，首层与确认层提示保持同一高度；房间表单保留正常焦点和中文输入法支持，并显式还原原生单行输入样式，避免 JSON 重名字段解析后文字裁切；D2RHub 自动流程以整段文本粘贴房名和密码，绕过逐字触发局内快捷键；表单支持 Esc、关闭按钮和再次点击工具栏关闭。".to_string(),
     });
     Ok(true)
 }
@@ -3522,7 +3525,7 @@ where
             "v7 使用独立地点/掉落同步码与 127 路 Gold 掉落签名；主界面标记会立即结束未完成的刷图计时。"
                 .to_string(),
             if room_tools_installed {
-                "局内顶部工具栏可在确认后开始下一局，或打开原生创建/加入房间面板；表单打开时提升到局内聊天框同级的输入优先级，只让当前焦点框接收房名、密码与描述按键，并继续使用 D2R 自带的缓存与回车提交。".to_string()
+                "局内顶部工具栏可在确认后开始下一局，或打开原生创建/加入房间面板；表单保留当前焦点与中文输入法支持，D2RHub 自动流程会整段粘贴房名和密码，不逐字触发局内快捷键，并继续使用 D2R 自带的缓存与回车提交。".to_string()
             } else {
                 "本次没有可安全复用的完整游戏 UI 布局，未追加局内房间工具。".to_string()
             },
@@ -3542,7 +3545,7 @@ where
             report.rune_assets.len(),
             report.item_assets.len(),
             if room_tools_installed {
-                "进入在线游戏后，顶部工具栏可在二次确认后开始下一局；创建/加入面板打开时使用聊天层级的输入优先级，仅当前焦点框接收房名、密码与描述按键，并可用同一按钮、Esc 或面板关闭按钮退出。"
+                "进入在线游戏后，顶部工具栏可在二次确认后开始下一局；创建/加入面板保留正常焦点和中文输入法支持，自动换房时由 D2RHub 整段粘贴房名与密码，并可用同一按钮、Esc 或面板关闭按钮退出。"
             } else {
                 "本次未追加局内房间工具；加工现有 Mod 时请同时提供有效的 D2R 游戏目录。"
             }
@@ -3658,7 +3661,7 @@ mod tests {
             "PanelManager:TogglePanel:D2RHubQuickRecreateConfirm"
         );
         let next_game = find_layout_node(&toolbar, "D2RHubNextGame").unwrap();
-        assert_eq!(next_game["fields"]["tooltipOffset"]["y"], 93);
+        assert_eq!(next_game["fields"]["tooltipOffset"]["y"], 258);
         let next_button_y = next_game["fields"]["rect"]["y"].as_i64().unwrap();
         let confirm_button_y = find_layout_node(
             &quick_recreate_confirmation_layout(),
@@ -3667,10 +3670,9 @@ mod tests {
         .unwrap()["fields"]["rect"]["y"]
             .as_i64()
             .unwrap();
-        assert_eq!(
-            next_game["fields"]["tooltipOffset"]["y"],
-            confirm_button_y - next_button_y
-        );
+        let scaled_offset = next_game["fields"]["tooltipOffset"]["y"].as_f64().unwrap()
+            * next_game["fields"]["rect"]["scale"].as_f64().unwrap();
+        assert!((scaled_offset - (confirm_button_y - next_button_y) as f64).abs() < 0.2);
         assert!(!next_game["fields"]["tooltipString"]
             .as_str()
             .unwrap()

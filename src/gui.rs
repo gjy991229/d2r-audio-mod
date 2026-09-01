@@ -280,6 +280,8 @@ unsafe fn start_build(window: HWND, state: &mut AppState) {
         mod_name: Some(mod_name),
         sound_environment_file: None,
         gain_db: None,
+        include_audio_telemetry: true,
+        include_room_tools: true,
     };
 
     state.last_output = None;

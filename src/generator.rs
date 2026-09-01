@@ -27,13 +27,33 @@ const TERROR_PROBE_SD_SOUND: &str = "audio_telemetry_tz_probe_sd";
 const TERROR_PROBE_HD_SOUND: &str = "audio_telemetry_tz_probe_hd";
 const TERROR_PROBE_RELATIVE_PATH: &str = "audio_telemetry\\terror\\tz_probe.flac";
 const TERROR_MARKER_GAIN_DB: f32 = -18.0;
-pub const AUDIO_MOD_RECIPE_VERSION: u32 = 8;
+pub const AUDIO_MOD_RECIPE_VERSION: u32 = 22;
+pub const AUDIO_TELEMETRY_FEATURE_ID: &str = "audio_telemetry";
+pub const IN_GAME_ROOM_TOOLS_FEATURE_ID: &str = "in_game_room_tools";
+const AUDIO_TELEMETRY_FEATURE_RECIPE_VERSION: u32 = 1;
+const IN_GAME_ROOM_TOOLS_FEATURE_RECIPE_VERSION: u32 = 19;
+const MOD_MANIFEST_FILE_NAME: &str = "d2rhub-mod-manifest.json";
+const LEGACY_MANIFEST_FILE_NAME: &str = "audio-telemetry-manifest.json";
 const TERROR_IMMEDIATE_ENTRY_CAPABILITY: &str = "terror_zone_immediate_entry_marker_v1";
-const IN_GAME_ROOM_TOOLS_CAPABILITY: &str = "in_game_room_tools_v6";
+const IN_GAME_ROOM_TOOLS_CAPABILITY: &str = "in_game_room_tools_v19";
 const UI_LAYOUTS_DIRECTORY: &str = "data/global/ui/layouts";
 const HUD_WARNINGS_LAYOUT: &str = "data/global/ui/layouts/HudWarningshd.json";
+const PAUSE_LAYOUTS: [&str; 2] = [
+    "data/global/ui/layouts/pauselayouthd.json",
+    "data/global/ui/layouts/pauselayoutgardenhd.json",
+];
 const ROOM_TOOLBAR_PANEL: &str = "D2RHubRoomToolbar";
-const ROOM_FORM_INPUT_PRIORITY: i64 = 1_999_999_999;
+const ROOM_FORM_FOCUS_SINK: &str = "D2RHubRoomFormFocusSink";
+const KEYBOARD_GATEWAY_HUB: &str = "D2RHubKeyboardGatewayHub";
+const KEYBOARD_CREATE_GATEWAY: &str = "D2RHubKeyboardCreateGateway";
+const KEYBOARD_JOIN_GATEWAY: &str = "D2RHubKeyboardJoinGateway";
+const ROOM_TOOL_BUTTON_SCALE: f64 = 0.30;
+const ROOM_TOOL_BUTTON_Y: i64 = 12;
+const ROOM_TOOL_NEXT_X: i64 = -1_040;
+const ROOM_TOOL_CREATE_X: i64 = -760;
+const ROOM_TOOL_JOIN_X: i64 = -480;
+const ROOM_TOOL_CONFIRM_Y: i64 = 92;
+const ROOM_TOOL_TOOLTIP_OFFSET_Y: i64 = 267;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -70,6 +90,17 @@ pub struct BuildAudioModRequest {
     pub mod_name: Option<String>,
     pub sound_environment_file: Option<String>,
     pub gain_db: Option<f32>,
+    /// Add or update the audio telemetry feature group. Existing groups in an augmented Mod are
+    /// preserved even when they are not selected.
+    #[serde(default = "default_enabled")]
+    pub include_audio_telemetry: bool,
+    /// Add or update the in-game room tools feature group.
+    #[serde(default = "default_enabled")]
+    pub include_room_tools: bool,
+}
+
+fn default_enabled() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -83,6 +114,17 @@ pub struct AudioModAsset {
     pub confidence: f32,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ModFeatureGroup {
+    pub id: String,
+    pub recipe_version: u32,
+    /// Stable digest of every setting that changes this group's generated assets.
+    pub fingerprint: String,
+    /// True when this build copied the already verified group byte-for-byte from its source Mod.
+    #[serde(default)]
+    pub reused_from_source: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BuildAudioModReport {
     /// Stable machine-readable manifest identity. Receivers should validate this before trusting
@@ -94,6 +136,10 @@ pub struct BuildAudioModReport {
     pub recipe_version: u32,
     /// Additive feature identifiers help newer consumers explain why a rebuild is recommended.
     pub capabilities: Vec<String>,
+    /// Independently versioned feature groups. New groups can be added without forcing unrelated
+    /// groups to be rebuilt.
+    #[serde(default)]
+    pub feature_groups: Vec<ModFeatureGroup>,
     pub generated_at_unix: u64,
     pub protocol_version: u8,
     pub build_mode: AudioModBuildMode,
@@ -800,17 +846,17 @@ fn room_toolbar_layout() -> serde_json::Value {
                 "name": "D2RHubNextGame",
                 "fields": {
                     "anchor": { "x": 1.0 },
-                    "rect": { "x": -1510, "y": 12, "scale": 0.36 },
+                    "rect": { "x": ROOM_TOOL_NEXT_X, "y": ROOM_TOOL_BUTTON_Y, "scale": ROOM_TOOL_BUTTON_SCALE },
                     "filename": "FrontEnd\\HD\\Final\\FrontEnd_ButtonLarge",
                     "textString": "下一局",
                     "tooltipString": "首次点击只打开确认条；再次确认才会离开当前房间，4 秒后自动取消。",
-                    // Tooltip offsets inherit the button's 0.36 scale. Use the
+                    // Tooltip offsets inherit the button scale. Use the
                     // scaled distance between the first- and second-stage rows
                     // so both hover tips land at the same visual height.
-                    "tooltipOffset": { "y": 258 },
+                    "tooltipOffset": { "y": ROOM_TOOL_TOOLTIP_OFFSET_Y },
                     "onClickMessage": "PanelManager:TogglePanel:D2RHubQuickRecreateConfirm",
                     "text/style": "$StyleFEButtonText",
-                    "pointSize": 53,
+                    "pointSize": 56,
                     "textColor": "$FontColorOrange",
                     "hoveredFrame": 3,
                     "disabledFrame": 2,
@@ -823,13 +869,13 @@ fn room_toolbar_layout() -> serde_json::Value {
                 "name": "D2RHubCreateGame",
                 "fields": {
                     "anchor": { "x": 1.0 },
-                    "rect": { "x": -1160, "y": 12, "scale": 0.36 },
+                    "rect": { "x": ROOM_TOOL_CREATE_X, "y": ROOM_TOOL_BUTTON_Y, "scale": ROOM_TOOL_BUTTON_SCALE },
                     "filename": "FrontEnd\\HD\\Final\\FrontEnd_ButtonLarge",
                     "textString": "创建房间",
                     "tooltipString": "打开创建房间面板；再次点击或按 Esc 关闭",
                     "onClickMessage": "PanelManager:OpenPanel:D2RHubOpenCreateGame",
                     "text/style": "$StyleFEButtonText",
-                    "pointSize": 53,
+                    "pointSize": 56,
                     "textColor": "$FontColorLightYellow",
                     "hoveredFrame": 3,
                     "disabledFrame": 2,
@@ -842,13 +888,13 @@ fn room_toolbar_layout() -> serde_json::Value {
                 "name": "D2RHubJoinGame",
                 "fields": {
                     "anchor": { "x": 1.0 },
-                    "rect": { "x": -810, "y": 12, "scale": 0.36 },
+                    "rect": { "x": ROOM_TOOL_JOIN_X, "y": ROOM_TOOL_BUTTON_Y, "scale": ROOM_TOOL_BUTTON_SCALE },
                     "filename": "FrontEnd\\HD\\Final\\FrontEnd_ButtonLarge",
                     "textString": "加入房间",
                     "tooltipString": "打开加入房间面板；再次点击或按 Esc 关闭",
                     "onClickMessage": "PanelManager:OpenPanel:D2RHubOpenJoinGame",
                     "text/style": "$StyleFEButtonText",
-                    "pointSize": 53,
+                    "pointSize": 56,
                     "textColor": "$FontColorLightYellow",
                     "hoveredFrame": 3,
                     "disabledFrame": 2,
@@ -877,13 +923,13 @@ fn quick_recreate_confirmation_layout() -> serde_json::Value {
                 "name": "D2RHubConfirmNextGame",
                 "fields": {
                     "anchor": { "x": 1.0 },
-                    "rect": { "x": -1510, "y": 105, "scale": 0.36 },
+                    "rect": { "x": ROOM_TOOL_NEXT_X, "y": ROOM_TOOL_CONFIRM_Y, "scale": ROOM_TOOL_BUTTON_SCALE },
                     "filename": "FrontEnd\\HD\\Final\\FrontEnd_ButtonLarge",
                     "textString": "确认换房",
                     "tooltipString": "立即离开当前房间并用当前角色开始下一局",
                     "onClickMessage": "PanelManager:OpenPanel:D2RHubQuickRecreate",
                     "text/style": "$StyleFEButtonText",
-                    "pointSize": 53,
+                    "pointSize": 56,
                     "textColor": "$FontColorOrange",
                     "hoveredFrame": 3,
                     "disabledFrame": 2,
@@ -896,12 +942,12 @@ fn quick_recreate_confirmation_layout() -> serde_json::Value {
                 "name": "D2RHubCancelNextGame",
                 "fields": {
                     "anchor": { "x": 1.0 },
-                    "rect": { "x": -1160, "y": 105, "scale": 0.36 },
+                    "rect": { "x": ROOM_TOOL_CREATE_X, "y": ROOM_TOOL_CONFIRM_Y, "scale": ROOM_TOOL_BUTTON_SCALE },
                     "filename": "FrontEnd\\HD\\Final\\FrontEnd_ButtonLarge",
                     "textString": "取消",
                     "onClickMessage": "PanelManager:ClosePanel:D2RHubQuickRecreateConfirm",
                     "text/style": "$StyleFEButtonText",
-                    "pointSize": 53,
+                    "pointSize": 56,
                     "textColor": "$FontColorLightYellow",
                     "hoveredFrame": 3,
                     "disabledFrame": 2,
@@ -942,28 +988,31 @@ fn quick_recreate_layout() -> serde_json::Value {
             {
                 "type": "TimerWidget",
                 "name": "D2RHubQuickRecreateClose",
-                "fields": { "time": 0.02, "message": "PanelManager:ClosePanel:D2RHubQuickRecreate" }
+                "fields": { "time": 0.01, "message": "PanelManager:ClosePanel:D2RHubQuickRecreate" }
             }
         ]
     })
 }
 
 fn room_panel_opener_layout(create: bool) -> serde_json::Value {
-    let (name, opposite_panel, target_panel) = if create {
-        ("D2RHubOpenCreateGame", "JoinGamePanel", "CreateGamePanel")
+    let (name, native_panel, opposite_panel) = if create {
+        ("D2RHubOpenCreateGame", "CreateGamePanel", "JoinGamePanel")
     } else {
-        ("D2RHubOpenJoinGame", "CreateGamePanel", "JoinGamePanel")
+        ("D2RHubOpenJoinGame", "JoinGamePanel", "CreateGamePanel")
     };
+    // Match MDK's stock controller chain. The keyboard gateway opens this
+    // controller before D2RHub invokes CfgChat through its F13 secondary
+    // binding; the Mod must not add competing alwaysAcceptsKeyInput fields.
     serde_json::json!({
         "type": "Panel",
         "name": name,
         "children": [
             {
                 "type": "TimerWidget",
-                "name": "D2RHubOpenRoomPanel",
+                "name": "D2RHubOpenNativeRoomPanel",
                 "fields": {
                     "time": 0.1,
-                    "message": format!("PanelManager:TogglePanel:{target_panel}")
+                    "message": format!("PanelManager:TogglePanel:{native_panel}")
                 }
             },
             {
@@ -984,6 +1033,169 @@ fn room_panel_opener_layout(create: bool) -> serde_json::Value {
             }
         ]
     })
+}
+
+fn keyboard_room_opener_layout(create: bool) -> serde_json::Value {
+    let (name, native_panel, opposite_panel) = if create {
+        (
+            "D2RHubKeyboardOpenCreate",
+            "CreateGamePanel",
+            "JoinGamePanel",
+        )
+    } else {
+        ("D2RHubKeyboardOpenJoin", "JoinGamePanel", "CreateGamePanel")
+    };
+    serde_json::json!({
+        "type": "Panel",
+        "name": name,
+        "children": [
+            {
+                "type": "TimerWidget",
+                "name": "D2RHubKeyboardClosePause",
+                "fields": {
+                    "time": 0.005,
+                    "message": "PausePanelMessage:Close"
+                }
+            },
+            {
+                "type": "TimerWidget",
+                "name": "D2RHubKeyboardOpenNativeRoomPanel",
+                "fields": {
+                    "time": 0.1,
+                    "message": format!("PanelManager:TogglePanel:{native_panel}")
+                }
+            },
+            {
+                "type": "TimerWidget",
+                "name": "D2RHubKeyboardCloseOppositeRoomPanel",
+                "fields": {
+                    "time": 0.1,
+                    "message": format!("PanelManager:ClosePanel:{opposite_panel}")
+                }
+            },
+            {
+                "type": "TimerWidget",
+                "name": "D2RHubKeyboardCloseOpener",
+                "fields": {
+                    "time": 0.1,
+                    "message": format!("PanelManager:ClosePanel:{name}")
+                }
+            }
+        ]
+    })
+}
+
+fn patch_pause_keyboard_gateway(
+    mpq_directory: &Path,
+    storage: Option<&casc_core::Storage>,
+    relative_path: &str,
+) -> Result<(), String> {
+    let mut document = read_local_or_casc_json(mpq_directory, storage, relative_path)?;
+
+    // PausePanel normally focuses a real menu action. If a background arrow
+    // message is delayed or dropped, the following Return can therefore invoke
+    // that action. Start on a no-op hub instead: arrows may leave the hub, but
+    // Return on the hub itself is always harmless.
+    let panel_fields = document
+        .as_object_mut()
+        .ok_or_else(|| format!("{relative_path} 顶层必须是 JSON 对象"))?
+        .entry("fields")
+        .or_insert_with(|| serde_json::json!({}))
+        .as_object_mut()
+        .ok_or_else(|| format!("{relative_path}.fields 必须是 JSON 对象"))?;
+    panel_fields.insert(
+        "defaultWidget".to_string(),
+        serde_json::Value::String(KEYBOARD_GATEWAY_HUB.to_string()),
+    );
+
+    let return_fields = find_layout_node_mut(&mut document, "ReturnToGame")
+        .and_then(|node| node.get_mut("fields"))
+        .and_then(serde_json::Value::as_object_mut)
+        .ok_or_else(|| format!("{relative_path} 缺少暂停菜单按钮 ReturnToGame"))?;
+    let navigation = return_fields
+        .entry("navigation")
+        .or_insert_with(|| serde_json::json!({}))
+        .as_object_mut()
+        .ok_or_else(|| format!("{relative_path} ReturnToGame.navigation 不是对象"))?;
+    navigation.insert(
+        "left".to_string(),
+        serde_json::json!({ "name": KEYBOARD_CREATE_GATEWAY }),
+    );
+    navigation.insert(
+        "right".to_string(),
+        serde_json::json!({ "name": KEYBOARD_JOIN_GATEWAY }),
+    );
+
+    let children = document
+        .get_mut("children")
+        .and_then(serde_json::Value::as_array_mut)
+        .ok_or_else(|| format!("{relative_path}.children 必须是 JSON 数组"))?;
+    children.retain(|child| {
+        child
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .is_none_or(|name| {
+                ![
+                    KEYBOARD_GATEWAY_HUB,
+                    KEYBOARD_CREATE_GATEWAY,
+                    KEYBOARD_JOIN_GATEWAY,
+                ]
+                .contains(&name)
+            })
+    });
+    children.push(serde_json::json!({
+        "type": "ButtonWidget",
+        "name": KEYBOARD_GATEWAY_HUB,
+        "fields": {
+            "rect": { "x": -9999, "y": -9999, "width": 1, "height": 1 },
+            "acceptsReturnKey": false,
+            "focusOnMouseOver": false,
+            "navigation": {
+                "left": { "name": KEYBOARD_CREATE_GATEWAY },
+                "right": { "name": KEYBOARD_JOIN_GATEWAY },
+                "up": { "name": "ReturnToGame" },
+                "down": { "name": "ReturnToGame" }
+            }
+        }
+    }));
+    for (name, opener, select_direction, back_direction) in [
+        (
+            KEYBOARD_CREATE_GATEWAY,
+            "D2RHubKeyboardOpenCreate",
+            "left",
+            "right",
+        ),
+        (
+            KEYBOARD_JOIN_GATEWAY,
+            "D2RHubKeyboardOpenJoin",
+            "right",
+            "left",
+        ),
+    ] {
+        let mut gateway_navigation = serde_json::Map::new();
+        // Repeating the selection arrow is idempotent, so D2RHub can send it
+        // twice without moving away from the intended hidden action.
+        gateway_navigation.insert(
+            select_direction.to_string(),
+            serde_json::json!({ "name": name }),
+        );
+        gateway_navigation.insert(
+            back_direction.to_string(),
+            serde_json::json!({ "name": KEYBOARD_GATEWAY_HUB }),
+        );
+        children.push(serde_json::json!({
+            "type": "ButtonWidget",
+            "name": name,
+            "fields": {
+                "rect": { "x": -9999, "y": -9999, "width": 1, "height": 1 },
+                "acceptsReturnKey": true,
+                "focusOnMouseOver": false,
+                "onClickMessage": format!("PanelManager:OpenPanel:{opener}"),
+                "navigation": gateway_navigation
+            }
+        }));
+    }
+    write_json_layout(mpq_directory, relative_path, &document)
 }
 
 fn read_local_or_casc_json(
@@ -1058,28 +1270,23 @@ fn patch_room_form_layout(
         .or_insert_with(|| serde_json::json!({}))
         .as_object_mut()
         .ok_or_else(|| format!("{relative_path}.fields 必须是 JSON 对象"))?;
-    // Keep the form above ordinary HUD panels while it is open. D2R still routes
-    // configured gameplay hotkeys before a regular text box; D2RHub therefore
-    // fills production room credentials as one clipboard value instead of
-    // emitting their individual letter/digit key events.
+    // Preserve the source panel's native priority, focus the first field, and
+    // keep every room input out of ChatPanel's global-key-capture behavior.
+    // D2RHub enters the real CfgChat text mode after this focused controller opens.
     fields.insert(
-        "priority".to_string(),
-        serde_json::json!(ROOM_FORM_INPUT_PRIORITY),
+        "defaultWidget".to_string(),
+        serde_json::Value::String(primary_input_name.to_string()),
     );
-    fields.remove("defaultWidget");
     fields.insert("isDismissable".to_string(), serde_json::json!(true));
     fields.insert(
         "acceptsEscKeyEverywhere".to_string(),
         serde_json::json!(true),
     );
 
-    let (panel_name, input_names): (&str, &[&str]) = if primary_input_name == "NameInput" {
-        ("JoinGamePanel", &["NameInput", "PasswordInput"])
+    let input_names: &[&str] = if primary_input_name == "NameInput" {
+        &["NameInput", "PasswordInput"]
     } else {
-        (
-            "CreateGamePanel",
-            &["GameNameInput", "PasswordInput", "DescriptionInput"],
-        )
+        &["GameNameInput", "PasswordInput", "DescriptionInput"]
     };
     for &input_name in input_names {
         let input_fields = find_layout_node_mut(&mut document, input_name)
@@ -1087,9 +1294,7 @@ fn patch_room_form_layout(
             .and_then(serde_json::Value::as_object_mut)
             .ok_or_else(|| format!("{relative_path} 缺少输入框 {input_name}"))?;
         // alwaysAcceptsKeyInput means every such widget receives every key even
-        // without focus. Applying it to a multi-field form therefore mirrors
-        // typing and deletion into all fields. Normal focus plus the panel's
-        // chat-level priority provides exclusive input without that side effect.
+        // without focus. It must never exist on this multi-field stock form.
         input_fields.insert("imeEnabled".to_string(), serde_json::json!(true));
         input_fields.remove("alwaysAcceptsKeyInput");
     }
@@ -1163,7 +1368,10 @@ fn patch_room_form_layout(
         .and_then(serde_json::Value::as_array_mut)
         .ok_or_else(|| format!("{relative_path}.children 必须是 JSON 数组"))?;
     children.retain(|child| {
-        child.get("name").and_then(serde_json::Value::as_str) != Some("D2RHubCloseRoomForm")
+        child
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .is_none_or(|name| name != "D2RHubCloseRoomForm" && name != ROOM_FORM_FOCUS_SINK)
     });
     children.push(serde_json::json!({
         "type": "ButtonWidget",
@@ -1173,7 +1381,14 @@ fn patch_room_form_layout(
             "filename": "FrontEnd\\HD\\Final\\FrontEnd_ButtonMed",
             "textString": "@strClose",
             "tooltipString": "@strClose",
-            "onClickMessage": format!("PanelManager:ClosePanel:{panel_name}"),
+            "onClickMessage": format!(
+                "PanelManager:ClosePanel:{}",
+                if primary_input_name == "NameInput" {
+                    "JoinGamePanel"
+                } else {
+                    "CreateGamePanel"
+                }
+            ),
             "fontType": "10ptE",
             "pointSize": "$MediumLargeFontSize",
             "textColor": "$LightButtonTextColor",
@@ -1194,6 +1409,8 @@ fn install_in_game_room_tools(
 ) -> Result<bool, String> {
     let required_game_layouts = [
         HUD_WARNINGS_LAYOUT,
+        PAUSE_LAYOUTS[0],
+        PAUSE_LAYOUTS[1],
         "data/global/ui/layouts/creategamepanelhd.json",
         "data/global/ui/layouts/joingamepanelhd.json",
     ];
@@ -1248,6 +1465,14 @@ fn install_in_game_room_tools(
             room_panel_opener_layout(true),
         ),
         ("D2RHubOpenJoinGamehd.json", room_panel_opener_layout(false)),
+        (
+            "D2RHubKeyboardOpenCreatehd.json",
+            keyboard_room_opener_layout(true),
+        ),
+        (
+            "D2RHubKeyboardOpenJoinhd.json",
+            keyboard_room_opener_layout(false),
+        ),
     ] {
         write_json_layout(
             mpq_directory,
@@ -1261,6 +1486,8 @@ fn install_in_game_room_tools(
         "D2RHubQuickRecreate.json",
         "D2RHubOpenCreateGame.json",
         "D2RHubOpenJoinGame.json",
+        "D2RHubKeyboardOpenCreate.json",
+        "D2RHubKeyboardOpenJoin.json",
     ] {
         write_json_layout(
             mpq_directory,
@@ -1278,6 +1505,9 @@ fn install_in_game_room_tools(
         "data/global/ui/layouts/creategamepanelhd.json",
         "GameNameInput",
     )?;
+    for relative_path in PAUSE_LAYOUTS {
+        patch_pause_keyboard_gateway(mpq_directory, storage, relative_path)?;
+    }
     patch_room_form_layout(
         mpq_directory,
         storage,
@@ -1288,7 +1518,7 @@ fn install_in_game_room_tools(
     compatibility.push(AudioModCompatibility {
         target: "局内房间工具".to_string(),
         action: "add_in_game_create_join_and_recreate".to_string(),
-        detail: "保留源 HUD 与原生建房/加入逻辑，仅追加常驻的“下一局 / 创建房间 / 加入房间”工具栏；下一局需要二次确认，首层与确认层提示保持同一高度；房间表单保留正常焦点和中文输入法支持，并显式还原原生单行输入样式，避免 JSON 重名字段解析后文字裁切；D2RHub 自动流程以整段文本粘贴房名和密码，绕过逐字触发局内快捷键；表单支持 Esc、关闭按钮和再次点击工具栏关闭。".to_string(),
+        detail: "照抄 MDK 的局内快速创建、加入与下一局消息链，下一局仍使用 CharacterSelect:LoadCharacter:2；三个按钮缩至 0.30 倍并在右上角以 280 布局单位紧凑排列。在两套 PausePanel 上增加不可见的无操作安全焦点与创建/加入键盘入口。自动填写使用 Esc+左/右两次+确认打开并聚焦原生表单；方向消息漏掉时确认键不会触发暂停菜单按钮。随后以备份过的 F13 次键调用原生 CfgChat 文本态；不移动鼠标、不点击 HWND，也不再创建 alwaysAcceptsKeyInput 镜像输入框。".to_string(),
     });
     Ok(true)
 }
@@ -2980,6 +3210,111 @@ fn asset_label(
     }
 }
 
+fn audio_feature_fingerprint(request: &BuildAudioModRequest) -> String {
+    let mut categories = normalize_tracked_categories(&request.tracked_categories);
+    categories.sort();
+    let coverage = match request.area_coverage {
+        AudioAreaCoverage::CountessRoute => "countess_route",
+        AudioAreaCoverage::AllAreas => "all_areas",
+    };
+    let gain = request.gain_db.unwrap_or(MarkerConfig::default().gain_db);
+    format!(
+        "audio-v{AUDIO_TELEMETRY_FEATURE_RECIPE_VERSION};protocol={PROTOCOL_VERSION};areas={coverage};track={};gain_mdb={}",
+        categories.join(","),
+        (gain * 1_000.0).round() as i32
+    )
+}
+
+fn audio_feature_group(fingerprint: String, reused_from_source: bool) -> ModFeatureGroup {
+    ModFeatureGroup {
+        id: AUDIO_TELEMETRY_FEATURE_ID.to_string(),
+        recipe_version: AUDIO_TELEMETRY_FEATURE_RECIPE_VERSION,
+        fingerprint,
+        reused_from_source,
+    }
+}
+
+fn room_tools_feature_group(reused_from_source: bool) -> ModFeatureGroup {
+    ModFeatureGroup {
+        id: IN_GAME_ROOM_TOOLS_FEATURE_ID.to_string(),
+        recipe_version: IN_GAME_ROOM_TOOLS_FEATURE_RECIPE_VERSION,
+        fingerprint: format!("room-tools-v{IN_GAME_ROOM_TOOLS_FEATURE_RECIPE_VERSION}"),
+        reused_from_source,
+    }
+}
+
+fn source_manifest_directory(layout: &SourceLayout) -> Option<&Path> {
+    layout.mpq.as_deref()?.parent()
+}
+
+fn read_source_feature_report(layout: &SourceLayout) -> Option<BuildAudioModReport> {
+    let root = source_manifest_directory(layout)?;
+    [MOD_MANIFEST_FILE_NAME, LEGACY_MANIFEST_FILE_NAME]
+        .iter()
+        .map(|name| root.join(name))
+        .find(|path| path.is_file())
+        .and_then(|path| std::fs::read(path).ok())
+        .and_then(|bytes| serde_json::from_slice::<BuildAudioModReport>(&bytes).ok())
+        .filter(|report| {
+            report.producer == "d2r-audio-mod"
+                && report.recipe_version >= AUDIO_MOD_RECIPE_VERSION
+                && !report.feature_groups.is_empty()
+        })
+}
+
+fn source_asset_exists(mpq: &Path, relative_path: &str) -> bool {
+    let relative = relative_path.replace('\\', "/");
+    [
+        "data/hd/global/sfx",
+        "data/global/sfx",
+        "data/hd/global/music",
+        "data/global/music",
+    ]
+    .iter()
+    .any(|root| mpq.join(root).join(&relative).is_file())
+}
+
+fn reusable_audio_report<'a>(
+    layout: &SourceLayout,
+    source_report: Option<&'a BuildAudioModReport>,
+    fingerprint: &str,
+) -> Option<&'a BuildAudioModReport> {
+    let report = source_report?;
+    let group = report
+        .feature_groups
+        .iter()
+        .find(|group| group.id == AUDIO_TELEMETRY_FEATURE_ID)?;
+    if group.recipe_version != AUDIO_TELEMETRY_FEATURE_RECIPE_VERSION
+        || group.fingerprint != fingerprint
+        || report.protocol_version != PROTOCOL_VERSION
+    {
+        return None;
+    }
+    let root = source_manifest_directory(layout)?;
+    if !root.join(AREA_CATALOG_FILE_NAME).is_file() || !root.join(ITEM_CATALOG_FILE_NAME).is_file()
+    {
+        return None;
+    }
+    let mpq = layout.mpq.as_deref()?;
+    report
+        .rune_assets
+        .iter()
+        .chain(&report.item_assets)
+        .chain(&report.area_assets)
+        .chain(&report.terror_assets)
+        .chain(&report.frontend_assets)
+        .all(|asset| source_asset_exists(mpq, &asset.relative_path))
+        .then_some(report)
+}
+
+fn write_mod_manifests(directory: &Path, report: &BuildAudioModReport) -> Result<(), String> {
+    let bytes = serde_json::to_vec_pretty(report)
+        .map_err(|error| format!("生成 D2RHub Mod 清单失败: {error}"))?;
+    write_file(&directory.join(MOD_MANIFEST_FILE_NAME), &bytes)?;
+    // Keep the old name as a compatibility alias for already released D2RHub versions.
+    write_file(&directory.join(LEGACY_MANIFEST_FILE_NAME), bytes)
+}
+
 pub fn build(request: BuildAudioModRequest) -> Result<BuildAudioModReport, String> {
     build_with_progress(request, |_| {})
 }
@@ -2992,6 +3327,9 @@ where
     F: FnMut(BuildProgress),
 {
     progress(BuildProgress::new("validate", 2, "正在检查游戏与 Mod…"));
+    if !request.include_audio_telemetry && !request.include_room_tools {
+        return Err("请至少选择一个要加工的功能组".to_string());
+    }
     let tracked_categories = normalize_tracked_categories(&request.tracked_categories);
     let include_runes = tracked_categories
         .iter()
@@ -3006,6 +3344,14 @@ where
             })?)?)
         }
     };
+    let source_feature_report = source_layout.as_ref().and_then(read_source_feature_report);
+    let audio_fingerprint = audio_feature_fingerprint(&request);
+    let reusable_audio = source_layout
+        .as_ref()
+        .and_then(|layout| {
+            reusable_audio_report(layout, source_feature_report.as_ref(), &audio_fingerprint)
+        })
+        .cloned();
     let base_mod_name = requested_mod_name(
         request.mod_name.as_deref(),
         request.build_mode,
@@ -3088,6 +3434,11 @@ where
             }
             layout
         }
+        AudioModBuildMode::Minimal if !request.include_audio_telemetry => {
+            std::fs::create_dir_all(&mpq_directory)
+                .map_err(|error| format!("创建 Mod 目录失败: {error}"))?;
+            layout_from_mpq(mpq_directory.clone())
+        }
         AudioModBuildMode::Minimal => extract_minimal_baseline(
             storage
                 .as_ref()
@@ -3095,6 +3446,299 @@ where
             &mpq_directory,
         )?,
     };
+
+    if let Some(reused) = reusable_audio.as_ref() {
+        progress(BuildProgress::new(
+            "reuse",
+            40,
+            "声纹版本与参数未变化，正在复用已有声纹…",
+        ));
+        let mut compatibility = vec![AudioModCompatibility {
+            target: "声纹识别功能组".to_string(),
+            action: "reuse_verified_feature_group".to_string(),
+            detail: "配方版本、协议、覆盖范围、跟踪类别、增益、目录与全部声纹文件均一致；没有重新编码或覆盖声纹。".to_string(),
+        }];
+        let source_has_room_tools = source_feature_report.as_ref().is_some_and(|report| {
+            report.feature_groups.iter().any(|group| {
+                group.id == IN_GAME_ROOM_TOOLS_FEATURE_ID
+                    && group.recipe_version == IN_GAME_ROOM_TOOLS_FEATURE_RECIPE_VERSION
+            })
+        });
+        let room_tools_installed = if request.include_room_tools {
+            install_in_game_room_tools(&mpq_directory, storage.as_ref(), &mut compatibility)?
+        } else {
+            false
+        };
+        let room_tools_available = room_tools_installed || source_has_room_tools;
+        if request.include_room_tools && !room_tools_available {
+            return Err("局内房间工具安装失败：没有找到可安全复用的完整游戏 UI 布局".to_string());
+        }
+        let source_root = source_manifest_directory(&layout)
+            .ok_or_else(|| "声纹来源缺少外层 Mod 目录".to_string())?;
+        for catalog in [AREA_CATALOG_FILE_NAME, ITEM_CATALOG_FILE_NAME] {
+            let source_catalog = source_root.join(catalog);
+            std::fs::copy(&source_catalog, staging_mod_directory.join(catalog)).map_err(
+                |error| format!("复用声纹目录失败 {}: {error}", source_catalog.display()),
+            )?;
+        }
+        let modinfo_path = mpq_directory.join("modinfo.json");
+        let mut modinfo = if modinfo_path.is_file() {
+            parse_json_value(&read_utf8(&modinfo_path)?)
+                .map_err(|error| format!("解析源 Mod modinfo.json 失败: {error}"))?
+        } else {
+            serde_json::json!({})
+        };
+        let object = modinfo
+            .as_object_mut()
+            .ok_or_else(|| "源 Mod modinfo.json 必须是 JSON 对象".to_string())?;
+        object.insert("name".to_string(), serde_json::json!(mod_name.clone()));
+        object
+            .entry("savepath".to_string())
+            .or_insert_with(|| serde_json::json!("../"));
+        object.insert(
+            "audio_telemetry_protocol".to_string(),
+            serde_json::json!(PROTOCOL_VERSION),
+        );
+        write_file(
+            &modinfo_path,
+            serde_json::to_vec_pretty(&modinfo)
+                .map_err(|error| format!("生成 modinfo.json 失败: {error}"))?,
+        )?;
+        let mut capabilities = reused.capabilities.clone();
+        if room_tools_available
+            && !capabilities
+                .iter()
+                .any(|value| value == IN_GAME_ROOM_TOOLS_CAPABILITY)
+        {
+            capabilities.push(IN_GAME_ROOM_TOOLS_CAPABILITY.to_string());
+        }
+        let mut feature_groups = source_feature_report
+            .as_ref()
+            .map(|report| report.feature_groups.clone())
+            .unwrap_or_default();
+        feature_groups.retain(|group| {
+            group.id != AUDIO_TELEMETRY_FEATURE_ID && group.id != IN_GAME_ROOM_TOOLS_FEATURE_ID
+        });
+        feature_groups.push(audio_feature_group(audio_fingerprint.clone(), true));
+        if room_tools_available {
+            feature_groups.push(room_tools_feature_group(
+                !room_tools_installed && source_has_room_tools,
+            ));
+        }
+        let report = BuildAudioModReport {
+            manifest_format: "d2r-audio-telemetry-mod".to_string(),
+            producer: "d2r-audio-mod".to_string(),
+            producer_version: env!("CARGO_PKG_VERSION").to_string(),
+            recipe_version: AUDIO_MOD_RECIPE_VERSION,
+            capabilities,
+            feature_groups,
+            generated_at_unix: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
+            protocol_version: PROTOCOL_VERSION,
+            build_mode: request.build_mode,
+            area_coverage: reused.area_coverage,
+            mod_name: mod_name.clone(),
+            mod_directory: final_mod_directory.to_string_lossy().into_owned(),
+            mpq_directory: final_mpq_directory.to_string_lossy().into_owned(),
+            source_excel_directory: layout.excel.to_string_lossy().into_owned(),
+            source_mod_copied,
+            source_mod_name: inferred_source_mod_name(request.source_directory.as_deref()),
+            sound_environment_source: reused.sound_environment_source.clone(),
+            launch_arguments: format!("-mod {mod_name} -txt"),
+            rune_assets: reused.rune_assets.clone(),
+            item_assets: reused.item_assets.clone(),
+            area_assets: reused.area_assets.clone(),
+            terror_assets: reused.terror_assets.clone(),
+            frontend_assets: reused.frontend_assets.clone(),
+            area_catalog: reused.area_catalog.clone(),
+            compatibility,
+            notes: vec![if room_tools_installed {
+                "声纹组已原样复用；本次只新增或更新局内房间工具。".to_string()
+            } else {
+                "声纹组版本和参数均未变化，本次已原样复用，没有重新生成声纹。".to_string()
+            }],
+        };
+        write_mod_manifests(&staging_mod_directory, &report)?;
+        write_file(
+            &staging_mod_directory.join("README-安装与测试.txt"),
+            format!(
+                "D2RHub Mod 加工器\r\n\r\n启动参数：{}\r\n\r\n已有声纹已经过完整核对并直接复用，本次没有重新生成声纹。\r\n",
+                report.launch_arguments
+            ),
+        )?;
+        progress(BuildProgress::new("finish", 98, "正在完成 Mod…"));
+        staging.commit(&final_mod_directory)?;
+        progress(BuildProgress::new("complete", 100, "Mod 已准备完成"));
+        return Ok(report);
+    }
+
+    if !request.include_audio_telemetry {
+        progress(BuildProgress::new(
+            "room_tools",
+            45,
+            "正在安装局内房间工具…",
+        ));
+        let mut compatibility = Vec::new();
+        let room_tools_installed =
+            install_in_game_room_tools(&mpq_directory, storage.as_ref(), &mut compatibility)?;
+        if !room_tools_installed {
+            return Err("局内房间工具安装失败：没有找到可安全复用的完整游戏 UI 布局".to_string());
+        }
+
+        let preserved_audio = source_feature_report.as_ref().and_then(|report| {
+            let group = report
+                .feature_groups
+                .iter()
+                .find(|group| group.id == AUDIO_TELEMETRY_FEATURE_ID)?;
+            reusable_audio_report(&layout, Some(report), &group.fingerprint).cloned()
+        });
+        if let (Some(source_root), Some(_)) =
+            (source_manifest_directory(&layout), preserved_audio.as_ref())
+        {
+            for catalog in [AREA_CATALOG_FILE_NAME, ITEM_CATALOG_FILE_NAME] {
+                let source_catalog = source_root.join(catalog);
+                if source_catalog.is_file() {
+                    std::fs::copy(&source_catalog, staging_mod_directory.join(catalog)).map_err(
+                        |error| format!("复用声纹目录失败 {}: {error}", source_catalog.display()),
+                    )?;
+                }
+            }
+        }
+
+        let modinfo_path = mpq_directory.join("modinfo.json");
+        let mut modinfo = if modinfo_path.is_file() {
+            parse_json_value(&read_utf8(&modinfo_path)?)
+                .map_err(|error| format!("解析源 Mod modinfo.json 失败: {error}"))?
+        } else {
+            serde_json::json!({})
+        };
+        let object = modinfo
+            .as_object_mut()
+            .ok_or_else(|| "源 Mod modinfo.json 必须是 JSON 对象".to_string())?;
+        object.insert("name".to_string(), serde_json::json!(mod_name));
+        object
+            .entry("savepath".to_string())
+            .or_insert_with(|| serde_json::json!("../"));
+        if preserved_audio.is_some() {
+            object.insert(
+                "audio_telemetry_protocol".to_string(),
+                serde_json::json!(PROTOCOL_VERSION),
+            );
+        } else {
+            object.remove("audio_telemetry_protocol");
+        }
+        write_file(
+            &modinfo_path,
+            serde_json::to_vec_pretty(&modinfo)
+                .map_err(|error| format!("生成 modinfo.json 失败: {error}"))?,
+        )?;
+
+        let mut capabilities = source_feature_report
+            .as_ref()
+            .map(|report| report.capabilities.clone())
+            .unwrap_or_default();
+        if !capabilities
+            .iter()
+            .any(|value| value == IN_GAME_ROOM_TOOLS_CAPABILITY)
+        {
+            capabilities.push(IN_GAME_ROOM_TOOLS_CAPABILITY.to_string());
+        }
+        let mut feature_groups = source_feature_report
+            .as_ref()
+            .map(|report| {
+                report
+                    .feature_groups
+                    .iter()
+                    .cloned()
+                    .map(|mut group| {
+                        group.reused_from_source = true;
+                        group
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        feature_groups.retain(|group| group.id != IN_GAME_ROOM_TOOLS_FEATURE_ID);
+        feature_groups.push(room_tools_feature_group(false));
+        if preserved_audio.is_none() {
+            feature_groups.retain(|group| group.id != AUDIO_TELEMETRY_FEATURE_ID);
+            capabilities.retain(|value| value != TERROR_IMMEDIATE_ENTRY_CAPABILITY);
+        }
+        let preserved = preserved_audio.as_ref();
+        let report = BuildAudioModReport {
+            manifest_format: "d2r-audio-telemetry-mod".to_string(),
+            producer: "d2r-audio-mod".to_string(),
+            producer_version: env!("CARGO_PKG_VERSION").to_string(),
+            recipe_version: AUDIO_MOD_RECIPE_VERSION,
+            capabilities,
+            feature_groups,
+            generated_at_unix: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
+            protocol_version: PROTOCOL_VERSION,
+            build_mode: request.build_mode,
+            area_coverage: preserved
+                .map(|report| report.area_coverage)
+                .unwrap_or(request.area_coverage),
+            mod_name: mod_name.clone(),
+            mod_directory: final_mod_directory.to_string_lossy().into_owned(),
+            mpq_directory: final_mpq_directory.to_string_lossy().into_owned(),
+            source_excel_directory: layout.excel.to_string_lossy().into_owned(),
+            source_mod_copied,
+            source_mod_name: if request.build_mode == AudioModBuildMode::Augment {
+                inferred_source_mod_name(request.source_directory.as_deref())
+            } else {
+                None
+            },
+            sound_environment_source: preserved
+                .map(|report| report.sound_environment_source.clone())
+                .unwrap_or_default(),
+            launch_arguments: format!("-mod {mod_name} -txt"),
+            rune_assets: preserved
+                .map(|report| report.rune_assets.clone())
+                .unwrap_or_default(),
+            item_assets: preserved
+                .map(|report| report.item_assets.clone())
+                .unwrap_or_default(),
+            area_assets: preserved
+                .map(|report| report.area_assets.clone())
+                .unwrap_or_default(),
+            terror_assets: preserved
+                .map(|report| report.terror_assets.clone())
+                .unwrap_or_default(),
+            frontend_assets: preserved
+                .map(|report| report.frontend_assets.clone())
+                .unwrap_or_default(),
+            area_catalog: preserved
+                .map(|report| report.area_catalog.clone())
+                .unwrap_or_default(),
+            compatibility,
+            notes: vec![if preserved.is_some() {
+                "本次只新增局内房间工具；已验证并原样复用源 Mod 的声纹文件与目录，没有重新生成声纹。".to_string()
+            } else {
+                "本次只加工局内房间工具，没有生成声纹文件或识别目录。".to_string()
+            }],
+        };
+        write_mod_manifests(&staging_mod_directory, &report)?;
+        write_file(
+            &staging_mod_directory.join("README-安装与测试.txt"),
+            format!(
+                "D2RHub Mod 加工器\r\n\r\n启动参数：{}\r\n\r\n本次已安装局内快速重开、创建与加入工具。{}\r\n",
+                report.launch_arguments,
+                if preserved.is_some() {
+                    "源 Mod 已有且未变化的声纹功能已直接复用。"
+                } else {
+                    "本次未加工声纹识别功能。"
+                }
+            ),
+        )?;
+        progress(BuildProgress::new("finish", 98, "正在完成 Mod…"));
+        staging.commit(&final_mod_directory)?;
+        progress(BuildProgress::new("complete", 100, "Mod 已准备完成"));
+        return Ok(report);
+    }
     let excel_output = mpq_directory.join("data/global/excel");
 
     let misc_baseline =
@@ -3176,8 +3820,18 @@ where
             "源 Mod 未被修改；加工结果写入新的组合 Mod 目录。".to_string()
         },
     }];
-    let room_tools_installed =
-        install_in_game_room_tools(&mpq_directory, storage.as_ref(), &mut compatibility)?;
+    let source_has_room_tools = source_feature_report.as_ref().is_some_and(|report| {
+        report.feature_groups.iter().any(|group| {
+            group.id == IN_GAME_ROOM_TOOLS_FEATURE_ID
+                && group.recipe_version == IN_GAME_ROOM_TOOLS_FEATURE_RECIPE_VERSION
+        })
+    });
+    let room_tools_installed = if request.include_room_tools {
+        install_in_game_room_tools(&mpq_directory, storage.as_ref(), &mut compatibility)?
+    } else {
+        false
+    };
+    let room_tools_available = room_tools_installed || source_has_room_tools;
     if request.build_mode == AudioModBuildMode::Augment {
         for (name, baseline) in [
             ("misc.txt", &misc_baseline),
@@ -3278,93 +3932,109 @@ where
         ..MarkerConfig::default()
     }
     .validate()?;
-    let mut rune_assets = Vec::new();
-    let mut item_assets = Vec::new();
-    let mut area_assets = Vec::new();
-    let mut terror_assets = Vec::new();
-    let mut frontend_assets = Vec::new();
+    let mut rune_assets = reusable_audio
+        .as_ref()
+        .map(|report| report.rune_assets.clone())
+        .unwrap_or_default();
+    let mut item_assets = reusable_audio
+        .as_ref()
+        .map(|report| report.item_assets.clone())
+        .unwrap_or_default();
+    let mut area_assets = reusable_audio
+        .as_ref()
+        .map(|report| report.area_assets.clone())
+        .unwrap_or_default();
+    let mut terror_assets = reusable_audio
+        .as_ref()
+        .map(|report| report.terror_assets.clone())
+        .unwrap_or_default();
+    let mut frontend_assets = reusable_audio
+        .as_ref()
+        .map(|report| report.frontend_assets.clone())
+        .unwrap_or_default();
     let definition_count = definitions.len().max(1);
-    for (definition_index, definition) in definitions.into_iter().enumerate() {
-        if definition_index == 0 || definition_index % 16 == 0 {
-            let percent = 46 + ((definition_index * 42) / definition_count) as u8;
-            progress(BuildProgress::new(
-                "audio",
-                percent,
-                format!(
-                    "正在加工声纹资源（{}/{definition_count}）…",
-                    definition_index + 1
-                ),
-            ));
-        }
-        let marker = definition.marker;
-        let group = definition.group;
-        let resolved_source = definition
-            .source_filename
-            .as_deref()
-            .map(|filename| {
-                resolve_audio_source(
-                    &mpq_directory,
-                    storage.as_ref(),
-                    filename,
-                    &casc_cache,
-                    &format!("{}-{}", marker_sort_key(marker), definition.sound),
-                )
-            })
-            .transpose()?;
-        let source_audio = resolved_source
-            .as_ref()
-            .and_then(|source| source.path.as_deref());
-        let output_path = mpq_directory
-            .join(definition.output_root)
-            .join(definition.relative_path.replace('\\', "/"));
-        let marker_config = if group == SoundAssetGroup::Terror {
-            MarkerConfig {
-                gain_db: TERROR_MARKER_GAIN_DB,
-                ..config
+    if reusable_audio.is_none() {
+        for (definition_index, definition) in definitions.into_iter().enumerate() {
+            if definition_index == 0 || definition_index % 16 == 0 {
+                let percent = 46 + ((definition_index * 42) / definition_count) as u8;
+                progress(BuildProgress::new(
+                    "audio",
+                    percent,
+                    format!(
+                        "正在加工声纹资源（{}/{definition_count}）…",
+                        definition_index + 1
+                    ),
+                ));
             }
-        } else {
-            config
-        };
-        let confidence = write_marker_flac(&output_path, marker, source_audio, marker_config)?;
-        let asset = AudioModAsset {
-            marker,
-            label: match group {
-                SoundAssetGroup::Terror => "恐怖区域即时入场 · TZ 1023".to_string(),
-                SoundAssetGroup::Frontend => format!("主界面 · {}", definition.sound),
-                SoundAssetGroup::Rune | SoundAssetGroup::Item | SoundAssetGroup::Area => {
-                    asset_label(marker, &areas, &item_catalog_entries)
+            let marker = definition.marker;
+            let group = definition.group;
+            let resolved_source = definition
+                .source_filename
+                .as_deref()
+                .map(|filename| {
+                    resolve_audio_source(
+                        &mpq_directory,
+                        storage.as_ref(),
+                        filename,
+                        &casc_cache,
+                        &format!("{}-{}", marker_sort_key(marker), definition.sound),
+                    )
+                })
+                .transpose()?;
+            let source_audio = resolved_source
+                .as_ref()
+                .and_then(|source| source.path.as_deref());
+            let output_path = mpq_directory
+                .join(definition.output_root)
+                .join(definition.relative_path.replace('\\', "/"));
+            let marker_config = if group == SoundAssetGroup::Terror {
+                MarkerConfig {
+                    gain_db: TERROR_MARKER_GAIN_DB,
+                    ..config
                 }
-            },
-            sound: definition.sound,
-            relative_path: definition.relative_path,
-            source_audio: resolved_source.as_ref().map(|source| source.label.clone()),
-            preserved_source_audio: source_audio.is_some(),
-            confidence,
-        };
-        match group {
-            SoundAssetGroup::Rune => rune_assets.push(asset),
-            SoundAssetGroup::Item => item_assets.push(asset),
-            SoundAssetGroup::Area => area_assets.push(asset),
-            SoundAssetGroup::Terror => terror_assets.push(asset),
-            SoundAssetGroup::Frontend => frontend_assets.push(asset),
+            } else {
+                config
+            };
+            let confidence = write_marker_flac(&output_path, marker, source_audio, marker_config)?;
+            let asset = AudioModAsset {
+                marker,
+                label: match group {
+                    SoundAssetGroup::Terror => "恐怖区域即时入场 · TZ 1023".to_string(),
+                    SoundAssetGroup::Frontend => format!("主界面 · {}", definition.sound),
+                    SoundAssetGroup::Rune | SoundAssetGroup::Item | SoundAssetGroup::Area => {
+                        asset_label(marker, &areas, &item_catalog_entries)
+                    }
+                },
+                sound: definition.sound,
+                relative_path: definition.relative_path,
+                source_audio: resolved_source.as_ref().map(|source| source.label.clone()),
+                preserved_source_audio: source_audio.is_some(),
+                confidence,
+            };
+            match group {
+                SoundAssetGroup::Rune => rune_assets.push(asset),
+                SoundAssetGroup::Item => item_assets.push(asset),
+                SoundAssetGroup::Area => area_assets.push(asset),
+                SoundAssetGroup::Terror => terror_assets.push(asset),
+                SoundAssetGroup::Frontend => frontend_assets.push(asset),
+            }
         }
-    }
-    let terror_probe_path = mpq_directory
-        .join("data/hd/global/sfx")
-        .join(TERROR_PROBE_RELATIVE_PATH.replace('\\', "/"));
-    let terror_probe_confidence = write_terror_probe_flac(&terror_probe_path)?;
-    terror_assets.push(AudioModAsset {
-        marker: TelemetryMarker::Area {
-            area_id: TERROR_PROBE_MARKER_AREA_ID,
-        },
-        label: "恐怖区域延迟兜底 · TZ 1023".to_string(),
-        sound: TERROR_PROBE_HD_SOUND.to_string(),
-        relative_path: TERROR_PROBE_RELATIVE_PATH.to_string(),
-        source_audio: None,
-        preserved_source_audio: false,
-        confidence: terror_probe_confidence,
-    });
-    compatibility.push(AudioModCompatibility {
+        let terror_probe_path = mpq_directory
+            .join("data/hd/global/sfx")
+            .join(TERROR_PROBE_RELATIVE_PATH.replace('\\', "/"));
+        let terror_probe_confidence = write_terror_probe_flac(&terror_probe_path)?;
+        terror_assets.push(AudioModAsset {
+            marker: TelemetryMarker::Area {
+                area_id: TERROR_PROBE_MARKER_AREA_ID,
+            },
+            label: "恐怖区域延迟兜底 · TZ 1023".to_string(),
+            sound: TERROR_PROBE_HD_SOUND.to_string(),
+            relative_path: TERROR_PROBE_RELATIVE_PATH.to_string(),
+            source_audio: None,
+            preserved_source_audio: false,
+            confidence: terror_probe_confidence,
+        });
+        compatibility.push(AudioModCompatibility {
         target: "恐怖区域状态识别".to_string(),
         action: "emit_shared_terror_zone_marker".to_string(),
         detail: format!(
@@ -3372,7 +4042,19 @@ where
             TERROR_MARKER_GAIN_DB,
             terror_probe_confidence * 100.0
         ),
-    });
+      });
+    } else {
+        progress(BuildProgress::new(
+            "audio",
+            88,
+            "声纹参数与配方未变化，正在直接复用已有声纹…",
+        ));
+        compatibility.push(AudioModCompatibility {
+            target: "声纹识别功能组".to_string(),
+            action: "reuse_verified_feature_group".to_string(),
+            detail: "源 Mod 的声纹配方版本、覆盖范围、跟踪类别、增益参数、目录和全部声纹文件均已核对一致；本次没有重新编码或覆盖声纹文件。".to_string(),
+        });
+    }
     if casc_cache.is_dir() {
         std::fs::remove_dir_all(&casc_cache).map_err(|error| {
             format!("清理 CASC 环境音缓存失败 {}: {error}", casc_cache.display())
@@ -3447,19 +4129,41 @@ where
     )?;
 
     let area_count = areas.len();
+    let mut capabilities = source_feature_report
+        .as_ref()
+        .map(|report| report.capabilities.clone())
+        .unwrap_or_default();
+    capabilities.retain(|capability| {
+        capability != TERROR_IMMEDIATE_ENTRY_CAPABILITY
+            && capability != IN_GAME_ROOM_TOOLS_CAPABILITY
+    });
+    capabilities.push(TERROR_IMMEDIATE_ENTRY_CAPABILITY.to_string());
+    if room_tools_available {
+        capabilities.push(IN_GAME_ROOM_TOOLS_CAPABILITY.to_string());
+    }
+    let mut feature_groups = source_feature_report
+        .as_ref()
+        .map(|report| report.feature_groups.clone())
+        .unwrap_or_default();
+    feature_groups.retain(|group| {
+        group.id != AUDIO_TELEMETRY_FEATURE_ID && group.id != IN_GAME_ROOM_TOOLS_FEATURE_ID
+    });
+    feature_groups.push(audio_feature_group(
+        audio_fingerprint.clone(),
+        reusable_audio.is_some(),
+    ));
+    if room_tools_available {
+        feature_groups.push(room_tools_feature_group(
+            !room_tools_installed && source_has_room_tools,
+        ));
+    }
     let report = BuildAudioModReport {
         manifest_format: "d2r-audio-telemetry-mod".to_string(),
         producer: "d2r-audio-mod".to_string(),
         producer_version: env!("CARGO_PKG_VERSION").to_string(),
         recipe_version: AUDIO_MOD_RECIPE_VERSION,
-        capabilities: if room_tools_installed {
-            vec![
-                TERROR_IMMEDIATE_ENTRY_CAPABILITY.to_string(),
-                IN_GAME_ROOM_TOOLS_CAPABILITY.to_string(),
-            ]
-        } else {
-            vec![TERROR_IMMEDIATE_ENTRY_CAPABILITY.to_string()]
-        },
+        capabilities,
+        feature_groups,
         generated_at_unix: SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -3524,18 +4228,14 @@ where
             },
             "v7 使用独立地点/掉落同步码与 127 路 Gold 掉落签名；主界面标记会立即结束未完成的刷图计时。"
                 .to_string(),
-            if room_tools_installed {
-                "局内顶部工具栏可在确认后开始下一局，或打开原生创建/加入房间面板；表单保留当前焦点与中文输入法支持，D2RHub 自动流程会整段粘贴房名和密码，不逐字触发局内快捷键，并继续使用 D2R 自带的缓存与回车提交。".to_string()
+            if room_tools_available {
+                "局内右上角的 0.30 倍紧凑工具栏可在确认后开始下一局，或按 MDK 原始消息链打开创建/加入；自动流程使用 PausePanel 的 Esc+左/右两次+确认安全入口。自动填写在表单聚焦后用 F13 调用原生 CfgChat 文本态，Tab 切换密码并提交，全程不移动鼠标或点击 HWND。".to_string()
             } else {
                 "本次没有可安全复用的完整游戏 UI 布局，未追加局内房间工具。".to_string()
             },
         ],
     };
-    write_file(
-        &staging_mod_directory.join("audio-telemetry-manifest.json"),
-        serde_json::to_vec_pretty(&report)
-            .map_err(|error| format!("生成音频 Mod 清单失败: {error}"))?,
-    )?;
+    write_mod_manifests(&staging_mod_directory, &report)?;
     write_file(
         &staging_mod_directory.join("README-安装与测试.txt"),
         format!(
@@ -3544,8 +4244,8 @@ where
             if report.area_coverage == AudioAreaCoverage::AllAreas { "全部区域" } else { "女伯爵路线" },
             report.rune_assets.len(),
             report.item_assets.len(),
-            if room_tools_installed {
-                "进入在线游戏后，顶部工具栏可在二次确认后开始下一局；创建/加入面板保留正常焦点和中文输入法支持，自动换房时由 D2RHub 整段粘贴房名与密码，并可用同一按钮、Esc 或面板关闭按钮退出。"
+            if room_tools_available {
+                "进入在线游戏后，右上角紧凑工具栏可在二次确认后开始下一局；自动创建/加入使用 Esc+左/右两次+确认的安全入口。自动填写在原生表单聚焦后以 F13 调用 D2R 原生 CfgChat 文本态，Tab 切换密码并提交；不会激活窗口、移动鼠标、点击 HWND 或使用剪贴板，可用 Esc 或面板关闭按钮退出。"
             } else {
                 "本次未追加局内房间工具；加工现有 Mod 时请同时提供有效的 D2R 游戏目录。"
             }
@@ -3560,6 +4260,212 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn write_room_tool_baseline(mpq: &Path) {
+        let layouts = mpq.join(UI_LAYOUTS_DIRECTORY);
+        write_file(
+            &layouts.join("HudWarningshd.json"),
+            br#"{ type: 'HUDWarningsPanel', name: 'HUDWarnings', fields: { priority: -100 }, children: [] }"#,
+        )
+        .unwrap();
+        for pause_layout in ["pauselayouthd.json", "pauselayoutgardenhd.json"] {
+            write_file(
+                &layouts.join(pause_layout),
+                br#"{
+                    type: 'PausePanel', name: 'PauseLayout',
+                    fields: { priority: 9001, defaultWidget: 'ReturnToGame' },
+                    children: [{ type: 'ButtonWidget', name: 'ReturnToGame', fields: { acceptsReturnKey: true, onClickMessage: 'PausePanelMessage:Close' } }],
+                }"#,
+            )
+            .unwrap();
+        }
+        write_file(
+            &layouts.join("creategamepanelhd.json"),
+            br#"{
+                type: 'CreateGamePanel', name: 'CreateGamePanel',
+                fields: { defaultWidget: 'GameNameInput' },
+                children: [{ type: 'TextBoxWidget', name: 'CreateFields', children: [
+                    { type: 'TextBoxWidget', name: 'GameNameInput', fields: { imeEnabled: true } },
+                    { type: 'TextBoxWidget', name: 'PasswordInput', fields: { imeEnabled: true } },
+                    { type: 'TextBoxWidget', name: 'DescriptionInput', fields: { imeEnabled: true } },
+                ] }],
+            }"#,
+        )
+        .unwrap();
+        write_file(
+            &layouts.join("joingamepanelhd.json"),
+            br#"{
+                type: 'JoinGamePanel', name: 'JoinGamePanel',
+                fields: { defaultWidget: 'NameInput' },
+                children: [
+                    { type: 'TextBoxWidget', name: 'NameInput', fields: { imeEnabled: true } },
+                    { type: 'TextBoxWidget', name: 'PasswordInput', fields: { imeEnabled: true } },
+                    { type: 'TextBoxWidget', name: 'SearchInput', fields: { imeEnabled: true } },
+                    { type: 'ButtonWidget', name: 'JoinButton', fields: { rect: { x: 330, y: 1080 } } },
+                ],
+            }"#,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn room_tools_can_be_built_without_audio_telemetry() {
+        let root =
+            std::env::temp_dir().join(format!("d2rhub-room-only-build-{}", uuid::Uuid::new_v4()));
+        let source = root.join("plain.mpq");
+        let output = root.join("mods");
+        write_room_tool_baseline(&source);
+
+        let report = build(BuildAudioModRequest {
+            build_mode: AudioModBuildMode::Augment,
+            source_directory: Some(source.to_string_lossy().into_owned()),
+            game_directory: None,
+            area_coverage: AudioAreaCoverage::AllAreas,
+            tracked_categories: default_tracked_categories(),
+            output_directory: Some(output.to_string_lossy().into_owned()),
+            mod_name: Some("RoomToolsOnly".to_string()),
+            sound_environment_file: None,
+            gain_db: None,
+            include_audio_telemetry: false,
+            include_room_tools: true,
+        })
+        .unwrap();
+
+        assert_eq!(report.feature_groups.len(), 1);
+        assert_eq!(report.feature_groups[0].id, IN_GAME_ROOM_TOOLS_FEATURE_ID);
+        assert!(report.rune_assets.is_empty());
+        assert!(!output
+            .join("RoomToolsOnly")
+            .join(AREA_CATALOG_FILE_NAME)
+            .exists());
+        assert!(output
+            .join("RoomToolsOnly")
+            .join(MOD_MANIFEST_FILE_NAME)
+            .is_file());
+        assert!(output
+            .join("RoomToolsOnly/RoomToolsOnly.mpq")
+            .join(UI_LAYOUTS_DIRECTORY)
+            .join("D2RHubRoomToolbarhd.json")
+            .is_file());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn adding_room_tools_reuses_an_unchanged_audio_group() {
+        let root =
+            std::env::temp_dir().join(format!("d2rhub-audio-reuse-build-{}", uuid::Uuid::new_v4()));
+        let source_root = root.join("AudioFirst");
+        let source_mpq = source_root.join("AudioFirst.mpq");
+        let output = root.join("mods");
+        write_room_tool_baseline(&source_mpq);
+        let relative_path = "audio_telemetry\\runes\\r01.flac";
+        let source_flac = source_mpq
+            .join("data/hd/global/sfx")
+            .join(relative_path.replace('\\', "/"));
+        write_file(&source_flac, b"already-generated-audio").unwrap();
+        write_file(
+            &source_root.join(AREA_CATALOG_FILE_NAME),
+            br#"{"protocol_version":7,"source_levels":"fixture","areas":[]}"#,
+        )
+        .unwrap();
+        write_file(
+            &source_root.join(ITEM_CATALOG_FILE_NAME),
+            br#"{"protocol_version":7,"source":"fixture","items":[]}"#,
+        )
+        .unwrap();
+        let audio_group = audio_feature_group("fixture-audio-fingerprint".to_string(), false);
+        let source_report = BuildAudioModReport {
+            manifest_format: "d2r-audio-telemetry-mod".to_string(),
+            producer: "d2r-audio-mod".to_string(),
+            producer_version: env!("CARGO_PKG_VERSION").to_string(),
+            recipe_version: AUDIO_MOD_RECIPE_VERSION,
+            capabilities: vec![
+                TERROR_IMMEDIATE_ENTRY_CAPABILITY.to_string(),
+                "future_feature_capability_v1".to_string(),
+            ],
+            feature_groups: vec![
+                audio_group,
+                ModFeatureGroup {
+                    id: "future_feature".to_string(),
+                    recipe_version: 3,
+                    fingerprint: "future-v3;fixture=true".to_string(),
+                    reused_from_source: false,
+                },
+            ],
+            generated_at_unix: 1,
+            protocol_version: PROTOCOL_VERSION,
+            build_mode: AudioModBuildMode::Minimal,
+            area_coverage: AudioAreaCoverage::AllAreas,
+            mod_name: "AudioFirst".to_string(),
+            mod_directory: source_root.to_string_lossy().into_owned(),
+            mpq_directory: source_mpq.to_string_lossy().into_owned(),
+            source_excel_directory: String::new(),
+            source_mod_copied: false,
+            source_mod_name: None,
+            sound_environment_source: "fixture".to_string(),
+            launch_arguments: "-mod AudioFirst -txt".to_string(),
+            rune_assets: vec![AudioModAsset {
+                marker: TelemetryMarker::Rune { rune_number: 1 },
+                label: "El".to_string(),
+                sound: "fixture".to_string(),
+                relative_path: relative_path.to_string(),
+                source_audio: None,
+                preserved_source_audio: false,
+                confidence: 1.0,
+            }],
+            item_assets: Vec::new(),
+            area_assets: Vec::new(),
+            terror_assets: Vec::new(),
+            frontend_assets: Vec::new(),
+            area_catalog: Vec::new(),
+            compatibility: Vec::new(),
+            notes: Vec::new(),
+        };
+        write_mod_manifests(&source_root, &source_report).unwrap();
+
+        let report = build(BuildAudioModRequest {
+            build_mode: AudioModBuildMode::Augment,
+            source_directory: Some(source_root.to_string_lossy().into_owned()),
+            game_directory: None,
+            area_coverage: AudioAreaCoverage::AllAreas,
+            tracked_categories: default_tracked_categories(),
+            output_directory: Some(output.to_string_lossy().into_owned()),
+            mod_name: Some("AudioAndRooms".to_string()),
+            sound_environment_file: None,
+            gain_db: None,
+            include_audio_telemetry: false,
+            include_room_tools: true,
+        })
+        .unwrap();
+
+        assert!(report
+            .feature_groups
+            .iter()
+            .any(|group| { group.id == AUDIO_TELEMETRY_FEATURE_ID && group.reused_from_source }));
+        assert!(report
+            .feature_groups
+            .iter()
+            .any(|group| group.id == IN_GAME_ROOM_TOOLS_FEATURE_ID));
+        assert!(report.feature_groups.iter().any(|group| {
+            group.id == "future_feature" && group.recipe_version == 3 && group.reused_from_source
+        }));
+        assert!(report
+            .capabilities
+            .iter()
+            .any(|capability| capability == "future_feature_capability_v1"));
+        let output_flac = output
+            .join("AudioAndRooms/AudioAndRooms.mpq/data/hd/global/sfx")
+            .join(relative_path.replace('\\', "/"));
+        assert_eq!(
+            std::fs::read(output_flac).unwrap(),
+            b"already-generated-audio"
+        );
+        assert!(output
+            .join("AudioAndRooms")
+            .join(AREA_CATALOG_FILE_NAME)
+            .is_file());
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn installs_room_tools_without_replacing_existing_hud_content() {
@@ -3578,6 +4484,20 @@ mod tests {
             }"#,
         )
         .unwrap();
+        for pause_layout in ["pauselayouthd.json", "pauselayoutgardenhd.json"] {
+            write_file(
+                &layouts.join(pause_layout),
+                br#"{
+                    type: 'PausePanel',
+                    name: 'PauseLayout',
+                    fields: { priority: 9001, defaultWidget: 'ReturnToGame' },
+                    children: [
+                        { type: 'ButtonWidget', name: 'ReturnToGame', fields: { acceptsReturnKey: true, onClickMessage: 'PausePanelMessage:Close' } },
+                    ],
+                }"#,
+            )
+            .unwrap();
+        }
         write_file(
             &layouts.join("creategamepanelhd.json"),
             br#"{
@@ -3617,7 +4537,6 @@ mod tests {
             }"#,
         )
         .unwrap();
-
         let mut compatibility = Vec::new();
         install_in_game_room_tools(&root, None, &mut compatibility).unwrap();
         install_in_game_room_tools(&root, None, &mut compatibility).unwrap();
@@ -3661,7 +4580,26 @@ mod tests {
             "PanelManager:TogglePanel:D2RHubQuickRecreateConfirm"
         );
         let next_game = find_layout_node(&toolbar, "D2RHubNextGame").unwrap();
-        assert_eq!(next_game["fields"]["tooltipOffset"]["y"], 258);
+        let create_game = find_layout_node(&toolbar, "D2RHubCreateGame").unwrap();
+        let join_game = find_layout_node(&toolbar, "D2RHubJoinGame").unwrap();
+        assert_eq!(
+            next_game["fields"]["tooltipOffset"]["y"],
+            ROOM_TOOL_TOOLTIP_OFFSET_Y
+        );
+        for button in [next_game, create_game, join_game] {
+            assert_eq!(button["fields"]["rect"]["scale"], ROOM_TOOL_BUTTON_SCALE);
+            assert_eq!(button["fields"]["rect"]["y"], ROOM_TOOL_BUTTON_Y);
+        }
+        assert_eq!(
+            create_game["fields"]["rect"]["x"].as_i64().unwrap()
+                - next_game["fields"]["rect"]["x"].as_i64().unwrap(),
+            280
+        );
+        assert_eq!(
+            join_game["fields"]["rect"]["x"].as_i64().unwrap()
+                - create_game["fields"]["rect"]["x"].as_i64().unwrap(),
+            280
+        );
         let next_button_y = next_game["fields"]["rect"]["y"].as_i64().unwrap();
         let confirm_button_y = find_layout_node(
             &quick_recreate_confirmation_layout(),
@@ -3688,25 +4626,100 @@ mod tests {
             "PanelManager:OpenPanel:D2RHubQuickRecreate"
         );
 
-        for (helper_name, target) in [
+        for (helper_name, native_target) in [
             ("D2RHubOpenCreateGamehd.json", "CreateGamePanel"),
             ("D2RHubOpenJoinGamehd.json", "JoinGamePanel"),
         ] {
             let helper = parse_json_value(&read_utf8(&layouts.join(helper_name)).unwrap()).unwrap();
             assert!(helper.get("fields").is_none());
             assert_eq!(
-                find_layout_node(&helper, "D2RHubOpenRoomPanel").unwrap()["fields"]["message"],
-                format!("PanelManager:TogglePanel:{target}")
+                find_layout_node(&helper, "D2RHubOpenNativeRoomPanel").unwrap()["fields"]
+                    ["message"],
+                format!("PanelManager:TogglePanel:{native_target}")
             );
-            for child in helper["children"].as_array().unwrap() {
-                assert_eq!(child["fields"]["time"], 0.1);
-            }
+        }
+
+        for pause_layout in ["pauselayouthd.json", "pauselayoutgardenhd.json"] {
+            let pause = parse_json_value(&read_utf8(&layouts.join(pause_layout)).unwrap()).unwrap();
+            assert_eq!(pause["fields"]["defaultWidget"], KEYBOARD_GATEWAY_HUB);
+            let hub = find_layout_node(&pause, KEYBOARD_GATEWAY_HUB).unwrap();
+            assert_eq!(hub["fields"]["acceptsReturnKey"], false);
+            assert!(hub["fields"].get("onClickMessage").is_none());
+            assert_eq!(
+                hub["fields"]["navigation"]["left"]["name"],
+                KEYBOARD_CREATE_GATEWAY
+            );
+            assert_eq!(
+                hub["fields"]["navigation"]["right"]["name"],
+                KEYBOARD_JOIN_GATEWAY
+            );
+            let return_to_game = find_layout_node(&pause, "ReturnToGame").unwrap();
+            assert_eq!(
+                return_to_game["fields"]["navigation"]["left"]["name"],
+                KEYBOARD_CREATE_GATEWAY
+            );
+            assert_eq!(
+                return_to_game["fields"]["navigation"]["right"]["name"],
+                KEYBOARD_JOIN_GATEWAY
+            );
+            assert_eq!(
+                find_layout_node(&pause, KEYBOARD_CREATE_GATEWAY).unwrap()["fields"]
+                    ["onClickMessage"],
+                "PanelManager:OpenPanel:D2RHubKeyboardOpenCreate"
+            );
+            assert_eq!(
+                find_layout_node(&pause, KEYBOARD_CREATE_GATEWAY).unwrap()["fields"]["navigation"]
+                    ["left"]["name"],
+                KEYBOARD_CREATE_GATEWAY
+            );
+            assert_eq!(
+                find_layout_node(&pause, KEYBOARD_JOIN_GATEWAY).unwrap()["fields"]
+                    ["onClickMessage"],
+                "PanelManager:OpenPanel:D2RHubKeyboardOpenJoin"
+            );
+            assert_eq!(
+                find_layout_node(&pause, KEYBOARD_JOIN_GATEWAY).unwrap()["fields"]["navigation"]
+                    ["right"]["name"],
+                KEYBOARD_JOIN_GATEWAY
+            );
+            assert_eq!(
+                pause["children"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .filter(|child| child["name"] == KEYBOARD_CREATE_GATEWAY)
+                    .count(),
+                1
+            );
+        }
+
+        for (helper_name, native_target) in [
+            ("D2RHubKeyboardOpenCreatehd.json", "CreateGamePanel"),
+            ("D2RHubKeyboardOpenJoinhd.json", "JoinGamePanel"),
+        ] {
+            let helper = parse_json_value(&read_utf8(&layouts.join(helper_name)).unwrap()).unwrap();
+            assert_eq!(
+                find_layout_node(&helper, "D2RHubKeyboardOpenNativeRoomPanel").unwrap()["fields"]
+                    ["message"],
+                format!("PanelManager:TogglePanel:{native_target}")
+            );
+        }
+
+        for obsolete in [
+            "D2RHubCreateNamePanelhd.json",
+            "D2RHubCreatePasswordPanelhd.json",
+            "D2RHubJoinNamePanelhd.json",
+            "D2RHubJoinPasswordPanelhd.json",
+            "D2RHubCreatePasswordTransitionhd.json",
+            "D2RHubJoinPasswordTransitionhd.json",
+        ] {
+            assert!(!layouts.join(obsolete).exists());
         }
 
         let create =
             parse_json_value(&read_utf8(&layouts.join("creategamepanelhd.json")).unwrap()).unwrap();
-        assert_eq!(create["fields"]["priority"], ROOM_FORM_INPUT_PRIORITY);
-        assert!(create["fields"].get("defaultWidget").is_none());
+        assert!(create["fields"].get("priority").is_none());
+        assert_eq!(create["fields"]["defaultWidget"], "GameNameInput");
         assert_eq!(create["fields"]["isDismissable"], true);
         assert_eq!(create["fields"]["acceptsEscKeyEverywhere"], true);
         for input_name in ["GameNameInput", "PasswordInput", "DescriptionInput"] {
@@ -3728,8 +4741,8 @@ mod tests {
         );
         let join =
             parse_json_value(&read_utf8(&layouts.join("joingamepanelhd.json")).unwrap()).unwrap();
-        assert_eq!(join["fields"]["priority"], ROOM_FORM_INPUT_PRIORITY);
-        assert!(join["fields"].get("defaultWidget").is_none());
+        assert!(join["fields"].get("priority").is_none());
+        assert_eq!(join["fields"]["defaultWidget"], "NameInput");
         assert_eq!(join["fields"]["isDismissable"], true);
         assert_eq!(join["fields"]["acceptsEscKeyEverywhere"], true);
         for input_name in ["NameInput", "PasswordInput"] {
@@ -3755,6 +4768,7 @@ mod tests {
             find_layout_node(&join, "D2RHubCloseRoomForm").unwrap()["fields"]["onClickMessage"],
             "PanelManager:ClosePanel:JoinGamePanel"
         );
+
         assert_eq!(
             compatibility.last().unwrap().action,
             "add_in_game_create_join_and_recreate"
@@ -3774,6 +4788,19 @@ mod tests {
             Some("jcy".to_string())
         );
         assert_eq!(inferred_source_mod_name(None), None);
+    }
+
+    #[test]
+    fn existing_output_names_receive_a_non_destructive_suffix() {
+        let root =
+            std::env::temp_dir().join(format!("d2rhub-audio-output-name-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(root.join("example")).unwrap();
+        std::fs::create_dir_all(root.join("example-2")).unwrap();
+
+        assert_eq!(available_mod_name(&root, "fresh"), "fresh");
+        assert_eq!(available_mod_name(&root, "example"), "example-3");
+
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -4322,6 +5349,8 @@ mod tests {
             mod_name: None,
             sound_environment_file: None,
             gain_db: None,
+            include_audio_telemetry: true,
+            include_room_tools: true,
         })
         .unwrap_err();
         assert!(error.contains("r02"));
@@ -4412,6 +5441,8 @@ mod tests {
             mod_name: Some("Countess-Audio-Test".to_string()),
             sound_environment_file: None,
             gain_db: Some(-26.0),
+            include_audio_telemetry: true,
+            include_room_tools: false,
         })
         .unwrap();
         assert_eq!(report.rune_assets.len(), 33);
@@ -4433,6 +5464,14 @@ mod tests {
         assert_eq!(report.mod_name, "Countess-Audio-Test");
         assert_eq!(report.launch_arguments, "-mod Countess-Audio-Test -txt");
         assert_eq!(report.recipe_version, AUDIO_MOD_RECIPE_VERSION);
+        assert!(report
+            .feature_groups
+            .iter()
+            .any(|group| group.id == AUDIO_TELEMETRY_FEATURE_ID));
+        assert!(!report
+            .feature_groups
+            .iter()
+            .any(|group| group.id == IN_GAME_ROOM_TOOLS_FEATURE_ID));
         let output_modinfo = serde_json::from_str::<serde_json::Value>(
             &read_utf8(&output.join("Countess-Audio-Test/Countess-Audio-Test.mpq/modinfo.json"))
                 .unwrap(),
@@ -4505,6 +5544,37 @@ mod tests {
         assert!(Path::new(&report.mod_directory)
             .join(AREA_CATALOG_FILE_NAME)
             .is_file());
+        let original_rune_audio =
+            std::fs::read(output_mpq.join("data/hd/global/sfx/audio_telemetry/runes/r01.flac"))
+                .unwrap();
+        let reuse_output = root.join("reused-mods");
+        let reused = build(BuildAudioModRequest {
+            build_mode: AudioModBuildMode::Augment,
+            area_coverage: AudioAreaCoverage::CountessRoute,
+            tracked_categories: vec![CATEGORY_RUNES.to_string()],
+            source_directory: Some(report.mod_directory.clone()),
+            game_directory: None,
+            output_directory: Some(reuse_output.to_string_lossy().into_owned()),
+            mod_name: Some("Countess-Audio-Reused".to_string()),
+            sound_environment_file: None,
+            gain_db: Some(-26.0),
+            include_audio_telemetry: true,
+            include_room_tools: false,
+        })
+        .unwrap();
+        assert!(reused
+            .feature_groups
+            .iter()
+            .any(|group| { group.id == AUDIO_TELEMETRY_FEATURE_ID && group.reused_from_source }));
+        assert_eq!(
+            std::fs::read(
+                reuse_output.join(
+                    "Countess-Audio-Reused/Countess-Audio-Reused.mpq/data/hd/global/sfx/audio_telemetry/runes/r01.flac",
+                ),
+            )
+            .unwrap(),
+            original_rune_audio
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -4527,6 +5597,8 @@ mod tests {
             mod_name: None,
             sound_environment_file: std::env::var("D2RHUB_AUDIO_REAL_SOUND_ENVIRON").ok(),
             gain_db: Some(-30.0),
+            include_audio_telemetry: true,
+            include_room_tools: true,
         })
         .unwrap();
         assert_eq!(report.rune_assets.len(), RUNE_COUNT as usize);
@@ -4568,6 +5640,8 @@ mod tests {
             mod_name: None,
             sound_environment_file: None,
             gain_db: Some(-30.0),
+            include_audio_telemetry: true,
+            include_room_tools: true,
         })
         .unwrap();
         assert_eq!(report.build_mode, AudioModBuildMode::Minimal);

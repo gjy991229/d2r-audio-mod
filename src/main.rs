@@ -26,6 +26,7 @@ struct Options {
     sound_environment: Option<PathBuf>,
     areas: Option<String>,
     track: Option<String>,
+    features: Option<String>,
     gain_db: Option<f32>,
     json: bool,
     events: bool,
@@ -69,6 +70,13 @@ fn parse_options(args: &[OsString]) -> Result<Options, String> {
             }
             "--track" => {
                 options.track = Some(
+                    value_after(args, &mut index, key)?
+                        .to_string_lossy()
+                        .into_owned(),
+                )
+            }
+            "--features" => {
+                options.features = Some(
                     value_after(args, &mut index, key)?
                         .to_string_lossy()
                         .into_owned(),
@@ -139,6 +147,35 @@ fn parse_tracking(raw: Option<&str>) -> Result<Vec<String>, String> {
     Ok(normalize_tracked_categories(&requested))
 }
 
+fn parse_features(raw: Option<&str>) -> Result<(bool, bool), String> {
+    let normalized = raw.unwrap_or("all").trim().to_ascii_lowercase();
+    if normalized == "all" {
+        return Ok((true, true));
+    }
+    let values = normalized
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>();
+    let audio = values
+        .iter()
+        .any(|value| matches!(*value, "audio" | "audio_telemetry"));
+    let rooms = values
+        .iter()
+        .any(|value| matches!(*value, "rooms" | "room_tools" | "in_game_room_tools"));
+    if values.is_empty()
+        || values.iter().any(|value| {
+            !matches!(
+                *value,
+                "audio" | "audio_telemetry" | "rooms" | "room_tools" | "in_game_room_tools"
+            )
+        })
+    {
+        return Err("--features 仅支持 all、audio、rooms，多个功能用逗号分隔".to_string());
+    }
+    Ok((audio, rooms))
+}
+
 fn run_build(mode: AudioModBuildMode, options: Options) -> Result<(), String> {
     if mode == AudioModBuildMode::Minimal && options.game.is_none() {
         return Err("minimal 模式必须提供 --game <D2R 游戏目录>".to_string());
@@ -152,6 +189,8 @@ fn run_build(mode: AudioModBuildMode, options: Options) -> Result<(), String> {
     if options.json && options.events {
         return Err("--json 与 --events 不能同时使用".to_string());
     }
+    let (include_audio_telemetry, include_room_tools) =
+        parse_features(options.features.as_deref())?;
     let request = BuildAudioModRequest {
         build_mode: mode,
         source_directory: path_text(options.source),
@@ -162,6 +201,8 @@ fn run_build(mode: AudioModBuildMode, options: Options) -> Result<(), String> {
         mod_name: options.name,
         sound_environment_file: path_text(options.sound_environment),
         gain_db: options.gain_db,
+        include_audio_telemetry,
+        include_room_tools,
     };
     let report = if options.events {
         match generator::build_with_progress(request, |progress| {
@@ -180,6 +221,7 @@ fn run_build(mode: AudioModBuildMode, options: Options) -> Result<(), String> {
                     "report": {
                         "protocol_version": report.protocol_version,
                         "recipe_version": report.recipe_version,
+                        "feature_groups": report.feature_groups,
                         "mod_name": report.mod_name,
                         "mod_directory": report.mod_directory,
                         "launch_arguments": report.launch_arguments,
@@ -277,6 +319,7 @@ Mod 选项：
   --name <名称>              自定义 Mod 名；仅允许 ASCII 字母、数字、- 和 _
   --areas all|countess       地图覆盖，默认 all
   --track all|none|类别列表   默认 all；列表以英文逗号分隔
+  --features all|audio|rooms 默认 all；可用 audio,rooms 组合
   --gain <dBFS>              普通声纹增益，范围 -42 到 -12，默认 -30；TZ 为可靠性固定 -18
   --sound-environment <文件> 显式指定 soundenviron.txt
   --json                     将完整结果写到标准输出

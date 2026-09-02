@@ -9,8 +9,8 @@ use d2r_audio_protocol::item_catalog::{
     SupportedItemDefinition, CATEGORY_RUNES, ITEM_CATALOG_FILE_NAME,
 };
 use d2r_audio_protocol::protocol::{
-    detect_markers, embed_marker, interleaved_i32_to_mono, marker_frames, MarkerConfig,
-    MARKER_OFFSET_SECONDS, MIN_SAMPLE_RATE, PACKET_GAP_SECONDS, PROTOCOL_VERSION,
+    detect_markers, embed_marker, embed_marker_with_delay, interleaved_i32_to_mono, marker_frames,
+    MarkerConfig, MARKER_OFFSET_SECONDS, MIN_SAMPLE_RATE, PACKET_GAP_SECONDS, PROTOCOL_VERSION,
 };
 use d2r_audio_protocol::rune_data;
 use encoding_rs::{Encoding, GB18030, UTF_16BE, UTF_16LE, WINDOWS_1252};
@@ -27,16 +27,19 @@ const TERROR_PROBE_SD_SOUND: &str = "audio_telemetry_tz_probe_sd";
 const TERROR_PROBE_HD_SOUND: &str = "audio_telemetry_tz_probe_hd";
 const TERROR_PROBE_RELATIVE_PATH: &str = "audio_telemetry\\terror\\tz_probe.flac";
 const TERROR_MARKER_GAIN_DB: f32 = -18.0;
-pub const AUDIO_MOD_RECIPE_VERSION: u32 = 22;
+const AREA_ENTRY_PROBE_RETRY_DELAYS_SECONDS: [f32; 2] = [0.6, 1.2];
+pub const AUDIO_MOD_RECIPE_VERSION: u32 = 23;
 pub const AUDIO_TELEMETRY_FEATURE_ID: &str = "audio_telemetry";
 pub const IN_GAME_ROOM_TOOLS_FEATURE_ID: &str = "in_game_room_tools";
 pub const AUTO_EXIT_ON_DEATH_FEATURE_ID: &str = "auto_exit_on_death";
-const AUDIO_TELEMETRY_FEATURE_RECIPE_VERSION: u32 = 1;
+const AUDIO_TELEMETRY_FEATURE_RECIPE_VERSION: u32 = 2;
 const IN_GAME_ROOM_TOOLS_FEATURE_RECIPE_VERSION: u32 = 19;
 const AUTO_EXIT_ON_DEATH_FEATURE_RECIPE_VERSION: u32 = 1;
 const MOD_MANIFEST_FILE_NAME: &str = "d2rhub-mod-manifest.json";
 const LEGACY_MANIFEST_FILE_NAME: &str = "audio-telemetry-manifest.json";
 const TERROR_IMMEDIATE_ENTRY_CAPABILITY: &str = "terror_zone_immediate_entry_marker_v1";
+const AREA_ENTRY_PROBE_CAPABILITY: &str = "area_entry_probe_burst_v1";
+const TERROR_ZONE_STATE_CAPABILITY: &str = "terror_zone_state_marker_v1";
 const IN_GAME_ROOM_TOOLS_CAPABILITY: &str = "in_game_room_tools_v19";
 const AUTO_EXIT_ON_DEATH_CAPABILITY: &str = "auto_exit_on_death_v1";
 const UI_LAYOUTS_DIRECTORY: &str = "data/global/ui/layouts";
@@ -1785,13 +1788,16 @@ fn configure_sound_row(table: &TsvTable, row: &mut [String], role: SoundRole) {
         ("Defer Inst", "0"),
         ("Stop Inst", "0"),
         ("Compound", "0"),
-        ("Stream", "0"),
+        ("Stream", if is_ambience { "1" } else { "0" }),
         ("Tracking", "0"),
         ("Is2D", if is_terror_probe { "0" } else { "1" }),
         ("IsAmbientScene", if is_ambience { "1" } else { "0" }),
         ("IsAmbientEvent", if is_terror_probe { "1" } else { "0" }),
     ] {
         set_if_present(table, row, column, value);
+    }
+    if is_ambience {
+        set_if_present(table, row, "Fade In", "0");
     }
     if is_terror_probe {
         for (column, value) in [("Falloff", "0"), ("Priority", "255"), ("Solo", "0")] {
@@ -2692,6 +2698,11 @@ fn patch_sounds(
         });
         next_index += 1;
     }
+    compatibility.push(AudioModCompatibility {
+        target: "普通区域入场识别".to_string(),
+        action: "add_streamed_area_entry_probe_burst".to_string(),
+        detail: "保留区域原始环境声并恢复流式播放；环境流起始 1.5 秒内连续发送三组精确 Area 探针，取消淡入对首包的衰减，后续低频心跳仅作丢包兜底。".to_string(),
+    });
 
     let terror_probe_template = table
         .row_by("Sound", "desecrated_enter_hd")
@@ -3273,7 +3284,7 @@ fn write_marker_flac(
     if periodic_location {
         let interval_samples = sample_rate as usize * 5 * channels as usize;
         let mut embedded_count = 0usize;
-        for chunk in samples.chunks_mut(interval_samples) {
+        for (chunk_index, chunk) in samples.chunks_mut(interval_samples).enumerate() {
             if chunk.len() < interval_samples {
                 break;
             }
@@ -3286,6 +3297,20 @@ fn write_marker_flac(
                 marker,
                 config,
             )?;
+            if chunk_index == 0 && matches!(marker, TelemetryMarker::Area { .. }) {
+                for delay_seconds in AREA_ENTRY_PROBE_RETRY_DELAYS_SECONDS {
+                    embed_marker_with_delay(
+                        &mut marker_chunk,
+                        channels as usize,
+                        bits_per_sample,
+                        sample_rate,
+                        marker,
+                        config,
+                        delay_seconds,
+                    )?;
+                    embedded_count += 1;
+                }
+            }
             chunk.copy_from_slice(&marker_chunk);
             embedded_count += 1;
         }
@@ -3298,9 +3323,44 @@ fn write_marker_flac(
                 marker,
                 config,
             )?;
+            if matches!(marker, TelemetryMarker::Area { .. }) {
+                for delay_seconds in AREA_ENTRY_PROBE_RETRY_DELAYS_SECONDS {
+                    embed_marker_with_delay(
+                        &mut samples,
+                        channels as usize,
+                        bits_per_sample,
+                        sample_rate,
+                        marker,
+                        config,
+                        delay_seconds,
+                    )?;
+                }
+                expected_detections = 1 + AREA_ENTRY_PROBE_RETRY_DELAYS_SECONDS.len();
+            }
         } else {
             expected_detections = embedded_count;
         }
+    } else if matches!(marker, TelemetryMarker::Area { .. }) {
+        embed_marker(
+            &mut samples,
+            channels as usize,
+            bits_per_sample,
+            sample_rate,
+            marker,
+            config,
+        )?;
+        for delay_seconds in AREA_ENTRY_PROBE_RETRY_DELAYS_SECONDS {
+            embed_marker_with_delay(
+                &mut samples,
+                channels as usize,
+                bits_per_sample,
+                sample_rate,
+                marker,
+                config,
+                delay_seconds,
+            )?;
+        }
+        expected_detections = 1 + AREA_ENTRY_PROBE_RETRY_DELAYS_SECONDS.len();
     } else {
         embed_marker(
             &mut samples,
@@ -4032,7 +4092,11 @@ where
         }
         if preserved_audio.is_none() {
             feature_groups.retain(|group| group.id != AUDIO_TELEMETRY_FEATURE_ID);
-            capabilities.retain(|value| value != TERROR_IMMEDIATE_ENTRY_CAPABILITY);
+            capabilities.retain(|value| {
+                value != TERROR_IMMEDIATE_ENTRY_CAPABILITY
+                    && value != AREA_ENTRY_PROBE_CAPABILITY
+                    && value != TERROR_ZONE_STATE_CAPABILITY
+            });
         }
         let preserved = preserved_audio.as_ref();
         let report = BuildAudioModReport {
@@ -4536,10 +4600,14 @@ where
         .unwrap_or_default();
     capabilities.retain(|capability| {
         capability != TERROR_IMMEDIATE_ENTRY_CAPABILITY
+            && capability != AREA_ENTRY_PROBE_CAPABILITY
+            && capability != TERROR_ZONE_STATE_CAPABILITY
             && capability != IN_GAME_ROOM_TOOLS_CAPABILITY
             && capability != AUTO_EXIT_ON_DEATH_CAPABILITY
     });
+    capabilities.push(AREA_ENTRY_PROBE_CAPABILITY.to_string());
     capabilities.push(TERROR_IMMEDIATE_ENTRY_CAPABILITY.to_string());
+    capabilities.push(TERROR_ZONE_STATE_CAPABILITY.to_string());
     if room_tools_available {
         capabilities.push(IN_GAME_ROOM_TOOLS_CAPABILITY.to_string());
     }
@@ -4639,6 +4707,8 @@ where
                 )
             },
             "v7 使用独立地点/掉落同步码与 127 路 Gold 掉落签名；主界面标记会立即结束未完成的刷图计时。"
+                .to_string(),
+            "普通 Area 在环境流起始 1.5 秒内发送三组短入场探针，并保留五秒低频心跳；TZ 1023 只表达恐怖化状态，接收端结合当前 TZ 查询确定归属，匹配的精确 Area 可补全 Area ID。"
                 .to_string(),
             if room_tools_available {
                 "局内右上角的 0.30 倍紧凑工具栏可在确认后开始下一局，或按 MDK 原始消息链打开创建/加入；自动流程使用 PausePanel 的 Esc+左/右两次+确认安全入口。自动填写在表单聚焦后用 F13 调用原生 CfgChat 文本态，Tab 切换密码并提交，全程不移动鼠标或点击 HWND。".to_string()

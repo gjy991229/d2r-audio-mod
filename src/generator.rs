@@ -188,6 +188,20 @@ fn inferred_source_mod_name(source_directory: Option<&str>) -> Option<String> {
     .filter(|value| !value.trim().is_empty())
 }
 
+fn preserved_source_mod_name(
+    build_mode: AudioModBuildMode,
+    source_directory: Option<&str>,
+    source_report: Option<&BuildAudioModReport>,
+) -> Option<String> {
+    if build_mode == AudioModBuildMode::Minimal {
+        return None;
+    }
+    if let Some(report) = source_report {
+        return report.source_mod_name.clone();
+    }
+    inferred_source_mod_name(source_directory)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BuildProgress {
     pub phase: String,
@@ -3839,7 +3853,11 @@ where
             mpq_directory: final_mpq_directory.to_string_lossy().into_owned(),
             source_excel_directory: layout.excel.to_string_lossy().into_owned(),
             source_mod_copied,
-            source_mod_name: inferred_source_mod_name(request.source_directory.as_deref()),
+            source_mod_name: preserved_source_mod_name(
+                request.build_mode,
+                request.source_directory.as_deref(),
+                source_feature_report.as_ref(),
+            ),
             sound_environment_source: reused.sound_environment_source.clone(),
             launch_arguments: format!("-mod {mod_name} -txt"),
             rune_assets: reused.rune_assets.clone(),
@@ -4038,11 +4056,11 @@ where
             mpq_directory: final_mpq_directory.to_string_lossy().into_owned(),
             source_excel_directory: layout.excel.to_string_lossy().into_owned(),
             source_mod_copied,
-            source_mod_name: if request.build_mode == AudioModBuildMode::Augment {
-                inferred_source_mod_name(request.source_directory.as_deref())
-            } else {
-                None
-            },
+            source_mod_name: preserved_source_mod_name(
+                request.build_mode,
+                request.source_directory.as_deref(),
+                source_feature_report.as_ref(),
+            ),
             sound_environment_source: preserved
                 .map(|report| report.sound_environment_source.clone())
                 .unwrap_or_default(),
@@ -4585,11 +4603,11 @@ where
             )
         },
         source_mod_copied,
-        source_mod_name: if request.build_mode == AudioModBuildMode::Augment {
-            inferred_source_mod_name(request.source_directory.as_deref())
-        } else {
-            None
-        },
+        source_mod_name: preserved_source_mod_name(
+            request.build_mode,
+            request.source_directory.as_deref(),
+            source_feature_report.as_ref(),
+        ),
         sound_environment_source: sound_environment_baseline.source,
         launch_arguments: format!("-mod {mod_name} -txt"),
         rune_assets,

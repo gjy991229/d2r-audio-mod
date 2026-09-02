@@ -147,10 +147,12 @@ fn parse_tracking(raw: Option<&str>) -> Result<Vec<String>, String> {
     Ok(normalize_tracked_categories(&requested))
 }
 
-fn parse_features(raw: Option<&str>) -> Result<(bool, bool), String> {
+fn parse_features(raw: Option<&str>) -> Result<(bool, bool, bool), String> {
     let normalized = raw.unwrap_or("all").trim().to_ascii_lowercase();
     if normalized == "all" {
-        return Ok((true, true));
+        // Preserve the established safe default. Death auto-exit is deliberately opt-in even
+        // when older callers request `all`.
+        return Ok((true, true, false));
     }
     let values = normalized
         .split(',')
@@ -163,17 +165,29 @@ fn parse_features(raw: Option<&str>) -> Result<(bool, bool), String> {
     let rooms = values
         .iter()
         .any(|value| matches!(*value, "rooms" | "room_tools" | "in_game_room_tools"));
+    let auto_exit_on_death = values
+        .iter()
+        .any(|value| matches!(*value, "death-exit" | "death_exit" | "auto_exit_on_death"));
     if values.is_empty()
         || values.iter().any(|value| {
             !matches!(
                 *value,
-                "audio" | "audio_telemetry" | "rooms" | "room_tools" | "in_game_room_tools"
+                "audio"
+                    | "audio_telemetry"
+                    | "rooms"
+                    | "room_tools"
+                    | "in_game_room_tools"
+                    | "death-exit"
+                    | "death_exit"
+                    | "auto_exit_on_death"
             )
         })
     {
-        return Err("--features 仅支持 all、audio、rooms，多个功能用逗号分隔".to_string());
+        return Err(
+            "--features 仅支持 all、audio、rooms、death-exit，多个功能用逗号分隔".to_string(),
+        );
     }
-    Ok((audio, rooms))
+    Ok((audio, rooms, auto_exit_on_death))
 }
 
 fn run_build(mode: AudioModBuildMode, options: Options) -> Result<(), String> {
@@ -189,7 +203,7 @@ fn run_build(mode: AudioModBuildMode, options: Options) -> Result<(), String> {
     if options.json && options.events {
         return Err("--json 与 --events 不能同时使用".to_string());
     }
-    let (include_audio_telemetry, include_room_tools) =
+    let (include_audio_telemetry, include_room_tools, include_auto_exit_on_death) =
         parse_features(options.features.as_deref())?;
     let request = BuildAudioModRequest {
         build_mode: mode,
@@ -203,6 +217,7 @@ fn run_build(mode: AudioModBuildMode, options: Options) -> Result<(), String> {
         gain_db: options.gain_db,
         include_audio_telemetry,
         include_room_tools,
+        include_auto_exit_on_death,
     };
     let report = if options.events {
         match generator::build_with_progress(request, |progress| {
@@ -319,7 +334,8 @@ Mod 选项：
   --name <名称>              自定义 Mod 名；仅允许 ASCII 字母、数字、- 和 _
   --areas all|countess       地图覆盖，默认 all
   --track all|none|类别列表   默认 all；列表以英文逗号分隔
-  --features all|audio|rooms 默认 all；可用 audio,rooms 组合
+  --features all|audio|rooms|death-exit
+                              默认 all（兼容含义为 audio+rooms）；死亡后自动退出必须显式选择 death-exit
   --gain <dBFS>              普通声纹增益，范围 -42 到 -12，默认 -30；TZ 为可靠性固定 -18
   --sound-environment <文件> 显式指定 soundenviron.txt
   --json                     将完整结果写到标准输出

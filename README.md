@@ -1,6 +1,6 @@
 # D2R Audio Mod
 
-当前版本 **v1.1.5**。这是独立、轻量的 D2R 音频遥测 Mod 生成/加工工具。它只读取游戏资源或源 Mod，输出一个新 Mod 与 v7 协议清单；不读取 D2RHub 配置、账号、数据库，也不会启用 Mod。
+当前版本 **v1.2.0**。这是独立、轻量的 D2R 音频遥测 Mod 生成/加工工具。它只读取游戏资源或源 Mod，输出一个新 Mod 与 v7 协议清单；不读取 D2RHub 配置、账号、数据库，也不会启用 Mod。
 
 生成器也可作为独立 sidecar 被接收软件调用。调用方必须显式传入游戏目录、源 Mod 与输出名称；生成器仍不会自行读取或修改调用方配置。使用 `--events` 时，标准输出会逐行返回 `progress`、`completed` 或 `error` JSON 事件，便于显示真实进度。
 
@@ -12,9 +12,11 @@
 - **生成的 MOD 名称**：默认 `D2RAudioTelemetry`，只使用英文字母、数字、`-`、`_`。
 - **输出目录**：选择游戏安装目录中的 `mods` 文件夹最省心；如果选择游戏安装目录本身，界面会自动改为其 `mods` 子目录。
 
-独立 GUI 仍默认生成全区域声纹和局内房间工具；D2RHub 或命令行可用 `--features audio`、`--features rooms` 或 `--features audio,rooms` 按需选择。r22 清单会按功能组记录独立版本和参数指纹。把 r22 成品作为新一轮来源时，声纹版本、协议、覆盖范围、类别、增益、目录及全部文件均一致才会直接复用，不重新编码或覆盖 FLAC。源 MOD 永远不会被覆盖。
+独立 GUI 仍默认生成全区域声纹和局内房间工具；D2RHub 或命令行可用 `--features audio`、`--features rooms`、`--features death-exit` 或逗号组合按需选择。`death-exit` 属于高影响的显式选项，不包含在默认 `all` 中。r22 清单会按功能组记录独立版本和参数指纹。把 r22 成品作为新一轮来源时，声纹版本、协议、覆盖范围、类别、增益、目录及全部文件均一致才会直接复用，不重新编码或覆盖 FLAC。源 MOD 永远不会被覆盖。
 
 选择 `rooms` 时会加入局内房间工具栏：`下一局` 先显示一个 4 秒自动关闭的确认条，确认后沿用 MDK 的 `CharacterSelect:LoadCharacter:2` 消息开始下一局；`创建房间` 与 `加入房间` 使用 MDK 的原生控制器消息链。三个按钮缩至 0.30 倍并紧凑排列，同时保留暂停菜单中的无操作安全焦点。自动流程用 `Esc → 左/右两次 → 确认` 打开创建/加入表单，随后通过 F13 调用原生 `CfgChat` 文本态，Tab 切换密码并提交。
+
+选择 `death-exit` 时会保留源 Mod 或原版的完整死亡界面，只移除旧式的 `PanelManager:OpenPanel:exitgame` 定时入口并追加具名入口。死亡弹窗出现 10ms 后打开 `D2RHubAutoExitOnDeath` 独立面板，再等待 100ms 发送 `PausePanelMessage:ExitGame`。重复加工不会叠加定时器，也不会覆盖游戏原生 `exitgamehd.json`。能力指纹不包含启停状态；加工已有 Mod 时会保留源 Mod 的实际启停状态，日常启停由 D2RHub 在具体 Mod 条目中只修改启动定时器。该功能只能在死亡判定后自动离开当前游戏，不能避免死亡、撤销惩罚或挽救专家模式角色。
 
 加工始终采用“新产物”策略：先把源 Mod 复制到事务临时目录，再对数据表和布局做结构化合并，全部验证通过后才一次性提交为另一个 Mod。源 Mod 永不改写；同名输出已存在时也不覆盖，而是生成 `-2`、`-3` 等新名称。源内容与 D2RHub 功能没有冲突时原样保留；对 D2RHub 必须拥有的声纹字段、具名布局节点、输入框焦点和安全键盘入口，只在新产物内以当前配方值更新。任何必需资源无法解析时整次加工失败并丢弃未完成产物，不留下半成品。
 
@@ -48,6 +50,10 @@ d2r-audio-mod.exe minimal --game "C:\Program Files (x86)\Diablo II Resurrected" 
 
 # 从已有 r22 声纹 Mod 补充房间工具；已验证且未变化的声纹直接复用
 d2r-audio-mod.exe augment --source "D:\Mods\MyAudioR22" --game "C:\Program Files (x86)\Diablo II Resurrected" --features rooms --name "MyAudioAndRooms"
+
+# 只加入死亡后自动退房；不会生成声纹或房间工具
+d2r-audio-mod.exe minimal --game "C:\Program Files (x86)\Diablo II Resurrected" --features death-exit --name "DeathExitOnly"
+
 ```
 
 运行 `d2r-audio-mod.exe help` 查看完整参数。生成完成后，按工具输出的 `-mod ... -txt` 参数自行启用新 Mod。
@@ -56,12 +62,12 @@ d2r-audio-mod.exe augment --source "D:\Mods\MyAudioR22" --game "C:\Program Files
 
 r22 是独立功能组体系的起点。生成结果同时写入 `d2rhub-mod-manifest.json`，并保留同内容的 `audio-telemetry-manifest.json` 兼容别名。清单中的 `feature_groups` 是可扩展数组，而不是固定的“全功能版本号”；每一项包含：
 
-- `id`：稳定功能标识，例如 `audio_telemetry`、`in_game_room_tools`。
+- `id`：稳定功能标识，例如 `audio_telemetry`、`in_game_room_tools`、`auto_exit_on_death`。
 - `recipe_version`：只在该组生成逻辑发生不兼容变化时递增。
-- `fingerprint`：涵盖会改变该组产物的全部参数。
+- `fingerprint`：标识该组已安装能力的配方参数；运行时启停状态不写入能力指纹。
 - `reused_from_source`：本次是否直接复用了已经完整核对的来源产物。
 
-加工是“增加或更新所选组”，不是删除未选择组。以 r22 成品为来源时，来源中未选择、但清单有效的其他功能组及其未知未来组会原样保留；因此以后新增第三、第四组，不需要改变现有清单结构或重做无关组。
+加工是“增加或更新所选组”，不是删除未选择组。以 r22 成品为来源时，来源中未选择、但清单有效的其他功能组及其未知未来组会原样保留；因此继续增加新功能组时，不需要改变现有清单结构或重做无关组。
 
 r21 及更早的产物没有独立功能组、参数指纹与完整复用依据，r22 不把它们视为可识别或可增量加工的来源，也不做原位升级。请从原版或当初未经加工的原始 Mod 生成一个新名称的 r22 Mod，之后的二次加工才能安全复用未变化的组。
 

@@ -30,12 +30,15 @@ const TERROR_MARKER_GAIN_DB: f32 = -18.0;
 pub const AUDIO_MOD_RECIPE_VERSION: u32 = 22;
 pub const AUDIO_TELEMETRY_FEATURE_ID: &str = "audio_telemetry";
 pub const IN_GAME_ROOM_TOOLS_FEATURE_ID: &str = "in_game_room_tools";
+pub const AUTO_EXIT_ON_DEATH_FEATURE_ID: &str = "auto_exit_on_death";
 const AUDIO_TELEMETRY_FEATURE_RECIPE_VERSION: u32 = 1;
 const IN_GAME_ROOM_TOOLS_FEATURE_RECIPE_VERSION: u32 = 19;
+const AUTO_EXIT_ON_DEATH_FEATURE_RECIPE_VERSION: u32 = 1;
 const MOD_MANIFEST_FILE_NAME: &str = "d2rhub-mod-manifest.json";
 const LEGACY_MANIFEST_FILE_NAME: &str = "audio-telemetry-manifest.json";
 const TERROR_IMMEDIATE_ENTRY_CAPABILITY: &str = "terror_zone_immediate_entry_marker_v1";
 const IN_GAME_ROOM_TOOLS_CAPABILITY: &str = "in_game_room_tools_v19";
+const AUTO_EXIT_ON_DEATH_CAPABILITY: &str = "auto_exit_on_death_v1";
 const UI_LAYOUTS_DIRECTORY: &str = "data/global/ui/layouts";
 const HUD_WARNINGS_LAYOUT: &str = "data/global/ui/layouts/HudWarningshd.json";
 const PAUSE_LAYOUTS: [&str; 2] = [
@@ -54,6 +57,11 @@ const ROOM_TOOL_CREATE_X: i64 = -760;
 const ROOM_TOOL_JOIN_X: i64 = -480;
 const ROOM_TOOL_CONFIRM_Y: i64 = 92;
 const ROOM_TOOL_TOOLTIP_OFFSET_Y: i64 = 267;
+const YOU_DIED_LAYOUT: &str = "data/global/ui/layouts/youdiedmodalhd.json";
+const AUTO_EXIT_ON_DEATH_PANEL: &str = "D2RHubAutoExitOnDeath";
+const AUTO_EXIT_ON_DEATH_LAUNCHER: &str = "D2RHubAutoExitOnDeathLauncher";
+const AUTO_EXIT_ON_DEATH_TRIGGER_DELAY: f64 = 0.01;
+const AUTO_EXIT_ON_DEATH_COMMIT_DELAY: f64 = 0.1;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -97,6 +105,10 @@ pub struct BuildAudioModRequest {
     /// Add or update the in-game room tools feature group.
     #[serde(default = "default_enabled")]
     pub include_room_tools: bool,
+    /// Leave the current game shortly after the death modal is shown. This is intentionally
+    /// opt-in because it changes gameplay flow and cannot prevent a death that already occurred.
+    #[serde(default)]
+    pub include_auto_exit_on_death: bool,
 }
 
 fn default_enabled() -> bool {
@@ -118,7 +130,8 @@ pub struct AudioModAsset {
 pub struct ModFeatureGroup {
     pub id: String,
     pub recipe_version: u32,
-    /// Stable digest of every setting that changes this group's generated assets.
+    /// Stable digest of the installed capability recipe. Runtime activation controls are excluded
+    /// and are read from the concrete Mod configuration instead.
     pub fingerprint: String,
     /// True when this build copied the already verified group byte-for-byte from its source Mod.
     #[serde(default)]
@@ -1400,6 +1413,194 @@ fn patch_room_form_layout(
         }
     }));
     write_json_layout(mpq_directory, relative_path, &document)
+}
+
+fn auto_exit_on_death_panel_layout() -> serde_json::Value {
+    serde_json::json!({
+        "type": "PausePanel",
+        "name": AUTO_EXIT_ON_DEATH_PANEL,
+        "fields": {
+            "anchor": { "x": 0.0 }
+        },
+        "children": [{
+            "type": "TimerWidget",
+            "name": "D2RHubAutoExitOnDeathCommit",
+            "fields": {
+                "time": AUTO_EXIT_ON_DEATH_COMMIT_DELAY,
+                "message": "PausePanelMessage:ExitGame"
+            }
+        }]
+    })
+}
+
+fn layout_has_named_timed_message(
+    document: &serde_json::Value,
+    name: &str,
+    message: &str,
+    time: f64,
+) -> bool {
+    document
+        .get("children")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|children| {
+            children.iter().any(|child| {
+                child.get("type").and_then(serde_json::Value::as_str) == Some("TimerWidget")
+                    && child.get("name").and_then(serde_json::Value::as_str) == Some(name)
+                    && child
+                        .pointer("/fields/message")
+                        .and_then(serde_json::Value::as_str)
+                        == Some(message)
+                    && child
+                        .pointer("/fields/time")
+                        .and_then(serde_json::Value::as_f64)
+                        .is_some_and(|actual| (actual - time).abs() < f64::EPSILON)
+            })
+        })
+}
+
+fn auto_exit_on_death_layouts_are_current(mpq_directory: &Path, enabled: bool) -> bool {
+    let read = |relative_path: &str| {
+        read_utf8(&mpq_directory.join(relative_path))
+            .ok()
+            .and_then(|text| parse_json_value(&text).ok())
+    };
+    let Some(death_modal) = read(YOU_DIED_LAYOUT) else {
+        return false;
+    };
+    let launcher_message = format!("PanelManager:OpenPanel:{AUTO_EXIT_ON_DEATH_PANEL}");
+    let has_launcher = layout_has_named_timed_message(
+        &death_modal,
+        AUTO_EXIT_ON_DEATH_LAUNCHER,
+        &launcher_message,
+        AUTO_EXIT_ON_DEATH_TRIGGER_DELAY,
+    );
+    if has_launcher != enabled
+        || death_modal
+            .get("children")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|children| {
+                children.iter().any(|child| {
+                    child.get("type").and_then(serde_json::Value::as_str) == Some("TimerWidget")
+                        && child
+                            .pointer("/fields/message")
+                            .and_then(serde_json::Value::as_str)
+                            == Some("PanelManager:OpenPanel:exitgame")
+                })
+            })
+    {
+        return false;
+    }
+    let Some(exit_panel) = read(&format!(
+        "{UI_LAYOUTS_DIRECTORY}/{AUTO_EXIT_ON_DEATH_PANEL}hd.json"
+    )) else {
+        return false;
+    };
+    if exit_panel.get("type").and_then(serde_json::Value::as_str) != Some("PausePanel")
+        || exit_panel.get("name").and_then(serde_json::Value::as_str)
+            != Some(AUTO_EXIT_ON_DEATH_PANEL)
+        || !layout_has_named_timed_message(
+            &exit_panel,
+            "D2RHubAutoExitOnDeathCommit",
+            "PausePanelMessage:ExitGame",
+            AUTO_EXIT_ON_DEATH_COMMIT_DELAY,
+        )
+    {
+        return false;
+    }
+    read(&format!(
+        "{UI_LAYOUTS_DIRECTORY}/{AUTO_EXIT_ON_DEATH_PANEL}.json"
+    ))
+    .is_some_and(|stub| {
+        stub.get("type").and_then(serde_json::Value::as_str) == Some("Panel")
+            && stub.get("name").and_then(serde_json::Value::as_str)
+                == Some(AUTO_EXIT_ON_DEATH_PANEL)
+    })
+}
+
+fn install_auto_exit_on_death(
+    mpq_directory: &Path,
+    storage: Option<&casc_core::Storage>,
+    enabled: bool,
+    compatibility: &mut Vec<AudioModCompatibility>,
+) -> Result<bool, String> {
+    if storage.is_none() && !mpq_directory.join(YOU_DIED_LAYOUT).is_file() {
+        compatibility.push(AudioModCompatibility {
+            target: "死亡后自动退出".to_string(),
+            action: "skip_without_death_layout".to_string(),
+            detail: "源 Mod 未包含完整死亡界面，且未提供可读取的 D2R 游戏目录；为避免用不完整布局覆盖游戏原界面，本次未追加死亡后自动退出。".to_string(),
+        });
+        return Ok(false);
+    }
+
+    let mut death_modal = read_local_or_casc_json(mpq_directory, storage, YOU_DIED_LAYOUT)?;
+    let children = death_modal
+        .as_object_mut()
+        .ok_or_else(|| format!("{YOU_DIED_LAYOUT} 顶层必须是 JSON 对象"))?
+        .entry("children")
+        .or_insert_with(|| serde_json::json!([]))
+        .as_array_mut()
+        .ok_or_else(|| format!("{YOU_DIED_LAYOUT}.children 必须是 JSON 数组"))?;
+    children.retain(|child| {
+        let name = child.get("name").and_then(serde_json::Value::as_str);
+        let widget_type = child.get("type").and_then(serde_json::Value::as_str);
+        let message = child
+            .pointer("/fields/message")
+            .and_then(serde_json::Value::as_str);
+        name != Some(AUTO_EXIT_ON_DEATH_LAUNCHER)
+            && !(widget_type == Some("TimerWidget")
+                && matches!(
+                    message,
+                    Some("PanelManager:OpenPanel:D2RHubAutoExitOnDeath")
+                        | Some("PanelManager:OpenPanel:exitgame")
+                ))
+    });
+    if enabled {
+        children.push(serde_json::json!({
+            "type": "TimerWidget",
+            "name": AUTO_EXIT_ON_DEATH_LAUNCHER,
+            "fields": {
+                "time": AUTO_EXIT_ON_DEATH_TRIGGER_DELAY,
+                "message": format!("PanelManager:OpenPanel:{AUTO_EXIT_ON_DEATH_PANEL}")
+            }
+        }));
+    }
+    write_json_layout(mpq_directory, YOU_DIED_LAYOUT, &death_modal)?;
+
+    write_json_layout(
+        mpq_directory,
+        &format!("{UI_LAYOUTS_DIRECTORY}/{AUTO_EXIT_ON_DEATH_PANEL}hd.json"),
+        &auto_exit_on_death_panel_layout(),
+    )?;
+    write_json_layout(
+        mpq_directory,
+        &format!("{UI_LAYOUTS_DIRECTORY}/{AUTO_EXIT_ON_DEATH_PANEL}.json"),
+        &serde_json::json!({
+            "type": "Panel",
+            "name": AUTO_EXIT_ON_DEATH_PANEL
+        }),
+    )?;
+    if !auto_exit_on_death_layouts_are_current(mpq_directory, enabled) {
+        return Err("死亡后自动退出布局写入后未通过结构校验".to_string());
+    }
+
+    compatibility.push(AudioModCompatibility {
+        target: "死亡后自动退出".to_string(),
+        action: if enabled {
+            "enable_auto_exit_after_death_modal".to_string()
+        } else {
+            "disable_auto_exit_after_death_modal".to_string()
+        },
+        detail: if enabled {
+            format!(
+                "保留源 Mod 或游戏原版死亡界面，只注入具名定时入口；死亡弹窗出现 {:.0}ms 后打开独立退出面板，再于 {:.0}ms 后发送 PausePanelMessage:ExitGame。该功能发生在死亡判定之后，不能挽救专家模式角色。",
+                AUTO_EXIT_ON_DEATH_TRIGGER_DELAY * 1_000.0,
+                AUTO_EXIT_ON_DEATH_COMMIT_DELAY * 1_000.0
+            )
+        } else {
+            "保留死亡自动退房能力及其独立面板，但移除死亡界面的启动定时器；可在 D2RHub 的具体 Mod 条目中直接启用。".to_string()
+        },
+    });
+    Ok(true)
 }
 
 fn install_in_game_room_tools(
@@ -3243,6 +3444,69 @@ fn room_tools_feature_group(reused_from_source: bool) -> ModFeatureGroup {
     }
 }
 
+fn auto_exit_on_death_fingerprint() -> String {
+    format!(
+        "auto-exit-on-death-v{AUTO_EXIT_ON_DEATH_FEATURE_RECIPE_VERSION};trigger_ms={};commit_ms={}",
+        (AUTO_EXIT_ON_DEATH_TRIGGER_DELAY * 1_000.0).round() as u32,
+        (AUTO_EXIT_ON_DEATH_COMMIT_DELAY * 1_000.0).round() as u32
+    )
+}
+
+fn auto_exit_on_death_group_is_current(group: &ModFeatureGroup) -> bool {
+    if group.id != AUTO_EXIT_ON_DEATH_FEATURE_ID
+        || group.recipe_version != AUTO_EXIT_ON_DEATH_FEATURE_RECIPE_VERSION
+    {
+        return false;
+    }
+    let fingerprint = auto_exit_on_death_fingerprint();
+    group.fingerprint == fingerprint
+        // Accept the short-lived stateful r1 fingerprints and normalize them on the next build.
+        || group.fingerprint == format!("{fingerprint};enabled=1")
+        || group.fingerprint == format!("{fingerprint};enabled=0")
+}
+
+fn auto_exit_on_death_feature_group(reused_from_source: bool) -> ModFeatureGroup {
+    ModFeatureGroup {
+        id: AUTO_EXIT_ON_DEATH_FEATURE_ID.to_string(),
+        recipe_version: AUTO_EXIT_ON_DEATH_FEATURE_RECIPE_VERSION,
+        fingerprint: auto_exit_on_death_fingerprint(),
+        reused_from_source,
+    }
+}
+
+fn source_auto_exit_on_death_enabled(
+    report: Option<&BuildAudioModReport>,
+    mpq_directory: &Path,
+) -> Option<bool> {
+    let group = report?
+        .feature_groups
+        .iter()
+        .find(|group| group.id == AUTO_EXIT_ON_DEATH_FEATURE_ID)?;
+    if !auto_exit_on_death_group_is_current(group) {
+        return None;
+    }
+    if auto_exit_on_death_layouts_are_current(mpq_directory, true) {
+        Some(true)
+    } else if auto_exit_on_death_layouts_are_current(mpq_directory, false) {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+fn source_has_current_feature(
+    report: Option<&BuildAudioModReport>,
+    id: &str,
+    recipe_version: u32,
+) -> bool {
+    report.is_some_and(|report| {
+        report
+            .feature_groups
+            .iter()
+            .any(|group| group.id == id && group.recipe_version == recipe_version)
+    })
+}
+
 fn source_manifest_directory(layout: &SourceLayout) -> Option<&Path> {
     layout.mpq.as_deref()?.parent()
 }
@@ -3327,7 +3591,10 @@ where
     F: FnMut(BuildProgress),
 {
     progress(BuildProgress::new("validate", 2, "正在检查游戏与 Mod…"));
-    if !request.include_audio_telemetry && !request.include_room_tools {
+    if !request.include_audio_telemetry
+        && !request.include_room_tools
+        && !request.include_auto_exit_on_death
+    {
         return Err("请至少选择一个要加工的功能组".to_string());
     }
     let tracked_categories = normalize_tracked_categories(&request.tracked_categories);
@@ -3458,12 +3725,13 @@ where
             action: "reuse_verified_feature_group".to_string(),
             detail: "配方版本、协议、覆盖范围、跟踪类别、增益、目录与全部声纹文件均一致；没有重新编码或覆盖声纹。".to_string(),
         }];
-        let source_has_room_tools = source_feature_report.as_ref().is_some_and(|report| {
-            report.feature_groups.iter().any(|group| {
-                group.id == IN_GAME_ROOM_TOOLS_FEATURE_ID
-                    && group.recipe_version == IN_GAME_ROOM_TOOLS_FEATURE_RECIPE_VERSION
-            })
-        });
+        let source_has_room_tools = source_has_current_feature(
+            source_feature_report.as_ref(),
+            IN_GAME_ROOM_TOOLS_FEATURE_ID,
+            IN_GAME_ROOM_TOOLS_FEATURE_RECIPE_VERSION,
+        );
+        let source_auto_exit_on_death_enabled =
+            source_auto_exit_on_death_enabled(source_feature_report.as_ref(), &mpq_directory);
         let room_tools_installed = if request.include_room_tools {
             install_in_game_room_tools(&mpq_directory, storage.as_ref(), &mut compatibility)?
         } else {
@@ -3472,6 +3740,19 @@ where
         let room_tools_available = room_tools_installed || source_has_room_tools;
         if request.include_room_tools && !room_tools_available {
             return Err("局内房间工具安装失败：没有找到可安全复用的完整游戏 UI 布局".to_string());
+        }
+        let auto_exit_on_death_installed = if request.include_auto_exit_on_death
+            && source_auto_exit_on_death_enabled.is_none()
+        {
+            install_auto_exit_on_death(&mpq_directory, storage.as_ref(), true, &mut compatibility)?
+        } else {
+            false
+        };
+        let auto_exit_on_death_enabled = source_auto_exit_on_death_enabled
+            .or_else(|| auto_exit_on_death_installed.then_some(true));
+        let auto_exit_on_death_available = auto_exit_on_death_enabled.is_some();
+        if request.include_auto_exit_on_death && !auto_exit_on_death_available {
+            return Err("死亡后自动退出安装失败：没有找到可安全复用的完整死亡界面布局".to_string());
         }
         let source_root = source_manifest_directory(&layout)
             .ok_or_else(|| "声纹来源缺少外层 Mod 目录".to_string())?;
@@ -3512,17 +3793,31 @@ where
         {
             capabilities.push(IN_GAME_ROOM_TOOLS_CAPABILITY.to_string());
         }
+        if auto_exit_on_death_available
+            && !capabilities
+                .iter()
+                .any(|value| value == AUTO_EXIT_ON_DEATH_CAPABILITY)
+        {
+            capabilities.push(AUTO_EXIT_ON_DEATH_CAPABILITY.to_string());
+        }
         let mut feature_groups = source_feature_report
             .as_ref()
             .map(|report| report.feature_groups.clone())
             .unwrap_or_default();
         feature_groups.retain(|group| {
-            group.id != AUDIO_TELEMETRY_FEATURE_ID && group.id != IN_GAME_ROOM_TOOLS_FEATURE_ID
+            group.id != AUDIO_TELEMETRY_FEATURE_ID
+                && group.id != IN_GAME_ROOM_TOOLS_FEATURE_ID
+                && group.id != AUTO_EXIT_ON_DEATH_FEATURE_ID
         });
         feature_groups.push(audio_feature_group(audio_fingerprint.clone(), true));
         if room_tools_available {
             feature_groups.push(room_tools_feature_group(
                 !room_tools_installed && source_has_room_tools,
+            ));
+        }
+        if auto_exit_on_death_available {
+            feature_groups.push(auto_exit_on_death_feature_group(
+                !auto_exit_on_death_installed && source_auto_exit_on_death_enabled.is_some(),
             ));
         }
         let report = BuildAudioModReport {
@@ -3554,18 +3849,31 @@ where
             frontend_assets: reused.frontend_assets.clone(),
             area_catalog: reused.area_catalog.clone(),
             compatibility,
-            notes: vec![if room_tools_installed {
-                "声纹组已原样复用；本次只新增或更新局内房间工具。".to_string()
-            } else {
-                "声纹组版本和参数均未变化，本次已原样复用，没有重新生成声纹。".to_string()
-            }],
+            notes: vec![format!(
+                "声纹组版本和参数均未变化，已原样复用；局内房间工具：{}；死亡自动退房：{}。",
+                if room_tools_available {
+                    "已包含"
+                } else {
+                    "未选择"
+                },
+                match auto_exit_on_death_enabled {
+                    Some(true) => "已安装并启用",
+                    Some(false) => "已安装但停用",
+                    None => "未安装",
+                }
+            )],
         };
         write_mod_manifests(&staging_mod_directory, &report)?;
         write_file(
             &staging_mod_directory.join("README-安装与测试.txt"),
             format!(
-                "D2RHub Mod 加工器\r\n\r\n启动参数：{}\r\n\r\n已有声纹已经过完整核对并直接复用，本次没有重新生成声纹。\r\n",
-                report.launch_arguments
+                "D2RHub Mod 加工器\r\n\r\n启动参数：{}\r\n\r\n已有声纹已经过完整核对并直接复用，本次没有重新生成声纹。\r\n死亡自动退房：{}。\r\n",
+                report.launch_arguments,
+                match auto_exit_on_death_enabled {
+                    Some(true) => "已安装并启用",
+                    Some(false) => "已安装但停用",
+                    None => "未安装",
+                }
             ),
         )?;
         progress(BuildProgress::new("finish", 98, "正在完成 Mod…"));
@@ -3576,15 +3884,39 @@ where
 
     if !request.include_audio_telemetry {
         progress(BuildProgress::new(
-            "room_tools",
+            "ui_features",
             45,
-            "正在安装局内房间工具…",
+            "正在安装所选界面功能…",
         ));
         let mut compatibility = Vec::new();
-        let room_tools_installed =
-            install_in_game_room_tools(&mpq_directory, storage.as_ref(), &mut compatibility)?;
-        if !room_tools_installed {
+        let source_has_room_tools = source_has_current_feature(
+            source_feature_report.as_ref(),
+            IN_GAME_ROOM_TOOLS_FEATURE_ID,
+            IN_GAME_ROOM_TOOLS_FEATURE_RECIPE_VERSION,
+        );
+        let source_auto_exit_on_death_enabled =
+            source_auto_exit_on_death_enabled(source_feature_report.as_ref(), &mpq_directory);
+        let room_tools_installed = if request.include_room_tools {
+            install_in_game_room_tools(&mpq_directory, storage.as_ref(), &mut compatibility)?
+        } else {
+            false
+        };
+        let room_tools_available = room_tools_installed || source_has_room_tools;
+        if request.include_room_tools && !room_tools_available {
             return Err("局内房间工具安装失败：没有找到可安全复用的完整游戏 UI 布局".to_string());
+        }
+        let auto_exit_on_death_installed = if request.include_auto_exit_on_death
+            && source_auto_exit_on_death_enabled.is_none()
+        {
+            install_auto_exit_on_death(&mpq_directory, storage.as_ref(), true, &mut compatibility)?
+        } else {
+            false
+        };
+        let auto_exit_on_death_enabled = source_auto_exit_on_death_enabled
+            .or_else(|| auto_exit_on_death_installed.then_some(true));
+        let auto_exit_on_death_available = auto_exit_on_death_enabled.is_some();
+        if request.include_auto_exit_on_death && !auto_exit_on_death_available {
+            return Err("死亡后自动退出安装失败：没有找到可安全复用的完整死亡界面布局".to_string());
         }
 
         let preserved_audio = source_feature_report.as_ref().and_then(|report| {
@@ -3639,11 +3971,19 @@ where
             .as_ref()
             .map(|report| report.capabilities.clone())
             .unwrap_or_default();
-        if !capabilities
-            .iter()
-            .any(|value| value == IN_GAME_ROOM_TOOLS_CAPABILITY)
+        if room_tools_available
+            && !capabilities
+                .iter()
+                .any(|value| value == IN_GAME_ROOM_TOOLS_CAPABILITY)
         {
             capabilities.push(IN_GAME_ROOM_TOOLS_CAPABILITY.to_string());
+        }
+        if auto_exit_on_death_available
+            && !capabilities
+                .iter()
+                .any(|value| value == AUTO_EXIT_ON_DEATH_CAPABILITY)
+        {
+            capabilities.push(AUTO_EXIT_ON_DEATH_CAPABILITY.to_string());
         }
         let mut feature_groups = source_feature_report
             .as_ref()
@@ -3659,8 +3999,19 @@ where
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
-        feature_groups.retain(|group| group.id != IN_GAME_ROOM_TOOLS_FEATURE_ID);
-        feature_groups.push(room_tools_feature_group(false));
+        feature_groups.retain(|group| {
+            group.id != IN_GAME_ROOM_TOOLS_FEATURE_ID && group.id != AUTO_EXIT_ON_DEATH_FEATURE_ID
+        });
+        if room_tools_available {
+            feature_groups.push(room_tools_feature_group(
+                !room_tools_installed && source_has_room_tools,
+            ));
+        }
+        if auto_exit_on_death_available {
+            feature_groups.push(auto_exit_on_death_feature_group(
+                !auto_exit_on_death_installed && source_auto_exit_on_death_enabled.is_some(),
+            ));
+        }
         if preserved_audio.is_none() {
             feature_groups.retain(|group| group.id != AUDIO_TELEMETRY_FEATURE_ID);
             capabilities.retain(|value| value != TERROR_IMMEDIATE_ENTRY_CAPABILITY);
@@ -3715,18 +4066,37 @@ where
                 .map(|report| report.area_catalog.clone())
                 .unwrap_or_default(),
             compatibility,
-            notes: vec![if preserved.is_some() {
-                "本次只新增局内房间工具；已验证并原样复用源 Mod 的声纹文件与目录，没有重新生成声纹。".to_string()
-            } else {
-                "本次只加工局内房间工具，没有生成声纹文件或识别目录。".to_string()
-            }],
+            notes: vec![format!(
+                "本次未生成声纹；局内房间工具：{}；死亡后自动退出：{}。{}",
+                if room_tools_available {
+                    "已包含"
+                } else {
+                    "未选择"
+                },
+                match auto_exit_on_death_enabled {
+                    Some(true) => "已安装并启用",
+                    Some(false) => "已安装但停用",
+                    None => "未选择",
+                },
+                if preserved.is_some() {
+                    "源 Mod 已验证的声纹文件与目录已原样复用。"
+                } else {
+                    "产物不包含声纹文件或识别目录。"
+                }
+            )],
         };
         write_mod_manifests(&staging_mod_directory, &report)?;
         write_file(
             &staging_mod_directory.join("README-安装与测试.txt"),
             format!(
-                "D2RHub Mod 加工器\r\n\r\n启动参数：{}\r\n\r\n本次已安装局内快速重开、创建与加入工具。{}\r\n",
+                "D2RHub Mod 加工器\r\n\r\n启动参数：{}\r\n\r\n局内房间工具：{}。\r\n死亡后自动退出：{}。该功能只在死亡判定后离开当前游戏，不能避免死亡或挽救专家模式角色。\r\n{}\r\n",
                 report.launch_arguments,
+                if room_tools_available { "已安装" } else { "未安装" },
+                match auto_exit_on_death_enabled {
+                    Some(true) => "已安装并启用",
+                    Some(false) => "已安装但停用",
+                    None => "未安装",
+                },
                 if preserved.is_some() {
                     "源 Mod 已有且未变化的声纹功能已直接复用。"
                 } else {
@@ -3820,18 +4190,31 @@ where
             "源 Mod 未被修改；加工结果写入新的组合 Mod 目录。".to_string()
         },
     }];
-    let source_has_room_tools = source_feature_report.as_ref().is_some_and(|report| {
-        report.feature_groups.iter().any(|group| {
-            group.id == IN_GAME_ROOM_TOOLS_FEATURE_ID
-                && group.recipe_version == IN_GAME_ROOM_TOOLS_FEATURE_RECIPE_VERSION
-        })
-    });
+    let source_has_room_tools = source_has_current_feature(
+        source_feature_report.as_ref(),
+        IN_GAME_ROOM_TOOLS_FEATURE_ID,
+        IN_GAME_ROOM_TOOLS_FEATURE_RECIPE_VERSION,
+    );
+    let source_auto_exit_on_death_enabled =
+        source_auto_exit_on_death_enabled(source_feature_report.as_ref(), &mpq_directory);
     let room_tools_installed = if request.include_room_tools {
         install_in_game_room_tools(&mpq_directory, storage.as_ref(), &mut compatibility)?
     } else {
         false
     };
     let room_tools_available = room_tools_installed || source_has_room_tools;
+    let auto_exit_on_death_installed =
+        if request.include_auto_exit_on_death && source_auto_exit_on_death_enabled.is_none() {
+            install_auto_exit_on_death(&mpq_directory, storage.as_ref(), true, &mut compatibility)?
+        } else {
+            false
+        };
+    let auto_exit_on_death_enabled =
+        source_auto_exit_on_death_enabled.or_else(|| auto_exit_on_death_installed.then_some(true));
+    let auto_exit_on_death_available = auto_exit_on_death_enabled.is_some();
+    if request.include_auto_exit_on_death && !auto_exit_on_death_available {
+        return Err("死亡后自动退出安装失败：没有找到可安全复用的完整死亡界面布局".to_string());
+    }
     if request.build_mode == AudioModBuildMode::Augment {
         for (name, baseline) in [
             ("misc.txt", &misc_baseline),
@@ -4136,17 +4519,23 @@ where
     capabilities.retain(|capability| {
         capability != TERROR_IMMEDIATE_ENTRY_CAPABILITY
             && capability != IN_GAME_ROOM_TOOLS_CAPABILITY
+            && capability != AUTO_EXIT_ON_DEATH_CAPABILITY
     });
     capabilities.push(TERROR_IMMEDIATE_ENTRY_CAPABILITY.to_string());
     if room_tools_available {
         capabilities.push(IN_GAME_ROOM_TOOLS_CAPABILITY.to_string());
+    }
+    if auto_exit_on_death_available {
+        capabilities.push(AUTO_EXIT_ON_DEATH_CAPABILITY.to_string());
     }
     let mut feature_groups = source_feature_report
         .as_ref()
         .map(|report| report.feature_groups.clone())
         .unwrap_or_default();
     feature_groups.retain(|group| {
-        group.id != AUDIO_TELEMETRY_FEATURE_ID && group.id != IN_GAME_ROOM_TOOLS_FEATURE_ID
+        group.id != AUDIO_TELEMETRY_FEATURE_ID
+            && group.id != IN_GAME_ROOM_TOOLS_FEATURE_ID
+            && group.id != AUTO_EXIT_ON_DEATH_FEATURE_ID
     });
     feature_groups.push(audio_feature_group(
         audio_fingerprint.clone(),
@@ -4155,6 +4544,11 @@ where
     if room_tools_available {
         feature_groups.push(room_tools_feature_group(
             !room_tools_installed && source_has_room_tools,
+        ));
+    }
+    if auto_exit_on_death_available {
+        feature_groups.push(auto_exit_on_death_feature_group(
+            !auto_exit_on_death_installed && source_auto_exit_on_death_enabled.is_some(),
         ));
     }
     let report = BuildAudioModReport {
@@ -4233,13 +4627,20 @@ where
             } else {
                 "本次没有可安全复用的完整游戏 UI 布局，未追加局内房间工具。".to_string()
             },
+            if auto_exit_on_death_enabled == Some(true) {
+                "死亡弹窗保留源布局，仅追加 10ms 具名入口；独立退出面板再等待 100ms 后离开当前游戏。该功能发生在死亡判定后，不能避免死亡。".to_string()
+            } else if auto_exit_on_death_enabled == Some(false) {
+                "死亡自动退房能力已安装但当前停用；死亡界面没有启动定时器，可在 D2RHub 的具体 Mod 条目中直接启用。".to_string()
+            } else {
+                "本次未安装死亡后自动退出。".to_string()
+            },
         ],
     };
     write_mod_manifests(&staging_mod_directory, &report)?;
     write_file(
         &staging_mod_directory.join("README-安装与测试.txt"),
         format!(
-            "D2R 音频遥测 Mod 工具\r\n\r\n启动参数：{}\r\n\r\n1. 输出目录是独立组合 Mod，源 Mod 没有被修改。\r\n2. 在你的启动器中启用上面的 -mod/-txt；本工具不会修改账号或启动器配置。\r\n3. Mod 只播放 v7 协议声纹；接收、统计由兼容软件独立完成。\r\n4. 所选掉落只加工世界实体的 Flippy 音频入口，背包/仓库 usesound 与 misc.txt dropsound 保持原值。\r\n5. 原实体与状态机从源 Mod 或本机游戏克隆，并同步复制其普通/低配背包 sprite；原模型、物品图标、动画、VFX、依赖和转场保留，原入口已有声音时保留原声并混入声纹。\r\n6. 主界面条目使用独立文件，不修改恐惧区域复用的 options_hd.flac。\r\n7. 本次地图覆盖：{}；掉落覆盖：{} 个符文、{} 个扩展物品。\r\n8. 游戏“音效”通道必须非静音；若仅依赖主界面音乐兜底，音乐通道也不能完全静音。\r\n9. 声纹只能区分基础物品代码，不能区分共享同一代码的词缀、品质或鉴定结果。\r\n10. {}\r\n",
+            "D2R 音频遥测 Mod 工具\r\n\r\n启动参数：{}\r\n\r\n1. 输出目录是独立组合 Mod，源 Mod 没有被修改。\r\n2. 在你的启动器中启用上面的 -mod/-txt；本工具不会修改账号或启动器配置。\r\n3. Mod 只播放 v7 协议声纹；接收、统计由兼容软件独立完成。\r\n4. 所选掉落只加工世界实体的 Flippy 音频入口，背包/仓库 usesound 与 misc.txt dropsound 保持原值。\r\n5. 原实体与状态机从源 Mod 或本机游戏克隆，并同步复制其普通/低配背包 sprite；原模型、物品图标、动画、VFX、依赖和转场保留，原入口已有声音时保留原声并混入声纹。\r\n6. 主界面条目使用独立文件，不修改恐惧区域复用的 options_hd.flac。\r\n7. 本次地图覆盖：{}；掉落覆盖：{} 个符文、{} 个扩展物品。\r\n8. 游戏“音效”通道必须非静音；若仅依赖主界面音乐兜底，音乐通道也不能完全静音。\r\n9. 声纹只能区分基础物品代码，不能区分共享同一代码的词缀、品质或鉴定结果。\r\n10. {}\r\n11. 死亡后自动退出：{}；它不能避免死亡或挽救专家模式角色。\r\n",
             report.launch_arguments,
             if report.area_coverage == AudioAreaCoverage::AllAreas { "全部区域" } else { "女伯爵路线" },
             report.rune_assets.len(),
@@ -4248,6 +4649,11 @@ where
                 "进入在线游戏后，右上角紧凑工具栏可在二次确认后开始下一局；自动创建/加入使用 Esc+左/右两次+确认的安全入口。自动填写在原生表单聚焦后以 F13 调用 D2R 原生 CfgChat 文本态，Tab 切换密码并提交；不会激活窗口、移动鼠标、点击 HWND 或使用剪贴板，可用 Esc 或面板关闭按钮退出。"
             } else {
                 "本次未追加局内房间工具；加工现有 Mod 时请同时提供有效的 D2R 游戏目录。"
+            },
+            match auto_exit_on_death_enabled {
+                Some(true) => "已安装并启用",
+                Some(false) => "已安装但停用",
+                None => "未安装",
             }
         ),
     )?;
@@ -4328,6 +4734,7 @@ mod tests {
             gain_db: None,
             include_audio_telemetry: false,
             include_room_tools: true,
+            include_auto_exit_on_death: false,
         })
         .unwrap();
 
@@ -4347,6 +4754,132 @@ mod tests {
             .join(UI_LAYOUTS_DIRECTORY)
             .join("D2RHubRoomToolbarhd.json")
             .is_file());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn auto_exit_on_death_is_opt_in_preserves_the_modal_and_normalizes_legacy_timers() {
+        let root = std::env::temp_dir().join(format!(
+            "d2rhub-death-exit-only-build-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let source = root.join("plain.mpq");
+        let output = root.join("mods");
+        let layouts = source.join(UI_LAYOUTS_DIRECTORY);
+        write_file(
+            &layouts.join("youdiedmodalhd.json"),
+            br#"{
+                type: 'YouDiedModal', name: 'YouDiedModal',
+                fields: { drawTint: true, isDismissable: false },
+                children: [
+                    { type: 'TextBoxWidget', name: 'MainText', fields: { rect: { y: 700 } } },
+                    { type: 'TimerWidget', name: 'autoexit', fields: {
+                        time: 0.01, message: 'PanelManager:OpenPanel:exitgame',
+                    } },
+                ],
+            }"#,
+        )
+        .unwrap();
+
+        let report = build(BuildAudioModRequest {
+            build_mode: AudioModBuildMode::Augment,
+            source_directory: Some(source.to_string_lossy().into_owned()),
+            game_directory: None,
+            area_coverage: AudioAreaCoverage::AllAreas,
+            tracked_categories: default_tracked_categories(),
+            output_directory: Some(output.to_string_lossy().into_owned()),
+            mod_name: Some("DeathExitOnly".to_string()),
+            sound_environment_file: None,
+            gain_db: None,
+            include_audio_telemetry: false,
+            include_room_tools: false,
+            include_auto_exit_on_death: true,
+        })
+        .unwrap();
+
+        assert_eq!(
+            report.feature_groups,
+            vec![auto_exit_on_death_feature_group(false)]
+        );
+        assert!(report.rune_assets.is_empty());
+        let output_mpq = output.join("DeathExitOnly/DeathExitOnly.mpq");
+        let death_modal =
+            parse_json_value(&read_utf8(&output_mpq.join(YOU_DIED_LAYOUT)).unwrap()).unwrap();
+        assert!(find_layout_node(&death_modal, "MainText").is_some());
+        assert!(find_layout_node(&death_modal, "autoexit").is_none());
+        let launcher = find_layout_node(&death_modal, AUTO_EXIT_ON_DEATH_LAUNCHER).unwrap();
+        assert_eq!(
+            launcher
+                .pointer("/fields/message")
+                .and_then(serde_json::Value::as_str),
+            Some("PanelManager:OpenPanel:D2RHubAutoExitOnDeath")
+        );
+        let exit_panel = parse_json_value(
+            &read_utf8(&output_mpq.join(format!(
+                "{UI_LAYOUTS_DIRECTORY}/{AUTO_EXIT_ON_DEATH_PANEL}hd.json"
+            )))
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            exit_panel.get("type").and_then(serde_json::Value::as_str),
+            Some("PausePanel")
+        );
+        assert_eq!(
+            find_layout_node(&exit_panel, "D2RHubAutoExitOnDeathCommit")
+                .and_then(|node| node.pointer("/fields/message"))
+                .and_then(serde_json::Value::as_str),
+            Some("PausePanelMessage:ExitGame")
+        );
+        assert!(!output_mpq
+            .join(format!("{UI_LAYOUTS_DIRECTORY}/exitgamehd.json"))
+            .exists());
+
+        install_auto_exit_on_death(&output_mpq, None, true, &mut Vec::new()).unwrap();
+        let installed_twice =
+            parse_json_value(&read_utf8(&output_mpq.join(YOU_DIED_LAYOUT)).unwrap()).unwrap();
+        let launcher_count = installed_twice
+            .get("children")
+            .and_then(serde_json::Value::as_array)
+            .unwrap()
+            .iter()
+            .filter(|child| {
+                child.get("name").and_then(serde_json::Value::as_str)
+                    == Some(AUTO_EXIT_ON_DEATH_LAUNCHER)
+            })
+            .count();
+        assert_eq!(launcher_count, 1);
+
+        // Activation is runtime Mod configuration, not a processing parameter. Once a source owns
+        // the capability, later additive processing preserves the source layout state.
+        install_auto_exit_on_death(&output_mpq, None, false, &mut Vec::new()).unwrap();
+        assert!(auto_exit_on_death_layouts_are_current(&output_mpq, false));
+
+        let disabled_output = root.join("disabled-mods");
+        let disabled = build(BuildAudioModRequest {
+            build_mode: AudioModBuildMode::Augment,
+            source_directory: Some(output.join("DeathExitOnly").to_string_lossy().into_owned()),
+            game_directory: None,
+            area_coverage: AudioAreaCoverage::AllAreas,
+            tracked_categories: default_tracked_categories(),
+            output_directory: Some(disabled_output.to_string_lossy().into_owned()),
+            mod_name: Some("DeathExitDisabled".to_string()),
+            sound_environment_file: None,
+            gain_db: None,
+            include_audio_telemetry: false,
+            include_room_tools: false,
+            include_auto_exit_on_death: true,
+        })
+        .unwrap();
+        assert_eq!(
+            disabled.feature_groups,
+            vec![auto_exit_on_death_feature_group(true)]
+        );
+        let disabled_mpq = disabled_output.join("DeathExitDisabled/DeathExitDisabled.mpq");
+        assert!(auto_exit_on_death_layouts_are_current(&disabled_mpq, false));
+        let disabled_modal =
+            parse_json_value(&read_utf8(&disabled_mpq.join(YOU_DIED_LAYOUT)).unwrap()).unwrap();
+        assert!(find_layout_node(&disabled_modal, AUTO_EXIT_ON_DEATH_LAUNCHER).is_none());
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -4435,6 +4968,7 @@ mod tests {
             gain_db: None,
             include_audio_telemetry: false,
             include_room_tools: true,
+            include_auto_exit_on_death: false,
         })
         .unwrap();
 
@@ -5351,6 +5885,7 @@ mod tests {
             gain_db: None,
             include_audio_telemetry: true,
             include_room_tools: true,
+            include_auto_exit_on_death: false,
         })
         .unwrap_err();
         assert!(error.contains("r02"));
@@ -5443,6 +5978,7 @@ mod tests {
             gain_db: Some(-26.0),
             include_audio_telemetry: true,
             include_room_tools: false,
+            include_auto_exit_on_death: false,
         })
         .unwrap();
         assert_eq!(report.rune_assets.len(), 33);
@@ -5560,6 +6096,7 @@ mod tests {
             gain_db: Some(-26.0),
             include_audio_telemetry: true,
             include_room_tools: false,
+            include_auto_exit_on_death: false,
         })
         .unwrap();
         assert!(reused
@@ -5599,6 +6136,7 @@ mod tests {
             gain_db: Some(-30.0),
             include_audio_telemetry: true,
             include_room_tools: true,
+            include_auto_exit_on_death: false,
         })
         .unwrap();
         assert_eq!(report.rune_assets.len(), RUNE_COUNT as usize);
@@ -5642,6 +6180,7 @@ mod tests {
             gain_db: Some(-30.0),
             include_audio_telemetry: true,
             include_room_tools: true,
+            include_auto_exit_on_death: false,
         })
         .unwrap();
         assert_eq!(report.build_mode, AudioModBuildMode::Minimal);

@@ -282,6 +282,7 @@ unsafe fn start_build(window: HWND, state: &mut AppState) {
         gain_db: None,
         include_audio_telemetry: true,
         include_room_tools: true,
+        include_auto_exit_on_death: false,
     };
 
     state.last_output = None;

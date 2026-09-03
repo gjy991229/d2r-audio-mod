@@ -1301,7 +1301,6 @@ fn find_layout_node_mut<'a>(
         .find_map(|child| find_layout_node_mut(child, name))
 }
 
-#[cfg(test)]
 fn find_layout_node<'a>(
     document: &'a serde_json::Value,
     name: &str,
@@ -3598,17 +3597,414 @@ fn source_auto_exit_on_death_enabled(
     }
 }
 
-fn source_has_current_feature(
-    report: Option<&BuildAudioModReport>,
-    id: &str,
-    recipe_version: u32,
+fn routed_pause_button_count(node: &serde_json::Value) -> Option<usize> {
+    let mut routed = 0;
+    if node.get("type").and_then(serde_json::Value::as_str) == Some("ButtonWidget") {
+        let name = node.get("name").and_then(serde_json::Value::as_str);
+        if ![
+            Some(KEYBOARD_GATEWAY_HUB),
+            Some(KEYBOARD_CREATE_GATEWAY),
+            Some(KEYBOARD_JOIN_GATEWAY),
+        ]
+        .contains(&name)
+        {
+            if node
+                .pointer("/fields/navigation/left/name")
+                .and_then(serde_json::Value::as_str)
+                != Some(KEYBOARD_CREATE_GATEWAY)
+                || node
+                    .pointer("/fields/navigation/right/name")
+                    .and_then(serde_json::Value::as_str)
+                    != Some(KEYBOARD_JOIN_GATEWAY)
+            {
+                return None;
+            }
+            routed += 1;
+        }
+    }
+
+    if let Some(children) = node.get("children") {
+        for child in children.as_array()? {
+            routed += routed_pause_button_count(child)?;
+        }
+    }
+    Some(routed)
+}
+
+fn pause_keyboard_gateway_layout_is_current(document: &serde_json::Value) -> bool {
+    if document
+        .pointer("/fields/defaultWidget")
+        .and_then(serde_json::Value::as_str)
+        != Some(KEYBOARD_GATEWAY_HUB)
+    {
+        return false;
+    }
+
+    let Some(hub) = find_layout_node(document, KEYBOARD_GATEWAY_HUB) else {
+        return false;
+    };
+    if hub
+        .pointer("/fields/acceptsReturnKey")
+        .and_then(serde_json::Value::as_bool)
+        != Some(false)
+        || hub
+            .pointer("/fields/navigation/left/name")
+            .and_then(serde_json::Value::as_str)
+            != Some(KEYBOARD_CREATE_GATEWAY)
+        || hub
+            .pointer("/fields/navigation/right/name")
+            .and_then(serde_json::Value::as_str)
+            != Some(KEYBOARD_JOIN_GATEWAY)
+    {
+        return false;
+    }
+
+    for (name, action, select_direction, back_direction) in [
+        (
+            KEYBOARD_CREATE_GATEWAY,
+            "PanelManager:OpenPanel:D2RHubKeyboardOpenCreate",
+            "left",
+            "right",
+        ),
+        (
+            KEYBOARD_JOIN_GATEWAY,
+            "PanelManager:OpenPanel:D2RHubKeyboardOpenJoin",
+            "right",
+            "left",
+        ),
+    ] {
+        let Some(gateway) = find_layout_node(document, name) else {
+            return false;
+        };
+        if gateway
+            .pointer("/fields/acceptsReturnKey")
+            .and_then(serde_json::Value::as_bool)
+            != Some(true)
+            || gateway
+                .pointer("/fields/onClickMessage")
+                .and_then(serde_json::Value::as_str)
+                != Some(action)
+            || gateway
+                .pointer(&format!("/fields/navigation/{select_direction}/name"))
+                .and_then(serde_json::Value::as_str)
+                != Some(name)
+            || gateway
+                .pointer(&format!("/fields/navigation/{back_direction}/name"))
+                .and_then(serde_json::Value::as_str)
+                != Some(KEYBOARD_GATEWAY_HUB)
+        {
+            return false;
+        }
+    }
+
+    routed_pause_button_count(document).is_some_and(|count| count > 0)
+}
+
+fn read_source_room_tool_layout(
+    mpq_directory: &Path,
+    relative_path: &str,
+) -> Option<serde_json::Value> {
+    read_utf8(&mpq_directory.join(relative_path))
+        .ok()
+        .and_then(|text| parse_json_value(&text).ok())
+}
+
+fn layout_has_direct_child_message(
+    document: &serde_json::Value,
+    field: &str,
+    expected: &str,
 ) -> bool {
-    report.is_some_and(|report| {
-        report
-            .feature_groups
-            .iter()
-            .any(|group| group.id == id && group.recipe_version == recipe_version)
-    })
+    document
+        .get("children")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|children| {
+            children.iter().any(|child| {
+                child
+                    .get("fields")
+                    .and_then(|fields| fields.get(field))
+                    .and_then(serde_json::Value::as_str)
+                    == Some(expected)
+            })
+        })
+}
+
+fn layout_has_direct_timed_message(
+    document: &serde_json::Value,
+    expected: &str,
+    expected_time: f64,
+) -> bool {
+    document
+        .get("children")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|children| {
+            children.iter().any(|child| {
+                let fields = child.get("fields");
+                fields
+                    .and_then(|value| value.get("message"))
+                    .and_then(serde_json::Value::as_str)
+                    == Some(expected)
+                    && fields
+                        .and_then(|value| value.get("time"))
+                        .and_then(serde_json::Value::as_f64)
+                        .is_some_and(|time| (time - expected_time).abs() < f64::EPSILON)
+            })
+        })
+}
+
+fn source_room_tool_layouts_are_current(mpq_directory: &Path) -> Option<()> {
+    let hud = read_source_room_tool_layout(mpq_directory, HUD_WARNINGS_LAYOUT)?;
+    if !layout_has_direct_child_message(&hud, "message", "PanelManager:OpenPanel:D2RHubRoomToolbar")
+    {
+        return None;
+    }
+
+    let toolbar = read_source_room_tool_layout(
+        mpq_directory,
+        &format!("{UI_LAYOUTS_DIRECTORY}/D2RHubRoomToolbarhd.json"),
+    )?;
+    for action in [
+        "PanelManager:TogglePanel:D2RHubQuickRecreateConfirm",
+        "PanelManager:OpenPanel:D2RHubOpenCreateGame",
+        "PanelManager:OpenPanel:D2RHubOpenJoinGame",
+    ] {
+        if !layout_has_direct_child_message(&toolbar, "onClickMessage", action) {
+            return None;
+        }
+    }
+    for (name, expected_x) in [
+        ("D2RHubNextGame", ROOM_TOOL_NEXT_X),
+        ("D2RHubCreateGame", ROOM_TOOL_CREATE_X),
+        ("D2RHubJoinGame", ROOM_TOOL_JOIN_X),
+    ] {
+        let button = find_layout_node(&toolbar, name)?;
+        if button
+            .pointer("/fields/rect/x")
+            .and_then(serde_json::Value::as_i64)
+            != Some(expected_x)
+            || button
+                .pointer("/fields/rect/y")
+                .and_then(serde_json::Value::as_i64)
+                != Some(ROOM_TOOL_BUTTON_Y)
+            || button
+                .pointer("/fields/rect/scale")
+                .and_then(serde_json::Value::as_f64)
+                .is_none_or(|scale| (scale - ROOM_TOOL_BUTTON_SCALE).abs() > f64::EPSILON)
+        {
+            return None;
+        }
+    }
+    let next_game = find_layout_node(&toolbar, "D2RHubNextGame")?;
+    if next_game
+        .pointer("/fields/tooltipString")
+        .and_then(serde_json::Value::as_str)
+        .is_none_or(|tooltip| tooltip.is_empty() || tooltip.starts_with('@'))
+        || next_game
+            .pointer("/fields/tooltipOffset/y")
+            .and_then(serde_json::Value::as_i64)
+            != Some(ROOM_TOOL_TOOLTIP_OFFSET_Y)
+    {
+        return None;
+    }
+
+    let confirmation = read_source_room_tool_layout(
+        mpq_directory,
+        &format!("{UI_LAYOUTS_DIRECTORY}/D2RHubQuickRecreateConfirmhd.json"),
+    )?;
+    let confirm_next = find_layout_node(&confirmation, "D2RHubConfirmNextGame")?;
+    if confirmation
+        .pointer("/fields/isDismissable")
+        .and_then(serde_json::Value::as_bool)
+        != Some(true)
+        || confirmation
+            .pointer("/fields/acceptsEscKeyEverywhere")
+            .and_then(serde_json::Value::as_bool)
+            != Some(true)
+        || !layout_has_direct_child_message(
+            &confirmation,
+            "onClickMessage",
+            "PanelManager:OpenPanel:D2RHubQuickRecreate",
+        )
+        || !layout_has_direct_child_message(
+            &confirmation,
+            "message",
+            "PanelManager:ClosePanel:D2RHubQuickRecreateConfirm",
+        )
+        || confirm_next
+            .pointer("/fields/rect/x")
+            .and_then(serde_json::Value::as_i64)
+            != Some(ROOM_TOOL_NEXT_X)
+        || confirm_next
+            .pointer("/fields/rect/y")
+            .and_then(serde_json::Value::as_i64)
+            != Some(ROOM_TOOL_CONFIRM_Y)
+        || confirm_next
+            .pointer("/fields/rect/scale")
+            .and_then(serde_json::Value::as_f64)
+            .is_none_or(|scale| (scale - ROOM_TOOL_BUTTON_SCALE).abs() > f64::EPSILON)
+    {
+        return None;
+    }
+
+    let quick_recreate = read_source_room_tool_layout(
+        mpq_directory,
+        &format!("{UI_LAYOUTS_DIRECTORY}/D2RHubQuickRecreatehd.json"),
+    )?;
+    if !layout_has_direct_child_message(
+        &quick_recreate,
+        "message",
+        "CharacterSelect:LoadCharacter:2",
+    ) {
+        return None;
+    }
+
+    for (file_name, panel_name, native_panel, opposite_panel) in [
+        (
+            "D2RHubOpenCreateGamehd.json",
+            "D2RHubOpenCreateGame",
+            "CreateGamePanel",
+            "JoinGamePanel",
+        ),
+        (
+            "D2RHubOpenJoinGamehd.json",
+            "D2RHubOpenJoinGame",
+            "JoinGamePanel",
+            "CreateGamePanel",
+        ),
+    ] {
+        let opener = read_source_room_tool_layout(
+            mpq_directory,
+            &format!("{UI_LAYOUTS_DIRECTORY}/{file_name}"),
+        )?;
+        if opener.get("fields").is_some()
+            || !layout_has_direct_timed_message(
+                &opener,
+                &format!("PanelManager:TogglePanel:{native_panel}"),
+                0.1,
+            )
+            || !layout_has_direct_timed_message(
+                &opener,
+                &format!("PanelManager:ClosePanel:{opposite_panel}"),
+                0.1,
+            )
+            || !layout_has_direct_timed_message(
+                &opener,
+                &format!("PanelManager:ClosePanel:{panel_name}"),
+                0.1,
+            )
+        {
+            return None;
+        }
+    }
+
+    for relative_path in PAUSE_LAYOUTS {
+        let pause = read_source_room_tool_layout(mpq_directory, relative_path)?;
+        if !pause_keyboard_gateway_layout_is_current(&pause) {
+            return None;
+        }
+    }
+
+    for (file_name, panel_name, native_panel, opposite_panel) in [
+        (
+            "D2RHubKeyboardOpenCreatehd.json",
+            "D2RHubKeyboardOpenCreate",
+            "CreateGamePanel",
+            "JoinGamePanel",
+        ),
+        (
+            "D2RHubKeyboardOpenJoinhd.json",
+            "D2RHubKeyboardOpenJoin",
+            "JoinGamePanel",
+            "CreateGamePanel",
+        ),
+    ] {
+        let opener = read_source_room_tool_layout(
+            mpq_directory,
+            &format!("{UI_LAYOUTS_DIRECTORY}/{file_name}"),
+        )?;
+        if !layout_has_direct_timed_message(&opener, "PausePanelMessage:Close", 0.005)
+            || !layout_has_direct_timed_message(
+                &opener,
+                &format!("PanelManager:TogglePanel:{native_panel}"),
+                0.1,
+            )
+            || !layout_has_direct_timed_message(
+                &opener,
+                &format!("PanelManager:ClosePanel:{opposite_panel}"),
+                0.1,
+            )
+            || !layout_has_direct_timed_message(
+                &opener,
+                &format!("PanelManager:ClosePanel:{panel_name}"),
+                0.1,
+            )
+        {
+            return None;
+        }
+    }
+
+    for (file_name, primary_input, input_names, close_action) in [
+        (
+            "creategamepanelhd.json",
+            "GameNameInput",
+            &["GameNameInput", "PasswordInput", "DescriptionInput"][..],
+            "PanelManager:ClosePanel:CreateGamePanel",
+        ),
+        (
+            "joingamepanelhd.json",
+            "NameInput",
+            &["NameInput", "PasswordInput"][..],
+            "PanelManager:ClosePanel:JoinGamePanel",
+        ),
+    ] {
+        let form = read_source_room_tool_layout(
+            mpq_directory,
+            &format!("{UI_LAYOUTS_DIRECTORY}/{file_name}"),
+        )?;
+        if form
+            .pointer("/fields/defaultWidget")
+            .and_then(serde_json::Value::as_str)
+            != Some(primary_input)
+            || form
+                .pointer("/fields/isDismissable")
+                .and_then(serde_json::Value::as_bool)
+                != Some(true)
+            || form
+                .pointer("/fields/acceptsEscKeyEverywhere")
+                .and_then(serde_json::Value::as_bool)
+                != Some(true)
+            || input_names.iter().any(|input_name| {
+                find_layout_node(&form, input_name).is_none_or(|node| {
+                    node.pointer("/fields/imeEnabled")
+                        .and_then(serde_json::Value::as_bool)
+                        != Some(true)
+                        || node.pointer("/fields/alwaysAcceptsKeyInput").is_some()
+                })
+            })
+            || find_layout_node(&form, "D2RHubCloseRoomForm")
+                .and_then(|node| node.pointer("/fields/onClickMessage"))
+                .and_then(serde_json::Value::as_str)
+                != Some(close_action)
+        {
+            return None;
+        }
+    }
+
+    Some(())
+}
+
+fn source_has_current_room_tools(
+    report: Option<&BuildAudioModReport>,
+    mpq_directory: &Path,
+) -> bool {
+    let expected_fingerprint = format!("room-tools-v{IN_GAME_ROOM_TOOLS_FEATURE_RECIPE_VERSION}");
+    let manifest_is_current = report.is_some_and(|report| {
+        report.feature_groups.iter().any(|group| {
+            group.id == IN_GAME_ROOM_TOOLS_FEATURE_ID
+                && group.recipe_version == IN_GAME_ROOM_TOOLS_FEATURE_RECIPE_VERSION
+                && group.fingerprint == expected_fingerprint
+        })
+    });
+    manifest_is_current && source_room_tool_layouts_are_current(mpq_directory).is_some()
 }
 
 fn source_manifest_directory(layout: &SourceLayout) -> Option<&Path> {
@@ -3829,11 +4225,8 @@ where
             action: "reuse_verified_feature_group".to_string(),
             detail: "配方版本、协议、覆盖范围、跟踪类别、增益、目录与全部声纹文件均一致；没有重新编码或覆盖声纹。".to_string(),
         }];
-        let source_has_room_tools = source_has_current_feature(
-            source_feature_report.as_ref(),
-            IN_GAME_ROOM_TOOLS_FEATURE_ID,
-            IN_GAME_ROOM_TOOLS_FEATURE_RECIPE_VERSION,
-        );
+        let source_has_room_tools =
+            source_has_current_room_tools(source_feature_report.as_ref(), &mpq_directory);
         let source_auto_exit_on_death_enabled =
             source_auto_exit_on_death_enabled(source_feature_report.as_ref(), &mpq_directory);
         let room_tools_installed = if request.include_room_tools {
@@ -3890,6 +4283,7 @@ where
                 .map_err(|error| format!("生成 modinfo.json 失败: {error}"))?,
         )?;
         let mut capabilities = reused.capabilities.clone();
+        capabilities.retain(|value| value != IN_GAME_ROOM_TOOLS_CAPABILITY);
         if room_tools_available
             && !capabilities
                 .iter()
@@ -3997,11 +4391,8 @@ where
             "正在安装所选界面功能…",
         ));
         let mut compatibility = Vec::new();
-        let source_has_room_tools = source_has_current_feature(
-            source_feature_report.as_ref(),
-            IN_GAME_ROOM_TOOLS_FEATURE_ID,
-            IN_GAME_ROOM_TOOLS_FEATURE_RECIPE_VERSION,
-        );
+        let source_has_room_tools =
+            source_has_current_room_tools(source_feature_report.as_ref(), &mpq_directory);
         let source_auto_exit_on_death_enabled =
             source_auto_exit_on_death_enabled(source_feature_report.as_ref(), &mpq_directory);
         let room_tools_installed = if request.include_room_tools {
@@ -4079,6 +4470,7 @@ where
             .as_ref()
             .map(|report| report.capabilities.clone())
             .unwrap_or_default();
+        capabilities.retain(|value| value != IN_GAME_ROOM_TOOLS_CAPABILITY);
         if room_tools_available
             && !capabilities
                 .iter()
@@ -4302,11 +4694,8 @@ where
             "源 Mod 未被修改；加工结果写入新的组合 Mod 目录。".to_string()
         },
     }];
-    let source_has_room_tools = source_has_current_feature(
-        source_feature_report.as_ref(),
-        IN_GAME_ROOM_TOOLS_FEATURE_ID,
-        IN_GAME_ROOM_TOOLS_FEATURE_RECIPE_VERSION,
-    );
+    let source_has_room_tools =
+        source_has_current_room_tools(source_feature_report.as_ref(), &mpq_directory);
     let source_auto_exit_on_death_enabled =
         source_auto_exit_on_death_enabled(source_feature_report.as_ref(), &mpq_directory);
     let room_tools_installed = if request.include_room_tools {

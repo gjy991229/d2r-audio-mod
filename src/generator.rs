@@ -28,19 +28,19 @@ const TERROR_PROBE_HD_SOUND: &str = "audio_telemetry_tz_probe_hd";
 const TERROR_PROBE_RELATIVE_PATH: &str = "audio_telemetry\\terror\\tz_probe.flac";
 const TERROR_MARKER_GAIN_DB: f32 = -18.0;
 const AREA_ENTRY_PROBE_RETRY_DELAYS_SECONDS: [f32; 2] = [0.6, 1.2];
-pub const AUDIO_MOD_RECIPE_VERSION: u32 = 23;
+pub const AUDIO_MOD_RECIPE_VERSION: u32 = 24;
 pub const AUDIO_TELEMETRY_FEATURE_ID: &str = "audio_telemetry";
 pub const IN_GAME_ROOM_TOOLS_FEATURE_ID: &str = "in_game_room_tools";
 pub const AUTO_EXIT_ON_DEATH_FEATURE_ID: &str = "auto_exit_on_death";
 const AUDIO_TELEMETRY_FEATURE_RECIPE_VERSION: u32 = 2;
-const IN_GAME_ROOM_TOOLS_FEATURE_RECIPE_VERSION: u32 = 19;
+const IN_GAME_ROOM_TOOLS_FEATURE_RECIPE_VERSION: u32 = 20;
 const AUTO_EXIT_ON_DEATH_FEATURE_RECIPE_VERSION: u32 = 1;
 const MOD_MANIFEST_FILE_NAME: &str = "d2rhub-mod-manifest.json";
 const LEGACY_MANIFEST_FILE_NAME: &str = "audio-telemetry-manifest.json";
 const TERROR_IMMEDIATE_ENTRY_CAPABILITY: &str = "terror_zone_immediate_entry_marker_v1";
 const AREA_ENTRY_PROBE_CAPABILITY: &str = "area_entry_probe_burst_v1";
 const TERROR_ZONE_STATE_CAPABILITY: &str = "terror_zone_state_marker_v1";
-const IN_GAME_ROOM_TOOLS_CAPABILITY: &str = "in_game_room_tools_v19";
+const IN_GAME_ROOM_TOOLS_CAPABILITY: &str = "in_game_room_tools_v20";
 const AUTO_EXIT_ON_DEATH_CAPABILITY: &str = "auto_exit_on_death_v1";
 const UI_LAYOUTS_DIRECTORY: &str = "data/global/ui/layouts";
 const HUD_WARNINGS_LAYOUT: &str = "data/global/ui/layouts/HudWarningshd.json";
@@ -1115,6 +1115,49 @@ fn keyboard_room_opener_layout(create: bool) -> serde_json::Value {
     })
 }
 
+fn route_pause_buttons_to_keyboard_gateways(
+    node: &mut serde_json::Value,
+    relative_path: &str,
+) -> Result<usize, String> {
+    let is_button = node.get("type").and_then(serde_json::Value::as_str) == Some("ButtonWidget");
+    let mut routed = 0;
+    if is_button {
+        let fields = node
+            .as_object_mut()
+            .ok_or_else(|| format!("{relative_path} 的 ButtonWidget 必须是 JSON 对象"))?
+            .entry("fields")
+            .or_insert_with(|| serde_json::json!({}))
+            .as_object_mut()
+            .ok_or_else(|| format!("{relative_path} 的 ButtonWidget.fields 必须是 JSON 对象"))?;
+        let navigation = fields
+            .entry("navigation")
+            .or_insert_with(|| serde_json::json!({}))
+            .as_object_mut()
+            .ok_or_else(|| {
+                format!("{relative_path} 的 ButtonWidget.fields.navigation 必须是 JSON 对象")
+            })?;
+        navigation.insert(
+            "left".to_string(),
+            serde_json::json!({ "name": KEYBOARD_CREATE_GATEWAY }),
+        );
+        navigation.insert(
+            "right".to_string(),
+            serde_json::json!({ "name": KEYBOARD_JOIN_GATEWAY }),
+        );
+        routed += 1;
+    }
+
+    if let Some(children) = node.get_mut("children") {
+        let children = children
+            .as_array_mut()
+            .ok_or_else(|| format!("{relative_path} 的 children 必须是 JSON 数组"))?;
+        for child in children {
+            routed += route_pause_buttons_to_keyboard_gateways(child, relative_path)?;
+        }
+    }
+    Ok(routed)
+}
+
 fn patch_pause_keyboard_gateway(
     mpq_directory: &Path,
     storage: Option<&casc_core::Storage>,
@@ -1122,10 +1165,11 @@ fn patch_pause_keyboard_gateway(
 ) -> Result<(), String> {
     let mut document = read_local_or_casc_json(mpq_directory, storage, relative_path)?;
 
-    // PausePanel normally focuses a real menu action. If a background arrow
-    // message is delayed or dropped, the following Return can therefore invoke
-    // that action. Start on a no-op hub instead: arrows may leave the hub, but
-    // Return on the hub itself is always harmless.
+    // PausePanel normally focuses a real menu action. Start on a no-op hub so a
+    // dropped arrow cannot make Return invoke that action. The mouse can still
+    // move focus to whichever real button happens to be underneath it as the
+    // panel opens, so route both horizontal directions from every source button
+    // into the same hidden gateways as well.
     let panel_fields = document
         .as_object_mut()
         .ok_or_else(|| format!("{relative_path} 顶层必须是 JSON 对象"))?
@@ -1138,23 +1182,9 @@ fn patch_pause_keyboard_gateway(
         serde_json::Value::String(KEYBOARD_GATEWAY_HUB.to_string()),
     );
 
-    let return_fields = find_layout_node_mut(&mut document, "ReturnToGame")
-        .and_then(|node| node.get_mut("fields"))
-        .and_then(serde_json::Value::as_object_mut)
-        .ok_or_else(|| format!("{relative_path} 缺少暂停菜单按钮 ReturnToGame"))?;
-    let navigation = return_fields
-        .entry("navigation")
-        .or_insert_with(|| serde_json::json!({}))
-        .as_object_mut()
-        .ok_or_else(|| format!("{relative_path} ReturnToGame.navigation 不是对象"))?;
-    navigation.insert(
-        "left".to_string(),
-        serde_json::json!({ "name": KEYBOARD_CREATE_GATEWAY }),
-    );
-    navigation.insert(
-        "right".to_string(),
-        serde_json::json!({ "name": KEYBOARD_JOIN_GATEWAY }),
-    );
+    if route_pause_buttons_to_keyboard_gateways(&mut document, relative_path)? == 0 {
+        return Err(format!("{relative_path} 没有可路由的暂停菜单按钮"));
+    }
 
     let children = document
         .get_mut("children")
@@ -1736,7 +1766,7 @@ fn install_in_game_room_tools(
     compatibility.push(AudioModCompatibility {
         target: "局内房间工具".to_string(),
         action: "add_in_game_create_join_and_recreate".to_string(),
-        detail: "照抄 MDK 的局内快速创建、加入与下一局消息链，下一局仍使用 CharacterSelect:LoadCharacter:2；三个按钮缩至 0.30 倍并在右上角以 280 布局单位紧凑排列。在两套 PausePanel 上增加不可见的无操作安全焦点与创建/加入键盘入口。自动填写使用 Esc+左/右两次+确认打开并聚焦原生表单；方向消息漏掉时确认键不会触发暂停菜单按钮。随后以备份过的 F13 次键调用原生 CfgChat 文本态；不移动鼠标、不点击 HWND，也不再创建 alwaysAcceptsKeyInput 镜像输入框。".to_string(),
+        detail: "照抄 MDK 的局内快速创建、加入与下一局消息链，下一局仍使用 CharacterSelect:LoadCharacter:2；三个按钮缩至 0.30 倍并在右上角以 280 布局单位紧凑排列。在两套 PausePanel 上增加不可见的无操作安全焦点与创建/加入键盘入口，并把所有真实暂停菜单按钮的左右导航汇入对应安全入口，避免鼠标悬停改写焦点。自动填写使用 Esc+左/右两次+确认打开并聚焦原生表单；方向消息漏掉时确认键不会触发暂停菜单按钮。随后以备份过的 F13 次键调用原生 CfgChat 文本态；不移动鼠标、不点击 HWND，也不再创建 alwaysAcceptsKeyInput 镜像输入框。".to_string(),
     });
     Ok(true)
 }

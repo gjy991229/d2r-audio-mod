@@ -28,19 +28,19 @@ const TERROR_PROBE_HD_SOUND: &str = "audio_telemetry_tz_probe_hd";
 const TERROR_PROBE_RELATIVE_PATH: &str = "audio_telemetry\\terror\\tz_probe.flac";
 const TERROR_MARKER_GAIN_DB: f32 = -18.0;
 const AREA_ENTRY_PROBE_RETRY_DELAYS_SECONDS: [f32; 2] = [0.6, 1.2];
-pub const AUDIO_MOD_RECIPE_VERSION: u32 = 24;
+pub const AUDIO_MOD_RECIPE_VERSION: u32 = 25;
 pub const AUDIO_TELEMETRY_FEATURE_ID: &str = "audio_telemetry";
 pub const IN_GAME_ROOM_TOOLS_FEATURE_ID: &str = "in_game_room_tools";
 pub const AUTO_EXIT_ON_DEATH_FEATURE_ID: &str = "auto_exit_on_death";
-const AUDIO_TELEMETRY_FEATURE_RECIPE_VERSION: u32 = 2;
-const IN_GAME_ROOM_TOOLS_FEATURE_RECIPE_VERSION: u32 = 20;
+const AUDIO_TELEMETRY_FEATURE_RECIPE_VERSION: u32 = 3;
+const IN_GAME_ROOM_TOOLS_FEATURE_RECIPE_VERSION: u32 = 22;
 const AUTO_EXIT_ON_DEATH_FEATURE_RECIPE_VERSION: u32 = 1;
 const MOD_MANIFEST_FILE_NAME: &str = "d2rhub-mod-manifest.json";
 const LEGACY_MANIFEST_FILE_NAME: &str = "audio-telemetry-manifest.json";
 const TERROR_IMMEDIATE_ENTRY_CAPABILITY: &str = "terror_zone_immediate_entry_marker_v1";
 const AREA_ENTRY_PROBE_CAPABILITY: &str = "area_entry_probe_burst_v1";
 const TERROR_ZONE_STATE_CAPABILITY: &str = "terror_zone_state_marker_v1";
-const IN_GAME_ROOM_TOOLS_CAPABILITY: &str = "in_game_room_tools_v20";
+const IN_GAME_ROOM_TOOLS_CAPABILITY: &str = "in_game_room_tools_v22";
 const AUTO_EXIT_ON_DEATH_CAPABILITY: &str = "auto_exit_on_death_v1";
 const UI_LAYOUTS_DIRECTORY: &str = "data/global/ui/layouts";
 const HUD_WARNINGS_LAYOUT: &str = "data/global/ui/layouts/HudWarningshd.json";
@@ -58,8 +58,14 @@ const ROOM_TOOL_BUTTON_Y: i64 = 12;
 const ROOM_TOOL_NEXT_X: i64 = -1_040;
 const ROOM_TOOL_CREATE_X: i64 = -760;
 const ROOM_TOOL_JOIN_X: i64 = -480;
-const ROOM_TOOL_CONFIRM_Y: i64 = 92;
 const ROOM_TOOL_TOOLTIP_OFFSET_Y: i64 = 267;
+const QUICK_RECREATE_ARM_PANEL: &str = "D2RHubQuickRecreateArm";
+const QUICK_RECREATE_PANEL: &str = "D2RHubQuickRecreate";
+const COMMIT_CREATE_GAME_PANEL: &str = "D2RHubCommitCreateGame";
+const COMMIT_JOIN_GAME_PANEL: &str = "D2RHubCommitJoinGame";
+const QUICK_RECREATE_DOUBLE_CLICK_WINDOW_SECONDS: f64 = 0.5;
+const ROOM_TRANSITION_OPEN_PAUSE_DELAY_SECONDS: f64 = 0.01;
+const ROOM_TRANSITION_COMMIT_DELAY_SECONDS: f64 = 0.05;
 const YOU_DIED_LAYOUT: &str = "data/global/ui/layouts/youdiedmodalhd.json";
 const AUTO_EXIT_ON_DEATH_PANEL: &str = "D2RHubAutoExitOnDeath";
 const AUTO_EXIT_ON_DEATH_LAUNCHER: &str = "D2RHubAutoExitOnDeathLauncher";
@@ -331,7 +337,14 @@ struct SoundDefinition {
     sound: String,
     relative_path: String,
     source_filename: Option<String>,
+    source_gain: f32,
     output_root: &'static str,
+}
+
+#[derive(Debug, Clone)]
+struct AreaAmbienceSource {
+    filename: String,
+    source_gain: f32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -879,12 +892,9 @@ fn room_toolbar_layout() -> serde_json::Value {
                     "rect": { "x": ROOM_TOOL_NEXT_X, "y": ROOM_TOOL_BUTTON_Y, "scale": ROOM_TOOL_BUTTON_SCALE },
                     "filename": "FrontEnd\\HD\\Final\\FrontEnd_ButtonLarge",
                     "textString": "下一局",
-                    "tooltipString": "首次点击只打开确认条；再次确认才会离开当前房间，4 秒后自动取消。",
-                    // Tooltip offsets inherit the button scale. Use the
-                    // scaled distance between the first- and second-stage rows
-                    // so both hover tips land at the same visual height.
+                    "tooltipString": "左键双击后正常退出当前房间，并用当前角色进入下一局（地狱难度）",
                     "tooltipOffset": { "y": ROOM_TOOL_TOOLTIP_OFFSET_Y },
-                    "onClickMessage": "PanelManager:TogglePanel:D2RHubQuickRecreateConfirm",
+                    "onClickMessage": format!("PanelManager:OpenPanel:{QUICK_RECREATE_ARM_PANEL}"),
                     "text/style": "$StyleFEButtonText",
                     "pointSize": 56,
                     "textColor": "$FontColorOrange",
@@ -936,28 +946,27 @@ fn room_toolbar_layout() -> serde_json::Value {
     })
 }
 
-fn quick_recreate_confirmation_layout() -> serde_json::Value {
+fn quick_recreate_arm_layout() -> serde_json::Value {
     serde_json::json!({
-        "type": "Panel",
-        "name": "D2RHubQuickRecreateConfirm",
+        "type": "TooltipsPanel",
+        "name": QUICK_RECREATE_ARM_PANEL,
         "fields": {
             "priority": 6,
             "anchor": { "x": 1.0 },
-            "rect": { "scale": 1.0 },
-            "isDismissable": true,
-            "acceptsEscKeyEverywhere": true
+            "rect": { "scale": 1.0 }
         },
         "children": [
             {
                 "type": "ButtonWidget",
-                "name": "D2RHubConfirmNextGame",
+                "name": "D2RHubArmedNextGame",
                 "fields": {
                     "anchor": { "x": 1.0 },
-                    "rect": { "x": ROOM_TOOL_NEXT_X, "y": ROOM_TOOL_CONFIRM_Y, "scale": ROOM_TOOL_BUTTON_SCALE },
+                    "rect": { "x": ROOM_TOOL_NEXT_X, "y": ROOM_TOOL_BUTTON_Y, "scale": ROOM_TOOL_BUTTON_SCALE },
                     "filename": "FrontEnd\\HD\\Final\\FrontEnd_ButtonLarge",
-                    "textString": "确认换房",
-                    "tooltipString": "立即离开当前房间并用当前角色开始下一局",
-                    "onClickMessage": "PanelManager:OpenPanel:D2RHubQuickRecreate",
+                    "textString": "下一局",
+                    "tooltipString": "左键双击后正常退出当前房间，并用当前角色进入下一局（地狱难度）",
+                    "tooltipOffset": { "y": ROOM_TOOL_TOOLTIP_OFFSET_Y },
+                    "onClickMessage": format!("PanelManager:OpenPanel:{QUICK_RECREATE_PANEL}"),
                     "text/style": "$StyleFEButtonText",
                     "pointSize": 56,
                     "textColor": "$FontColorOrange",
@@ -968,29 +977,11 @@ fn quick_recreate_confirmation_layout() -> serde_json::Value {
                 }
             },
             {
-                "type": "ButtonWidget",
-                "name": "D2RHubCancelNextGame",
-                "fields": {
-                    "anchor": { "x": 1.0 },
-                    "rect": { "x": ROOM_TOOL_CREATE_X, "y": ROOM_TOOL_CONFIRM_Y, "scale": ROOM_TOOL_BUTTON_SCALE },
-                    "filename": "FrontEnd\\HD\\Final\\FrontEnd_ButtonLarge",
-                    "textString": "取消",
-                    "onClickMessage": "PanelManager:ClosePanel:D2RHubQuickRecreateConfirm",
-                    "text/style": "$StyleFEButtonText",
-                    "pointSize": 56,
-                    "textColor": "$FontColorLightYellow",
-                    "hoveredFrame": 3,
-                    "disabledFrame": 2,
-                    "disabledTint": { "a": 1.0 },
-                    "sound": "cursor_close_window_hd"
-                }
-            },
-            {
                 "type": "TimerWidget",
-                "name": "D2RHubRecreateConfirmTimeout",
+                "name": "D2RHubQuickRecreateArmTimeout",
                 "fields": {
-                    "time": 4.0,
-                    "message": "PanelManager:ClosePanel:D2RHubQuickRecreateConfirm"
+                    "time": QUICK_RECREATE_DOUBLE_CLICK_WINDOW_SECONDS,
+                    "message": format!("PanelManager:ClosePanel:{QUICK_RECREATE_ARM_PANEL}")
                 }
             }
         ]
@@ -1000,25 +991,96 @@ fn quick_recreate_confirmation_layout() -> serde_json::Value {
 fn quick_recreate_layout() -> serde_json::Value {
     serde_json::json!({
         "type": "MainMenuHDPanel",
-        "name": "D2RHubQuickRecreate",
+        "name": QUICK_RECREATE_PANEL,
         "fields": {
             "rect": { "x": -9999, "y": -9999, "scale": 0.01 }
         },
         "children": [
             {
                 "type": "TimerWidget",
-                "name": "D2RHubQuickRecreateCloseConfirm",
-                "fields": { "time": 0.005, "message": "PanelManager:ClosePanel:D2RHubQuickRecreateConfirm" }
+                "name": "D2RHubQuickRecreateCloseArm",
+                "fields": { "time": 0.005, "message": format!("PanelManager:ClosePanel:{QUICK_RECREATE_ARM_PANEL}") }
+            },
+            {
+                "type": "TimerWidget",
+                "name": "D2RHubQuickRecreateOpenPause",
+                "fields": {
+                    "time": ROOM_TRANSITION_OPEN_PAUSE_DELAY_SECONDS,
+                    "message": "PanelManager:OpenPanel:PauseLayoutGarden"
+                }
+            },
+            {
+                "type": "TimerWidget",
+                "name": "D2RHubQuickRecreateExitGame",
+                "fields": {
+                    "time": ROOM_TRANSITION_COMMIT_DELAY_SECONDS,
+                    "message": "PausePanelMessage:ExitGame"
+                }
             },
             {
                 "type": "TimerWidget",
                 "name": "D2RHubQuickRecreateAction",
-                "fields": { "time": 0.01, "message": "CharacterSelect:LoadCharacter:2" }
+                "fields": {
+                    "time": ROOM_TRANSITION_COMMIT_DELAY_SECONDS,
+                    "message": "CharacterSelect:LoadCharacter:2"
+                }
             },
             {
                 "type": "TimerWidget",
                 "name": "D2RHubQuickRecreateClose",
-                "fields": { "time": 0.01, "message": "PanelManager:ClosePanel:D2RHubQuickRecreate" }
+                "fields": {
+                    "time": ROOM_TRANSITION_COMMIT_DELAY_SECONDS,
+                    "message": format!("PanelManager:ClosePanel:{QUICK_RECREATE_PANEL}")
+                }
+            }
+        ]
+    })
+}
+
+fn room_submission_layout(create: bool) -> serde_json::Value {
+    let (panel_name, native_message) = if create {
+        (COMMIT_CREATE_GAME_PANEL, "CreateGame:CreateGame")
+    } else {
+        (COMMIT_JOIN_GAME_PANEL, "JoinGame:JoinGame")
+    };
+    serde_json::json!({
+        "type": "MainMenuHDPanel",
+        "name": panel_name,
+        "fields": {
+            "rect": { "x": -9999, "y": -9999, "scale": 0.01 }
+        },
+        "children": [
+            {
+                "type": "TimerWidget",
+                "name": "D2RHubRoomSubmissionOpenPause",
+                "fields": {
+                    "time": ROOM_TRANSITION_OPEN_PAUSE_DELAY_SECONDS,
+                    "message": "PanelManager:OpenPanel:PauseLayoutGarden"
+                }
+            },
+            {
+                "type": "TimerWidget",
+                "name": "D2RHubRoomSubmissionExitGame",
+                "fields": {
+                    "time": ROOM_TRANSITION_COMMIT_DELAY_SECONDS,
+                    "message": "PausePanelMessage:ExitGame"
+                }
+            },
+            {
+                "type": "TimerWidget",
+                "name": "D2RHubRoomSubmissionCommit",
+                "fields": {
+                    "time": ROOM_TRANSITION_COMMIT_DELAY_SECONDS,
+                    "message": native_message
+                }
+            },
+            {
+                "type": "TimerWidget",
+                "name": "D2RHubRoomSubmissionClose",
+                "fields": {
+                    "time": ROOM_TRANSITION_COMMIT_DELAY_SECONDS,
+                    "message": format!("PanelManager:ClosePanel:{panel_name}")
+                }
             }
         ]
     })
@@ -1315,6 +1377,34 @@ fn find_layout_node<'a>(
         .find_map(|child| find_layout_node(child, name))
 }
 
+fn route_room_submission_messages(
+    node: &mut serde_json::Value,
+    native_message: &str,
+    routed_message: &str,
+) -> usize {
+    let mut routed = 0;
+    if let Some(fields) = node
+        .get_mut("fields")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        for value in fields.values_mut() {
+            if value.as_str() == Some(native_message) {
+                *value = serde_json::Value::String(routed_message.to_string());
+                routed += 1;
+            }
+        }
+    }
+    if let Some(children) = node
+        .get_mut("children")
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        for child in children {
+            routed += route_room_submission_messages(child, native_message, routed_message);
+        }
+    }
+    routed
+}
+
 fn patch_room_form_layout(
     mpq_directory: &Path,
     storage: Option<&casc_core::Storage>,
@@ -1322,6 +1412,22 @@ fn patch_room_form_layout(
     primary_input_name: &str,
 ) -> Result<(), String> {
     let mut document = read_local_or_casc_json(mpq_directory, storage, relative_path)?;
+    let (native_submit_message, commit_panel) = if primary_input_name == "NameInput" {
+        ("JoinGame:JoinGame", COMMIT_JOIN_GAME_PANEL)
+    } else {
+        ("CreateGame:CreateGame", COMMIT_CREATE_GAME_PANEL)
+    };
+    let routed_submit_message = format!("PanelManager:OpenPanel:{commit_panel}");
+    if route_room_submission_messages(
+        &mut document,
+        native_submit_message,
+        &routed_submit_message,
+    ) == 0
+    {
+        return Err(format!(
+            "{relative_path} 没有可路由的房间提交消息 {native_submit_message}"
+        ));
+    }
     let fields = document
         .as_object_mut()
         .ok_or_else(|| format!("{relative_path} 顶层必须是 JSON 对象"))?
@@ -1703,10 +1809,18 @@ fn install_in_game_room_tools(
     for (file_name, document) in [
         ("D2RHubRoomToolbarhd.json", room_toolbar_layout()),
         (
-            "D2RHubQuickRecreateConfirmhd.json",
-            quick_recreate_confirmation_layout(),
+            "D2RHubQuickRecreateArmhd.json",
+            quick_recreate_arm_layout(),
         ),
         ("D2RHubQuickRecreatehd.json", quick_recreate_layout()),
+        (
+            "D2RHubCommitCreateGamehd.json",
+            room_submission_layout(true),
+        ),
+        (
+            "D2RHubCommitJoinGamehd.json",
+            room_submission_layout(false),
+        ),
         (
             "D2RHubOpenCreateGamehd.json",
             room_panel_opener_layout(true),
@@ -1729,8 +1843,10 @@ fn install_in_game_room_tools(
     }
     for file_name in [
         "D2RHubRoomToolbar.json",
-        "D2RHubQuickRecreateConfirm.json",
+        "D2RHubQuickRecreateArm.json",
         "D2RHubQuickRecreate.json",
+        "D2RHubCommitCreateGame.json",
+        "D2RHubCommitJoinGame.json",
         "D2RHubOpenCreateGame.json",
         "D2RHubOpenJoinGame.json",
         "D2RHubKeyboardOpenCreate.json",
@@ -1744,6 +1860,22 @@ fn install_in_game_room_tools(
                 "name": file_name.trim_end_matches(".json")
             }),
         )?;
+    }
+    for obsolete_name in [
+        "D2RHubQuickRecreateConfirmhd.json",
+        "D2RHubQuickRecreateConfirm.json",
+    ] {
+        let obsolete_path = mpq_directory
+            .join(UI_LAYOUTS_DIRECTORY)
+            .join(obsolete_name);
+        if obsolete_path.exists() {
+            std::fs::remove_file(&obsolete_path).map_err(|error| {
+                format!(
+                    "移除旧版下一局确认布局失败 {}: {error}",
+                    obsolete_path.display()
+                )
+            })?;
+        }
     }
 
     patch_room_form_layout(
@@ -1765,7 +1897,7 @@ fn install_in_game_room_tools(
     compatibility.push(AudioModCompatibility {
         target: "局内房间工具".to_string(),
         action: "add_in_game_create_join_and_recreate".to_string(),
-        detail: "照抄 MDK 的局内快速创建、加入与下一局消息链，下一局仍使用 CharacterSelect:LoadCharacter:2；三个按钮缩至 0.30 倍并在右上角以 280 布局单位紧凑排列。在两套 PausePanel 上增加不可见的无操作安全焦点与创建/加入键盘入口，并把所有真实暂停菜单按钮的左右导航汇入对应安全入口，避免鼠标悬停改写焦点。自动填写使用 Esc+左/右两次+确认打开并聚焦原生表单；方向消息漏掉时确认键不会触发暂停菜单按钮。随后以备份过的 F13 次键调用原生 CfgChat 文本态；不移动鼠标、不点击 HWND，也不再创建 alwaysAcceptsKeyInput 镜像输入框。".to_string(),
+        detail: "局内“下一局”使用 0.5 秒窗口内左键双击，首次点击不显示二级确认条；确认双击后先打开在线 PauseLayoutGarden，再按 JCY 的顺序发送 PausePanelMessage:ExitGame 与 CharacterSelect:LoadCharacter:2，使客户端按主动退出路径进入下一局。创建与加入表单保持单击打开，但所有实际提交入口都会先转入独立控制器：打开 PauseLayoutGarden 后依次发送 PausePanelMessage:ExitGame 与原生 CreateGame:CreateGame 或 JoinGame:JoinGame，避免把主动换房识别成连接中断。三个按钮缩至 0.30 倍并在右上角以 280 布局单位紧凑排列。在两套 PausePanel 上增加不可见的无操作安全焦点与创建/加入键盘入口，并把所有真实暂停菜单按钮的左右导航汇入对应安全入口，避免鼠标悬停改写焦点。自动填写使用 Esc+左/右两次+确认打开并聚焦原生表单；方向消息漏掉时确认键不会触发暂停菜单按钮。随后以备份过的 F13 次键调用原生 CfgChat 文本态；不移动鼠标、不点击 HWND，也不再创建 alwaysAcceptsKeyInput 镜像输入框。".to_string(),
     });
     Ok(true)
 }
@@ -2527,7 +2659,7 @@ fn patch_sounds(
     rune_plans: &[RuneStatePlan],
     item_plans: &[ItemStatePlan],
     areas: &[AreaCatalogEntry],
-    area_ambience_filenames: &HashMap<u32, String>,
+    area_ambience_sources: &HashMap<u32, AreaAmbienceSource>,
     compatibility: &mut Vec<AudioModCompatibility>,
 ) -> Result<(TsvTable, Vec<SoundDefinition>), String> {
     let mut next_index = table.max_number("*Index")? + 1;
@@ -2617,6 +2749,7 @@ fn patch_sounds(
             sound,
             relative_path,
             source_filename: (!source_filename.is_empty()).then_some(source_filename),
+            source_gain: 1.0,
             output_root: "data/hd/global/sfx",
         });
         next_index += 1;
@@ -2700,6 +2833,7 @@ fn patch_sounds(
             sound,
             relative_path,
             source_filename: (!source_filename.is_empty()).then_some(source_filename),
+            source_gain: 1.0,
             output_root: "data/hd/global/sfx",
         });
         next_index += 1;
@@ -2711,6 +2845,9 @@ fn patch_sounds(
         };
         let sound = format!("audio_telemetry_a{}", area.area_id);
         let relative_path = format!("audio_telemetry\\areas\\a{}.flac", area.area_id);
+        let ambience = area_ambience_sources
+            .get(&area.area_id)
+            .ok_or_else(|| format!("Area {} 缺少已解析的持续环境音", area.area_id))?;
         let mut row = area_template.clone();
         table.set(&mut row, "Sound", &sound)?;
         table.set(&mut row, "*Index", next_index.to_string())?;
@@ -2722,7 +2859,8 @@ fn patch_sounds(
             group: SoundAssetGroup::Area,
             sound,
             relative_path,
-            source_filename: area_ambience_filenames.get(&area.area_id).cloned(),
+            source_filename: Some(ambience.filename.clone()),
+            source_gain: ambience.source_gain,
             output_root: "data/hd/global/sfx",
         });
         next_index += 1;
@@ -2730,7 +2868,7 @@ fn patch_sounds(
     compatibility.push(AudioModCompatibility {
         target: "普通区域入场识别".to_string(),
         action: "add_streamed_area_entry_probe_burst".to_string(),
-        detail: "保留区域原始环境声并恢复流式播放；环境流起始 1.5 秒内连续发送三组精确 Area 探针，取消淡入对首包的衰减，后续低频心跳仅作丢包兜底。".to_string(),
+        detail: "保留区域原始环境声并按原声音表音量预补偿，避免 255 声纹播放链路放大背景声；环境流起始 1.5 秒内连续发送三组精确 Area 探针，取消淡入对首包的衰减，后续低频心跳仅作丢包兜底。".to_string(),
     });
 
     let terror_probe_template = table
@@ -2833,6 +2971,7 @@ fn patch_sounds(
             sound: sound.clone(),
             relative_path,
             source_filename: Some(source_filename.clone()),
+            source_gain: 1.0,
             output_root: "data/hd/global/sfx",
         });
         compatibility.push(AudioModCompatibility {
@@ -2909,6 +3048,7 @@ fn patch_sounds(
             sound: sound.clone(),
             relative_path,
             source_filename: Some(source_filename.clone()),
+            source_gain: 1.0,
             output_root: if sound.eq_ignore_ascii_case("music_options") {
                 "data/global/music"
             } else {
@@ -3142,16 +3282,21 @@ fn patch_sound_environ_and_levels(
     Ok((environments, levels))
 }
 
-fn resolve_sound_filename(sounds: &TsvTable, sound_name: &str) -> Option<String> {
-    let sound_column = sounds.column("Sound").ok()?;
-    let filename_column = sounds.column("FileName").ok()?;
+fn resolve_area_ambience_source(
+    sounds: &TsvTable,
+    sound_name: &str,
+) -> Result<AreaAmbienceSource, String> {
+    let sound_column = sounds.column("Sound")?;
+    let filename_column = sounds.column("FileName")?;
+    let volume_max_column = sounds.column("Volume Max")?;
     let redirect_column = sounds.column("Redirect").ok();
     let mut current = sound_name.to_string();
     for _ in 0..8 {
         let row = sounds
             .rows
             .iter()
-            .find(|row| row[sound_column].eq_ignore_ascii_case(&current))?;
+            .find(|row| row[sound_column].eq_ignore_ascii_case(&current))
+            .ok_or_else(|| format!("sounds.txt 缺少持续环境音 {current}"))?;
         if let Some(redirect) = redirect_column
             .and_then(|index| row.get(index))
             .map(String::as_str)
@@ -3160,17 +3305,31 @@ fn resolve_sound_filename(sounds: &TsvTable, sound_name: &str) -> Option<String>
             current = redirect.to_string();
             continue;
         }
-        return Some(row[filename_column].clone());
+        let volume_max = row[volume_max_column].trim().parse::<f32>().map_err(|error| {
+            format!(
+                "持续环境音 {current} 的 Volume Max 不是有效数字 {:?}: {error}",
+                row[volume_max_column]
+            )
+        })?;
+        if !volume_max.is_finite() || !(0.0..=255.0).contains(&volume_max) {
+            return Err(format!(
+                "持续环境音 {current} 的 Volume Max 必须位于 0-255，收到 {volume_max}"
+            ));
+        }
+        return Ok(AreaAmbienceSource {
+            filename: row[filename_column].clone(),
+            source_gain: volume_max / 255.0,
+        });
     }
-    None
+    Err(format!("持续环境音 {sound_name} 的 Redirect 链超过 8 层"))
 }
 
-fn collect_area_ambience_filenames(
+fn collect_area_ambience_sources(
     levels: &TsvTable,
     environments: &TsvTable,
     sounds: &TsvTable,
     areas: &[AreaCatalogEntry],
-) -> Result<HashMap<u32, String>, String> {
+) -> Result<HashMap<u32, AreaAmbienceSource>, String> {
     let level_id = levels.column("Id")?;
     let level_environment = levels.column("SoundEnv")?;
     let environment_index = environments.column("Index")?;
@@ -3195,15 +3354,30 @@ fn collect_area_ambience_filenames(
             .map(|column| environment[column].trim())
             .find(|value| !value.is_empty())
             .ok_or_else(|| format!("Area {} 没有持续环境音定义", area.area_id))?;
-        let filename = resolve_sound_filename(sounds, sound_name).ok_or_else(|| {
+        let source = resolve_area_ambience_source(sounds, sound_name).map_err(|error| {
             format!(
-                "无法从 sounds.txt 解析 Area {} 的持续环境音 {sound_name}",
+                "无法从 sounds.txt 解析 Area {} 的持续环境音 {sound_name}: {error}",
                 area.area_id
             )
         })?;
-        output.insert(area.area_id, filename);
+        output.insert(area.area_id, source);
     }
     Ok(output)
+}
+
+#[cfg(test)]
+fn collect_area_ambience_filenames(
+    levels: &TsvTable,
+    environments: &TsvTable,
+    sounds: &TsvTable,
+    areas: &[AreaCatalogEntry],
+) -> Result<HashMap<u32, String>, String> {
+    collect_area_ambience_sources(levels, environments, sounds, areas).map(|sources| {
+        sources
+            .into_iter()
+            .map(|(area_id, source)| (area_id, source.filename))
+            .collect()
+    })
 }
 
 fn resolve_audio_source(
@@ -3281,12 +3455,26 @@ fn resolve_audio_source(
     Err(format!("在 Mod 与 D2R CASC 中都找不到声音资源 {filename}"))
 }
 
+#[cfg(test)]
 fn write_marker_flac(
     path: &Path,
     marker: TelemetryMarker,
     source_audio: Option<&Path>,
     config: MarkerConfig,
 ) -> Result<f32, String> {
+    write_marker_flac_with_source_gain(path, marker, source_audio, 1.0, config)
+}
+
+fn write_marker_flac_with_source_gain(
+    path: &Path,
+    marker: TelemetryMarker,
+    source_audio: Option<&Path>,
+    source_gain: f32,
+    config: MarkerConfig,
+) -> Result<f32, String> {
+    if !source_gain.is_finite() || !(0.0..=1.0).contains(&source_gain) {
+        return Err(format!("源音频增益必须位于 0-1，收到 {source_gain}"));
+    }
     let (mut samples, mut sample_rate, channels, bits_per_sample) =
         if let Some(source) = source_audio {
             decode_flac(source)?
@@ -3301,6 +3489,11 @@ fn write_marker_flac(
             };
             (vec![0i32; frames * 2], 48_000, 2, 16)
         };
+    if source_audio.is_some() && source_gain < 1.0 {
+        for sample in &mut samples {
+            *sample = (*sample as f64 * source_gain as f64).round() as i32;
+        }
+    }
     if sample_rate < MIN_SAMPLE_RATE {
         samples = resample_interleaved_i32(&samples, channels as usize, sample_rate, 48_000);
         sample_rate = 48_000;
@@ -3751,6 +3944,27 @@ fn layout_has_direct_timed_message(
         })
 }
 
+fn layout_field_value_count(document: &serde_json::Value, expected: &str) -> usize {
+    let own = document
+        .get("fields")
+        .and_then(serde_json::Value::as_object)
+        .map_or(0, |fields| {
+            fields
+                .values()
+                .filter(|value| value.as_str() == Some(expected))
+                .count()
+        });
+    own + document
+        .get("children")
+        .and_then(serde_json::Value::as_array)
+        .map_or(0, |children| {
+            children
+                .iter()
+                .map(|child| layout_field_value_count(child, expected))
+                .sum()
+        })
+}
+
 fn source_room_tool_layouts_are_current(mpq_directory: &Path) -> Option<()> {
     let hud = read_source_room_tool_layout(mpq_directory, HUD_WARNINGS_LAYOUT)?;
     if !layout_has_direct_child_message(&hud, "message", "PanelManager:OpenPanel:D2RHubRoomToolbar")
@@ -3763,7 +3977,7 @@ fn source_room_tool_layouts_are_current(mpq_directory: &Path) -> Option<()> {
         &format!("{UI_LAYOUTS_DIRECTORY}/D2RHubRoomToolbarhd.json"),
     )?;
     for action in [
-        "PanelManager:TogglePanel:D2RHubQuickRecreateConfirm",
+        "PanelManager:OpenPanel:D2RHubQuickRecreateArm",
         "PanelManager:OpenPanel:D2RHubOpenCreateGame",
         "PanelManager:OpenPanel:D2RHubOpenJoinGame",
     ] {
@@ -3806,38 +4020,31 @@ fn source_room_tool_layouts_are_current(mpq_directory: &Path) -> Option<()> {
         return None;
     }
 
-    let confirmation = read_source_room_tool_layout(
+    let arm = read_source_room_tool_layout(
         mpq_directory,
-        &format!("{UI_LAYOUTS_DIRECTORY}/D2RHubQuickRecreateConfirmhd.json"),
+        &format!("{UI_LAYOUTS_DIRECTORY}/D2RHubQuickRecreateArmhd.json"),
     )?;
-    let confirm_next = find_layout_node(&confirmation, "D2RHubConfirmNextGame")?;
-    if confirmation
-        .pointer("/fields/isDismissable")
-        .and_then(serde_json::Value::as_bool)
-        != Some(true)
-        || confirmation
-            .pointer("/fields/acceptsEscKeyEverywhere")
-            .and_then(serde_json::Value::as_bool)
-            != Some(true)
+    let armed_next = find_layout_node(&arm, "D2RHubArmedNextGame")?;
+    if arm.get("type").and_then(serde_json::Value::as_str) != Some("TooltipsPanel")
         || !layout_has_direct_child_message(
-            &confirmation,
+            &arm,
             "onClickMessage",
             "PanelManager:OpenPanel:D2RHubQuickRecreate",
         )
-        || !layout_has_direct_child_message(
-            &confirmation,
-            "message",
-            "PanelManager:ClosePanel:D2RHubQuickRecreateConfirm",
+        || !layout_has_direct_timed_message(
+            &arm,
+            "PanelManager:ClosePanel:D2RHubQuickRecreateArm",
+            QUICK_RECREATE_DOUBLE_CLICK_WINDOW_SECONDS,
         )
-        || confirm_next
+        || armed_next
             .pointer("/fields/rect/x")
             .and_then(serde_json::Value::as_i64)
             != Some(ROOM_TOOL_NEXT_X)
-        || confirm_next
+        || armed_next
             .pointer("/fields/rect/y")
             .and_then(serde_json::Value::as_i64)
-            != Some(ROOM_TOOL_CONFIRM_Y)
-        || confirm_next
+            != Some(ROOM_TOOL_BUTTON_Y)
+        || armed_next
             .pointer("/fields/rect/scale")
             .and_then(serde_json::Value::as_f64)
             .is_none_or(|scale| (scale - ROOM_TOOL_BUTTON_SCALE).abs() > f64::EPSILON)
@@ -3849,12 +4056,84 @@ fn source_room_tool_layouts_are_current(mpq_directory: &Path) -> Option<()> {
         mpq_directory,
         &format!("{UI_LAYOUTS_DIRECTORY}/D2RHubQuickRecreatehd.json"),
     )?;
-    if !layout_has_direct_child_message(
+    if !layout_has_direct_timed_message(
         &quick_recreate,
-        "message",
+        "PanelManager:OpenPanel:PauseLayoutGarden",
+        ROOM_TRANSITION_OPEN_PAUSE_DELAY_SECONDS,
+    ) || !layout_has_direct_timed_message(
+        &quick_recreate,
+        "PausePanelMessage:ExitGame",
+        ROOM_TRANSITION_COMMIT_DELAY_SECONDS,
+    ) || !layout_has_direct_timed_message(
+        &quick_recreate,
         "CharacterSelect:LoadCharacter:2",
+        ROOM_TRANSITION_COMMIT_DELAY_SECONDS,
     ) {
         return None;
+    }
+    let quick_messages = quick_recreate.get("children")?.as_array()?;
+    let exit_index = quick_messages.iter().position(|child| {
+        child
+            .pointer("/fields/message")
+            .and_then(serde_json::Value::as_str)
+            == Some("PausePanelMessage:ExitGame")
+    })?;
+    let load_index = quick_messages.iter().position(|child| {
+        child
+            .pointer("/fields/message")
+            .and_then(serde_json::Value::as_str)
+            == Some("CharacterSelect:LoadCharacter:2")
+    })?;
+    if exit_index >= load_index
+        || [
+            "D2RHubQuickRecreateConfirmhd.json",
+            "D2RHubQuickRecreateConfirm.json",
+        ]
+        .iter()
+        .any(|name| mpq_directory.join(UI_LAYOUTS_DIRECTORY).join(name).exists())
+    {
+        return None;
+    }
+
+    for (file_name, native_message) in [
+        ("D2RHubCommitCreateGamehd.json", "CreateGame:CreateGame"),
+        ("D2RHubCommitJoinGamehd.json", "JoinGame:JoinGame"),
+    ] {
+        let commit = read_source_room_tool_layout(
+            mpq_directory,
+            &format!("{UI_LAYOUTS_DIRECTORY}/{file_name}"),
+        )?;
+        if !layout_has_direct_timed_message(
+            &commit,
+            "PanelManager:OpenPanel:PauseLayoutGarden",
+            ROOM_TRANSITION_OPEN_PAUSE_DELAY_SECONDS,
+        ) || !layout_has_direct_timed_message(
+            &commit,
+            "PausePanelMessage:ExitGame",
+            ROOM_TRANSITION_COMMIT_DELAY_SECONDS,
+        ) || !layout_has_direct_timed_message(
+            &commit,
+            native_message,
+            ROOM_TRANSITION_COMMIT_DELAY_SECONDS,
+        ) {
+            return None;
+        }
+        let messages = commit.get("children")?.as_array()?;
+        let exit_index = messages.iter().position(|child| {
+            child
+                .pointer("/fields/message")
+                .and_then(serde_json::Value::as_str)
+                == Some("PausePanelMessage:ExitGame")
+        })?;
+        let submit_index = messages.iter().position(|child| {
+            child
+                .pointer("/fields/message")
+                .and_then(serde_json::Value::as_str)
+                == Some(native_message)
+        })?;
+        if exit_index >= submit_index {
+            return None;
+        }
     }
 
     for (file_name, panel_name, native_panel, opposite_panel) in [
@@ -3942,18 +4221,29 @@ fn source_room_tool_layouts_are_current(mpq_directory: &Path) -> Option<()> {
         }
     }
 
-    for (file_name, primary_input, input_names, close_action) in [
+    for (
+        file_name,
+        primary_input,
+        input_names,
+        close_action,
+        native_submit,
+        routed_submit,
+    ) in [
         (
             "creategamepanelhd.json",
             "GameNameInput",
             &["GameNameInput", "PasswordInput", "DescriptionInput"][..],
             "PanelManager:ClosePanel:CreateGamePanel",
+            "CreateGame:CreateGame",
+            "PanelManager:OpenPanel:D2RHubCommitCreateGame",
         ),
         (
             "joingamepanelhd.json",
             "NameInput",
             &["NameInput", "PasswordInput"][..],
             "PanelManager:ClosePanel:JoinGamePanel",
+            "JoinGame:JoinGame",
+            "PanelManager:OpenPanel:D2RHubCommitJoinGame",
         ),
     ] {
         let form = read_source_room_tool_layout(
@@ -3984,6 +4274,8 @@ fn source_room_tool_layouts_are_current(mpq_directory: &Path) -> Option<()> {
                 .and_then(|node| node.pointer("/fields/onClickMessage"))
                 .and_then(serde_json::Value::as_str)
                 != Some(close_action)
+            || layout_field_value_count(&form, native_submit) != 0
+            || layout_field_value_count(&form, routed_submit) == 0
         {
             return None;
         }
@@ -4666,8 +4958,8 @@ where
         )?
     };
     let environments = TsvTable::parse("soundenviron.txt", &sound_environment_baseline.text)?;
-    let area_ambience_filenames =
-        collect_area_ambience_filenames(&levels, &environments, &sounds, &areas)?;
+    let area_ambience_sources =
+        collect_area_ambience_sources(&levels, &environments, &sounds, &areas)?;
     progress(BuildProgress::new("areas", 28, "正在准备全部场景声纹…"));
     let casc_cache = staging_mod_directory.join(".audio-telemetry-casc-cache");
     validate_misc(&misc, include_runes, &selected_items)?;
@@ -4792,7 +5084,7 @@ where
         &rune_plans,
         &item_plans,
         &areas,
-        &area_ambience_filenames,
+        &area_ambience_sources,
         &mut compatibility,
     )?;
     let (environments, levels) = patch_sound_environ_and_levels(environments, levels, &areas)?;
@@ -4879,7 +5171,13 @@ where
             } else {
                 config
             };
-            let confidence = write_marker_flac(&output_path, marker, source_audio, marker_config)?;
+            let confidence = write_marker_flac_with_source_gain(
+                &output_path,
+                marker,
+                source_audio,
+                definition.source_gain,
+                marker_config,
+            )?;
             let asset = AudioModAsset {
                 marker,
                 label: match group {

@@ -1418,12 +1418,12 @@ fn patch_room_form_layout(
         ("CreateGame:CreateGame", COMMIT_CREATE_GAME_PANEL)
     };
     let routed_submit_message = format!("PanelManager:OpenPanel:{commit_panel}");
-    if route_room_submission_messages(
+    let routed_count = route_room_submission_messages(
         &mut document,
         native_submit_message,
         &routed_submit_message,
-    ) == 0
-    {
+    );
+    if routed_count == 0 && layout_field_value_count(&document, &routed_submit_message) == 0 {
         return Err(format!(
             "{relative_path} 没有可路由的房间提交消息 {native_submit_message}"
         ));
@@ -1808,19 +1808,13 @@ fn install_in_game_room_tools(
 
     for (file_name, document) in [
         ("D2RHubRoomToolbarhd.json", room_toolbar_layout()),
-        (
-            "D2RHubQuickRecreateArmhd.json",
-            quick_recreate_arm_layout(),
-        ),
+        ("D2RHubQuickRecreateArmhd.json", quick_recreate_arm_layout()),
         ("D2RHubQuickRecreatehd.json", quick_recreate_layout()),
         (
             "D2RHubCommitCreateGamehd.json",
             room_submission_layout(true),
         ),
-        (
-            "D2RHubCommitJoinGamehd.json",
-            room_submission_layout(false),
-        ),
+        ("D2RHubCommitJoinGamehd.json", room_submission_layout(false)),
         (
             "D2RHubOpenCreateGamehd.json",
             room_panel_opener_layout(true),
@@ -1865,9 +1859,7 @@ fn install_in_game_room_tools(
         "D2RHubQuickRecreateConfirmhd.json",
         "D2RHubQuickRecreateConfirm.json",
     ] {
-        let obsolete_path = mpq_directory
-            .join(UI_LAYOUTS_DIRECTORY)
-            .join(obsolete_name);
+        let obsolete_path = mpq_directory.join(UI_LAYOUTS_DIRECTORY).join(obsolete_name);
         if obsolete_path.exists() {
             std::fs::remove_file(&obsolete_path).map_err(|error| {
                 format!(
@@ -3305,12 +3297,15 @@ fn resolve_area_ambience_source(
             current = redirect.to_string();
             continue;
         }
-        let volume_max = row[volume_max_column].trim().parse::<f32>().map_err(|error| {
-            format!(
-                "持续环境音 {current} 的 Volume Max 不是有效数字 {:?}: {error}",
-                row[volume_max_column]
-            )
-        })?;
+        let volume_max = row[volume_max_column]
+            .trim()
+            .parse::<f32>()
+            .map_err(|error| {
+                format!(
+                    "持续环境音 {current} 的 Volume Max 不是有效数字 {:?}: {error}",
+                    row[volume_max_column]
+                )
+            })?;
         if !volume_max.is_finite() || !(0.0..=255.0).contains(&volume_max) {
             return Err(format!(
                 "持续环境音 {current} 的 Volume Max 必须位于 0-255，收到 {volume_max}"
@@ -4221,14 +4216,7 @@ fn source_room_tool_layouts_are_current(mpq_directory: &Path) -> Option<()> {
         }
     }
 
-    for (
-        file_name,
-        primary_input,
-        input_names,
-        close_action,
-        native_submit,
-        routed_submit,
-    ) in [
+    for (file_name, primary_input, input_names, close_action, native_submit, routed_submit) in [
         (
             "creategamepanelhd.json",
             "GameNameInput",
@@ -5495,11 +5483,14 @@ mod tests {
             br#"{
                 type: 'CreateGamePanel', name: 'CreateGamePanel',
                 fields: { defaultWidget: 'GameNameInput' },
-                children: [{ type: 'TextBoxWidget', name: 'CreateFields', children: [
-                    { type: 'TextBoxWidget', name: 'GameNameInput', fields: { imeEnabled: true } },
-                    { type: 'TextBoxWidget', name: 'PasswordInput', fields: { imeEnabled: true } },
-                    { type: 'TextBoxWidget', name: 'DescriptionInput', fields: { imeEnabled: true } },
-                ] }],
+                children: [
+                    { type: 'TextBoxWidget', name: 'CreateFields', children: [
+                        { type: 'TextBoxWidget', name: 'GameNameInput', fields: { imeEnabled: true } },
+                        { type: 'TextBoxWidget', name: 'PasswordInput', fields: { imeEnabled: true } },
+                        { type: 'TextBoxWidget', name: 'DescriptionInput', fields: { imeEnabled: true } },
+                    ] },
+                    { type: 'ButtonWidget', name: 'CreateGameButton', fields: { onClickMessage: 'CreateGame:CreateGame' } },
+                ],
             }"#,
         )
         .unwrap();
@@ -5512,7 +5503,7 @@ mod tests {
                     { type: 'TextBoxWidget', name: 'NameInput', fields: { imeEnabled: true } },
                     { type: 'TextBoxWidget', name: 'PasswordInput', fields: { imeEnabled: true } },
                     { type: 'TextBoxWidget', name: 'SearchInput', fields: { imeEnabled: true } },
-                    { type: 'ButtonWidget', name: 'JoinButton', fields: { rect: { x: 330, y: 1080 } } },
+                    { type: 'ButtonWidget', name: 'JoinButton', fields: { rect: { x: 330, y: 1080 }, onClickMessage: 'JoinGame:JoinGame' } },
                 ],
             }"#,
         )
@@ -5853,6 +5844,7 @@ mod tests {
                             { type: 'TextBoxWidget', name: 'DescriptionInput', fields: { imeEnabled: true } },
                         ],
                     },
+                    { type: 'ButtonWidget', name: 'CreateGameButton', fields: { onClickMessage: 'CreateGame:CreateGame' } },
                 ],
             }"#,
         )
@@ -5870,7 +5862,7 @@ mod tests {
                     {
                         type: 'ButtonWidget',
                         name: 'JoinButton',
-                        fields: { rect: { x: -3, y: 1275 }, filename: 'Lobby\\Final\\LobbyButton' },
+                        fields: { rect: { x: -3, y: 1275 }, filename: 'Lobby\\Final\\LobbyButton', onClickMessage: 'JoinGame:JoinGame' },
                     },
                 ],
             }"#,
@@ -5910,13 +5902,8 @@ mod tests {
             vec!["D2RHubNextGame", "D2RHubCreateGame", "D2RHubJoinGame"]
         );
         assert_eq!(
-            find_layout_node(&quick_recreate_layout(), "D2RHubQuickRecreateAction").unwrap()
-                ["fields"]["message"],
-            "CharacterSelect:LoadCharacter:2"
-        );
-        assert_eq!(
             find_layout_node(&toolbar, "D2RHubNextGame").unwrap()["fields"]["onClickMessage"],
-            "PanelManager:TogglePanel:D2RHubQuickRecreateConfirm"
+            "PanelManager:OpenPanel:D2RHubQuickRecreateArm"
         );
         let next_game = find_layout_node(&toolbar, "D2RHubNextGame").unwrap();
         let create_game = find_layout_node(&toolbar, "D2RHubCreateGame").unwrap();
@@ -5939,31 +5926,72 @@ mod tests {
                 - create_game["fields"]["rect"]["x"].as_i64().unwrap(),
             280
         );
-        let next_button_y = next_game["fields"]["rect"]["y"].as_i64().unwrap();
-        let confirm_button_y = find_layout_node(
-            &quick_recreate_confirmation_layout(),
-            "D2RHubConfirmNextGame",
-        )
-        .unwrap()["fields"]["rect"]["y"]
-            .as_i64()
-            .unwrap();
-        let scaled_offset = next_game["fields"]["tooltipOffset"]["y"].as_f64().unwrap()
-            * next_game["fields"]["rect"]["scale"].as_f64().unwrap();
-        assert!((scaled_offset - (confirm_button_y - next_button_y) as f64).abs() < 0.2);
         assert!(!next_game["fields"]["tooltipString"]
             .as_str()
             .unwrap()
             .starts_with('@'));
-        let confirmation = parse_json_value(
-            &read_utf8(&layouts.join("D2RHubQuickRecreateConfirmhd.json")).unwrap(),
-        )
-        .unwrap();
-        assert_eq!(confirmation["fields"]["isDismissable"], true);
+
+        let arm =
+            parse_json_value(&read_utf8(&layouts.join("D2RHubQuickRecreateArmhd.json")).unwrap())
+                .unwrap();
+        assert_eq!(arm["type"], "TooltipsPanel");
+        let armed_next = find_layout_node(&arm, "D2RHubArmedNextGame").unwrap();
+        assert_eq!(armed_next["fields"]["rect"], next_game["fields"]["rect"]);
         assert_eq!(
-            find_layout_node(&confirmation, "D2RHubConfirmNextGame").unwrap()["fields"]
-                ["onClickMessage"],
+            armed_next["fields"]["onClickMessage"],
             "PanelManager:OpenPanel:D2RHubQuickRecreate"
         );
+        assert_eq!(
+            find_layout_node(&arm, "D2RHubQuickRecreateArmTimeout").unwrap()["fields"]["time"],
+            QUICK_RECREATE_DOUBLE_CLICK_WINDOW_SECONDS
+        );
+        assert!(!layouts.join("D2RHubQuickRecreateConfirmhd.json").exists());
+
+        let quick =
+            parse_json_value(&read_utf8(&layouts.join("D2RHubQuickRecreatehd.json")).unwrap())
+                .unwrap();
+        for (node_name, delay, message) in [
+            (
+                "D2RHubQuickRecreateOpenPause",
+                ROOM_TRANSITION_OPEN_PAUSE_DELAY_SECONDS,
+                "PanelManager:OpenPanel:PauseLayoutGarden",
+            ),
+            (
+                "D2RHubQuickRecreateExitGame",
+                ROOM_TRANSITION_COMMIT_DELAY_SECONDS,
+                "PausePanelMessage:ExitGame",
+            ),
+            (
+                "D2RHubQuickRecreateAction",
+                ROOM_TRANSITION_COMMIT_DELAY_SECONDS,
+                "CharacterSelect:LoadCharacter:2",
+            ),
+        ] {
+            let node = find_layout_node(&quick, node_name).unwrap();
+            assert_eq!(node["fields"]["time"], delay);
+            assert_eq!(node["fields"]["message"], message);
+        }
+
+        for (file_name, native_message) in [
+            ("D2RHubCommitCreateGamehd.json", "CreateGame:CreateGame"),
+            ("D2RHubCommitJoinGamehd.json", "JoinGame:JoinGame"),
+        ] {
+            let commit = parse_json_value(&read_utf8(&layouts.join(file_name)).unwrap()).unwrap();
+            let messages = commit["children"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|node| node["fields"]["message"].as_str())
+                .collect::<Vec<_>>();
+            assert_eq!(
+                messages[..3],
+                [
+                    "PanelManager:OpenPanel:PauseLayoutGarden",
+                    "PausePanelMessage:ExitGame",
+                    native_message,
+                ]
+            );
+        }
 
         for (helper_name, native_target) in [
             ("D2RHubOpenCreateGamehd.json", "CreateGamePanel"),
@@ -6066,6 +6094,10 @@ mod tests {
             assert_eq!(input["fields"]["imeEnabled"], true);
             assert!(input["fields"].get("alwaysAcceptsKeyInput").is_none());
         }
+        assert_eq!(
+            find_layout_node(&create, "CreateGameButton").unwrap()["fields"]["onClickMessage"],
+            "PanelManager:OpenPanel:D2RHubCommitCreateGame"
+        );
         for input_name in ["GameNameInput", "PasswordInput"] {
             let style = &find_layout_node(&create, input_name).unwrap()["fields"]["fontStyle"];
             assert_eq!(style["fontFace"], "BlizzardGlobal");
@@ -6089,6 +6121,10 @@ mod tests {
             assert_eq!(input["fields"]["imeEnabled"], true);
             assert!(input["fields"].get("alwaysAcceptsKeyInput").is_none());
         }
+        assert_eq!(
+            find_layout_node(&join, "JoinButton").unwrap()["fields"]["onClickMessage"],
+            "PanelManager:OpenPanel:D2RHubCommitJoinGame"
+        );
         for input_name in ["NameInput", "PasswordInput", "SearchInput"] {
             let style = &find_layout_node(&join, input_name).unwrap()["fields"]["fontStyle"];
             assert_eq!(style["fontFace"], "BlizzardGlobal");
@@ -6429,9 +6465,17 @@ mod tests {
                 original_audio_id: None,
             })
             .collect::<Vec<_>>();
-        let area_filenames = areas
+        let area_ambience_sources = areas
             .iter()
-            .map(|area| (area.area_id, "ambient\\scene.flac".to_string()))
+            .map(|area| {
+                (
+                    area.area_id,
+                    AreaAmbienceSource {
+                        filename: "ambient\\scene.flac".to_string(),
+                        source_gain: 1.0,
+                    },
+                )
+            })
             .collect::<HashMap<_, _>>();
         let mut compatibility = Vec::new();
         let (sounds, definitions) = patch_sounds(
@@ -6439,7 +6483,7 @@ mod tests {
             &rune_plans,
             &[],
             &areas,
-            &area_filenames,
+            &area_ambience_sources,
             &mut compatibility,
         )
         .unwrap();
@@ -6665,7 +6709,7 @@ mod tests {
         .unwrap();
         std::fs::write(
             excel.join("sounds.txt"),
-            "Sound\t*Index\tRedirect\tFileName\tIsAmbientScene\nitem_rune_hd\t1\t\titem\\rune.flac\t0\nscene_wilderness_day\t2\t\tambient\\scene.flac\t1\n",
+            "Sound\t*Index\tRedirect\tFileName\tIsAmbientScene\tVolume Max\nitem_rune_hd\t1\t\titem\\rune.flac\t0\t200\nscene_wilderness_day\t2\t\tambient\\scene.flac\t1\t200\n",
         )
         .unwrap();
         std::fs::write(
@@ -6689,11 +6733,11 @@ mod tests {
             sound_environment_file: None,
             gain_db: None,
             include_audio_telemetry: true,
-            include_room_tools: true,
+            include_room_tools: false,
             include_auto_exit_on_death: false,
         })
         .unwrap_err();
-        assert!(error.contains("r02"));
+        assert!(error.contains("r02"), "{error}");
         assert!(!output.join("broken-AudioTelemetry").exists());
         assert_eq!(std::fs::read_dir(&output).unwrap().count(), 0);
         std::fs::remove_dir_all(root).unwrap();

@@ -33,17 +33,19 @@ pub const AUDIO_TELEMETRY_FEATURE_ID: &str = "audio_telemetry";
 pub const IN_GAME_ROOM_TOOLS_FEATURE_ID: &str = "in_game_room_tools";
 pub const AUTO_EXIT_ON_DEATH_FEATURE_ID: &str = "auto_exit_on_death";
 const AUDIO_TELEMETRY_FEATURE_RECIPE_VERSION: u32 = 3;
-const IN_GAME_ROOM_TOOLS_FEATURE_RECIPE_VERSION: u32 = 22;
+const IN_GAME_ROOM_TOOLS_FEATURE_RECIPE_VERSION: u32 = 23;
 const AUTO_EXIT_ON_DEATH_FEATURE_RECIPE_VERSION: u32 = 1;
 const MOD_MANIFEST_FILE_NAME: &str = "d2rhub-mod-manifest.json";
 const LEGACY_MANIFEST_FILE_NAME: &str = "audio-telemetry-manifest.json";
 const TERROR_IMMEDIATE_ENTRY_CAPABILITY: &str = "terror_zone_immediate_entry_marker_v1";
 const AREA_ENTRY_PROBE_CAPABILITY: &str = "area_entry_probe_burst_v1";
 const TERROR_ZONE_STATE_CAPABILITY: &str = "terror_zone_state_marker_v1";
-const IN_GAME_ROOM_TOOLS_CAPABILITY: &str = "in_game_room_tools_v22";
+const IN_GAME_ROOM_TOOLS_CAPABILITY: &str = "in_game_room_tools_v23";
 const AUTO_EXIT_ON_DEATH_CAPABILITY: &str = "auto_exit_on_death_v1";
 const UI_LAYOUTS_DIRECTORY: &str = "data/global/ui/layouts";
 const HUD_WARNINGS_LAYOUT: &str = "data/global/ui/layouts/HudWarningshd.json";
+const LOBBY_BACKGROUND_LAYOUT: &str = "data/global/ui/layouts/lobbybackgroundpanelhd.json";
+const LOBBY_RETURN_HINT: &str = "D2RHubLobbyReturnHint";
 const PAUSE_LAYOUTS: [&str; 2] = [
     "data/global/ui/layouts/pauselayouthd.json",
     "data/global/ui/layouts/pauselayoutgardenhd.json",
@@ -1755,6 +1757,64 @@ fn install_auto_exit_on_death(
     Ok(true)
 }
 
+fn lobby_return_hint_widget() -> serde_json::Value {
+    serde_json::json!({
+        "type": "TextBoxWidget",
+        "name": LOBBY_RETURN_HINT,
+        "fields": {
+            "rect": { "x": -50, "y": 0 },
+            "text": "按 Esc 键返回",
+            "style": {
+                "alignment": { "h": "center", "v": "center" },
+                "fontColor": "$FontColorDarkGold",
+                "pointSize": 120
+            }
+        }
+    })
+}
+
+fn install_lobby_return_hint(
+    mpq_directory: &Path,
+    storage: Option<&casc_core::Storage>,
+) -> Result<(), String> {
+    let mut lobby = read_local_or_casc_json(mpq_directory, storage, LOBBY_BACKGROUND_LAYOUT)?;
+    let children = lobby
+        .as_object_mut()
+        .ok_or_else(|| format!("{LOBBY_BACKGROUND_LAYOUT} 顶层必须是 JSON 对象"))?
+        .entry("children")
+        .or_insert_with(|| serde_json::json!([]))
+        .as_array_mut()
+        .ok_or_else(|| format!("{LOBBY_BACKGROUND_LAYOUT}.children 必须是 JSON 数组"))?;
+
+    // Keep JCY's existing placement, and replace our own node on repeated processing.
+    if let Some(hint) = children.iter_mut().find_map(|child| {
+        if child.pointer("/fields/text").and_then(serde_json::Value::as_str)
+            == Some("@JcyPressTheEscKeyToReturn")
+        {
+            Some(child)
+        } else {
+            find_layout_node_mut(child, LOBBY_RETURN_HINT)
+        }
+    }) {
+        *hint = lobby_return_hint_widget();
+    } else {
+        // A screen-sized transparent layer keeps the fallback independent of custom lobby
+        // anchors. Insert behind the existing backgrounds so the normal lobby stays intact.
+        children.insert(0, serde_json::json!({
+            "type": "RectangleWidget",
+            "name": "D2RHubLobbyReturnHintBackground",
+            "fields": { "fitToScreen": true, "color": [0.0, 0.0, 0.0, 0.0] },
+            "children": [{
+                "type": "Widget",
+                "name": "D2RHubLobbyReturnHintAnchor",
+                "fields": { "anchor": { "x": 0.5, "y": 0.45 } },
+                "children": [lobby_return_hint_widget()]
+            }]
+        }));
+    }
+    write_json_layout(mpq_directory, LOBBY_BACKGROUND_LAYOUT, &lobby)
+}
+
 fn install_in_game_room_tools(
     mpq_directory: &Path,
     storage: Option<&casc_core::Storage>,
@@ -1762,6 +1822,7 @@ fn install_in_game_room_tools(
 ) -> Result<bool, String> {
     let required_game_layouts = [
         HUD_WARNINGS_LAYOUT,
+        LOBBY_BACKGROUND_LAYOUT,
         PAUSE_LAYOUTS[0],
         PAUSE_LAYOUTS[1],
         "data/global/ui/layouts/creategamepanelhd.json",
@@ -1775,7 +1836,7 @@ fn install_in_game_room_tools(
         compatibility.push(AudioModCompatibility {
             target: "局内房间工具".to_string(),
             action: "skip_without_game_layouts".to_string(),
-            detail: "源 Mod 未包含完整 HUD/建房/加入布局，且未提供可读取的 D2R 游戏目录；为避免用不完整布局覆盖游戏原界面，本次未追加局内房间工具。".to_string(),
+            detail: "源 Mod 未包含完整 HUD/大厅/建房/加入布局，且未提供可读取的 D2R 游戏目录；为避免用不完整布局覆盖游戏原界面，本次未追加局内房间工具。".to_string(),
         });
         return Ok(false);
     }
@@ -1885,6 +1946,8 @@ fn install_in_game_room_tools(
         "data/global/ui/layouts/joingamepanelhd.json",
         "NameInput",
     )?;
+
+    install_lobby_return_hint(mpq_directory, storage)?;
 
     compatibility.push(AudioModCompatibility {
         target: "局内房间工具".to_string(),
@@ -3961,6 +4024,10 @@ fn layout_field_value_count(document: &serde_json::Value, expected: &str) -> usi
 }
 
 fn source_room_tool_layouts_are_current(mpq_directory: &Path) -> Option<()> {
+    let lobby = read_source_room_tool_layout(mpq_directory, LOBBY_BACKGROUND_LAYOUT)?;
+    if find_layout_node(&lobby, LOBBY_RETURN_HINT)? != &lobby_return_hint_widget() {
+        return None;
+    }
     let hud = read_source_room_tool_layout(mpq_directory, HUD_WARNINGS_LAYOUT)?;
     if !layout_has_direct_child_message(&hud, "message", "PanelManager:OpenPanel:D2RHubRoomToolbar")
     {

@@ -1841,6 +1841,11 @@ fn install_in_game_room_tools(
         return Ok(false);
     }
     let mut hud = read_local_or_casc_json(mpq_directory, storage, HUD_WARNINGS_LAYOUT)?;
+    // D2RHub toggles only this launcher message. Preserve the choice when
+    // upgrading or inheriting a processed Mod; keyboard gateways are independent.
+    let toolbar_hidden = layout_has_direct_child_message(
+        &hud, "message", "PanelManager:ClosePanel:D2RHubRoomToolbar",
+    );
     let children = hud
         .as_object_mut()
         .ok_or_else(|| format!("{HUD_WARNINGS_LAYOUT} 顶层必须是 JSON 对象"))?
@@ -1849,10 +1854,10 @@ fn install_in_game_room_tools(
         .as_array_mut()
         .ok_or_else(|| format!("{HUD_WARNINGS_LAYOUT}.children 必须是 JSON 数组"))?;
     children.retain(|child| {
-        child
-            .pointer("/fields/message")
-            .and_then(serde_json::Value::as_str)
-            != Some("PanelManager:OpenPanel:D2RHubRoomToolbar")
+        !matches!(
+            child.pointer("/fields/message").and_then(serde_json::Value::as_str),
+            Some("PanelManager:OpenPanel:D2RHubRoomToolbar" | "PanelManager:ClosePanel:D2RHubRoomToolbar")
+        )
     });
     children.insert(
         0,
@@ -1861,7 +1866,11 @@ fn install_in_game_room_tools(
             "name": "D2RHubRoomToolbarLauncher",
             "fields": {
                 "time": 0.01,
-                "message": "PanelManager:OpenPanel:D2RHubRoomToolbar"
+                "message": if toolbar_hidden {
+                    "PanelManager:ClosePanel:D2RHubRoomToolbar"
+                } else {
+                    "PanelManager:OpenPanel:D2RHubRoomToolbar"
+                }
             }
         }),
     );
@@ -4029,8 +4038,13 @@ fn source_room_tool_layouts_are_current(mpq_directory: &Path) -> Option<()> {
         return None;
     }
     let hud = read_source_room_tool_layout(mpq_directory, HUD_WARNINGS_LAYOUT)?;
-    if !layout_has_direct_child_message(&hud, "message", "PanelManager:OpenPanel:D2RHubRoomToolbar")
-    {
+    let toolbar_open = layout_has_direct_child_message(
+        &hud, "message", "PanelManager:OpenPanel:D2RHubRoomToolbar",
+    );
+    let toolbar_closed = layout_has_direct_child_message(
+        &hud, "message", "PanelManager:ClosePanel:D2RHubRoomToolbar",
+    );
+    if toolbar_open == toolbar_closed {
         return None;
     }
 

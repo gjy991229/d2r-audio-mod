@@ -6,6 +6,8 @@
 
 ## 简单界面
 
+包含局内房间工具的成品，可在 D2RHub 的 Mod 管理条目中切换右上角按钮显示，无需重新加工。D2RHub 仅将 `HudWarningshd.json` 中工具栏定时入口的消息在 `PanelManager:OpenPanel:D2RHubRoomToolbar` 与 `PanelManager:ClosePanel:D2RHubRoomToolbar` 之间切换；暂停菜单键盘入口和房间功能保持安装。游戏关闭后切换，下次启动生效。生成器继承源 Mod 的显示选择，隐藏状态仍视为完整的房间工具能力。
+
 直接双击 `d2r-audio-mod.exe`。界面只有三个输入：
 
 - **源 MOD**：可留空；留空时生成独立最小 MOD，选择后则保留源 MOD 内容并附加所选功能。

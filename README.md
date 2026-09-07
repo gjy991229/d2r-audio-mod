@@ -16,7 +16,11 @@
 
 独立 GUI 仍默认生成全区域声纹和局内房间工具；D2RHub 或命令行可用 `--features audio`、`--features rooms`、`--features death-exit` 或逗号组合按需选择。`death-exit` 属于高影响的显式选项，不包含在默认 `all` 中。r25 清单会按功能组记录独立版本和参数指纹。把 r25 成品作为新一轮来源时，声纹版本、协议、覆盖范围、类别、增益、目录及全部文件均一致才会直接复用，不重新编码或覆盖 FLAC。源 MOD 永远不会被覆盖。
 
-选择 `rooms` 时会加入局内房间工具栏：`下一局` 需要在 0.5 秒内左键双击，首次点击不会显示二级确认条；确认双击后先打开在线 `PauseLayoutGarden`，再按 JCY 的顺序发送 `PausePanelMessage:ExitGame` 与 `CharacterSelect:LoadCharacter:2`，通过正常退出路径开始下一局。`创建房间` 与 `加入房间` 保持单击打开表单；点击按钮、按回车或选择房间触发实际提交时，会先打开 `PauseLayoutGarden`，再依次发送 `PausePanelMessage:ExitGame` 与原生 `CreateGame:CreateGame` 或 `JoinGame:JoinGame`，避免主动换房被显示为连接中断。三个按钮缩至 0.30 倍并紧凑排列，同时保留暂停菜单中的无操作安全焦点；暂停菜单所有真实按钮的左右导航也会汇入创建/加入安全入口，避免鼠标悬停改变焦点。自动流程用 `Esc → 左/右两次 → 确认` 打开创建/加入表单，随后通过 F13 调用原生 `CfgChat` 文本态，Tab 切换密码并提交。
+选择 `rooms` 时会加入局内房间工具栏：`下一局` 需要在 0.5 秒内左键双击，首次点击不会显示二级确认条；`创建房间` 与 `加入房间` 保持单击打开表单。配方 r24 将下一局、创建和加入的实际提交统一分为四个时间点（均从控制器启动计时）：10ms 打开在线 `PauseLayoutGarden`，50ms 发送 `PausePanelMessage:ExitGame`，200ms 发送 `CharacterSelect:LoadCharacter:2`、`CreateGame:CreateGame` 或 `JoinGame:JoinGame`，250ms 关闭控制器。退出与加载/提交之间留出 150ms，避免同一时点同时请求两个转换；固定延时并不代表已经确认游戏退出完成。
+
+局内房间工具配方 r25 将 `pauselayouthd.json` 与 `pauselayoutgardenhd.json` 整份替换为从当前 D2R 游戏原版重建的布局，再注入房间工具。源 Mod 在这两份文件中的自定义外观、按钮、Esc 快捷行为、定时器和消息链均不再继承；只有 `ReturnToGame` 接收 Esc，并固定执行 `PausePanelMessage:Close`。加工 `rooms` 必须能读取有效的 D2R 游戏目录（含 `.build.info` 与 `Data`）；原版数据不可用时明确报错，不回退到源 Mod 的暂停布局。
+
+三个工具栏按钮缩至 0.30 倍并紧凑排列，暂停菜单保留无操作安全焦点，所有原版按钮的左右导航汇入创建/加入安全入口。自动流程用 `Esc → 左/右两次 → 确认` 打开表单，随后通过 F13 调用原生 `CfgChat` 文本态，Tab 切换密码并提交。已有 r21-r24 房间工具需要重新加工升级，D2RHub 仍按旧配方读取它们作为升级来源。重建范围仅为上述两份高清暂停布局，其他文件中的界面或外部按键脚本不属于这项接管范围。
 
 `rooms` 配方 r23 同时加入大厅背景的“按 Esc 键返回”提示，沿用 JCY 的暗金色、120 字号、水平/垂直居中样式及水平 -50 偏移。已有 JCY 提示会原位更新；其他大厅布局保留完整内容，并在背景下方加入屏幕锚点为 (0.5, 0.45) 的提示层。源 Mod 缺少大厅布局时从游戏数据补齐。重复加工不会叠加提示；这条提示依附大厅背景，不检测黑屏，也不改变 Esc 行为。
 

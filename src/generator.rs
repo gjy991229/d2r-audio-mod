@@ -33,14 +33,14 @@ pub const AUDIO_TELEMETRY_FEATURE_ID: &str = "audio_telemetry";
 pub const IN_GAME_ROOM_TOOLS_FEATURE_ID: &str = "in_game_room_tools";
 pub const AUTO_EXIT_ON_DEATH_FEATURE_ID: &str = "auto_exit_on_death";
 const AUDIO_TELEMETRY_FEATURE_RECIPE_VERSION: u32 = 3;
-const IN_GAME_ROOM_TOOLS_FEATURE_RECIPE_VERSION: u32 = 23;
+const IN_GAME_ROOM_TOOLS_FEATURE_RECIPE_VERSION: u32 = 25;
 const AUTO_EXIT_ON_DEATH_FEATURE_RECIPE_VERSION: u32 = 1;
 const MOD_MANIFEST_FILE_NAME: &str = "d2rhub-mod-manifest.json";
 const LEGACY_MANIFEST_FILE_NAME: &str = "audio-telemetry-manifest.json";
 const TERROR_IMMEDIATE_ENTRY_CAPABILITY: &str = "terror_zone_immediate_entry_marker_v1";
 const AREA_ENTRY_PROBE_CAPABILITY: &str = "area_entry_probe_burst_v1";
 const TERROR_ZONE_STATE_CAPABILITY: &str = "terror_zone_state_marker_v1";
-const IN_GAME_ROOM_TOOLS_CAPABILITY: &str = "in_game_room_tools_v23";
+const IN_GAME_ROOM_TOOLS_CAPABILITY: &str = "in_game_room_tools_v25";
 const AUTO_EXIT_ON_DEATH_CAPABILITY: &str = "auto_exit_on_death_v1";
 const UI_LAYOUTS_DIRECTORY: &str = "data/global/ui/layouts";
 const HUD_WARNINGS_LAYOUT: &str = "data/global/ui/layouts/HudWarningshd.json";
@@ -67,7 +67,11 @@ const COMMIT_CREATE_GAME_PANEL: &str = "D2RHubCommitCreateGame";
 const COMMIT_JOIN_GAME_PANEL: &str = "D2RHubCommitJoinGame";
 const QUICK_RECREATE_DOUBLE_CLICK_WINDOW_SECONDS: f64 = 0.5;
 const ROOM_TRANSITION_OPEN_PAUSE_DELAY_SECONDS: f64 = 0.01;
-const ROOM_TRANSITION_COMMIT_DELAY_SECONDS: f64 = 0.05;
+const ROOM_TRANSITION_EXIT_DELAY_SECONDS: f64 = 0.05;
+// Leave 150 ms between requesting an exit and starting the next room. These
+// timers give the native transition breathing room; they are not a ready signal.
+const ROOM_TRANSITION_COMMIT_DELAY_SECONDS: f64 = 0.20;
+const ROOM_TRANSITION_CLOSE_DELAY_SECONDS: f64 = 0.25;
 const YOU_DIED_LAYOUT: &str = "data/global/ui/layouts/youdiedmodalhd.json";
 const AUTO_EXIT_ON_DEATH_PANEL: &str = "D2RHubAutoExitOnDeath";
 const AUTO_EXIT_ON_DEATH_LAUNCHER: &str = "D2RHubAutoExitOnDeathLauncher";
@@ -1015,7 +1019,7 @@ fn quick_recreate_layout() -> serde_json::Value {
                 "type": "TimerWidget",
                 "name": "D2RHubQuickRecreateExitGame",
                 "fields": {
-                    "time": ROOM_TRANSITION_COMMIT_DELAY_SECONDS,
+                    "time": ROOM_TRANSITION_EXIT_DELAY_SECONDS,
                     "message": "PausePanelMessage:ExitGame"
                 }
             },
@@ -1031,7 +1035,7 @@ fn quick_recreate_layout() -> serde_json::Value {
                 "type": "TimerWidget",
                 "name": "D2RHubQuickRecreateClose",
                 "fields": {
-                    "time": ROOM_TRANSITION_COMMIT_DELAY_SECONDS,
+                    "time": ROOM_TRANSITION_CLOSE_DELAY_SECONDS,
                     "message": format!("PanelManager:ClosePanel:{QUICK_RECREATE_PANEL}")
                 }
             }
@@ -1064,7 +1068,7 @@ fn room_submission_layout(create: bool) -> serde_json::Value {
                 "type": "TimerWidget",
                 "name": "D2RHubRoomSubmissionExitGame",
                 "fields": {
-                    "time": ROOM_TRANSITION_COMMIT_DELAY_SECONDS,
+                    "time": ROOM_TRANSITION_EXIT_DELAY_SECONDS,
                     "message": "PausePanelMessage:ExitGame"
                 }
             },
@@ -1080,7 +1084,7 @@ fn room_submission_layout(create: bool) -> serde_json::Value {
                 "type": "TimerWidget",
                 "name": "D2RHubRoomSubmissionClose",
                 "fields": {
-                    "time": ROOM_TRANSITION_COMMIT_DELAY_SECONDS,
+                    "time": ROOM_TRANSITION_CLOSE_DELAY_SECONDS,
                     "message": format!("PanelManager:ClosePanel:{panel_name}")
                 }
             }
@@ -1184,8 +1188,15 @@ fn route_pause_buttons_to_keyboard_gateways(
     relative_path: &str,
 ) -> Result<usize, String> {
     let is_button = node.get("type").and_then(serde_json::Value::as_str) == Some("ButtonWidget");
+    // Keep a single Escape action in the rebuilt native pause layout, including
+    // when native defaults put a binding on a nested widget.
+    if let Some(accepts_esc) = node.pointer_mut("/fields/acceptsEscKeyEverywhere") {
+        *accepts_esc = serde_json::json!(false);
+    }
     let mut routed = 0;
     if is_button {
+        let returns_to_game =
+            node.get("name").and_then(serde_json::Value::as_str) == Some("ReturnToGame");
         let fields = node
             .as_object_mut()
             .ok_or_else(|| format!("{relative_path} 的 ButtonWidget 必须是 JSON 对象"))?
@@ -1193,6 +1204,16 @@ fn route_pause_buttons_to_keyboard_gateways(
             .or_insert_with(|| serde_json::json!({}))
             .as_object_mut()
             .ok_or_else(|| format!("{relative_path} 的 ButtonWidget.fields 必须是 JSON 对象"))?;
+        fields.insert(
+            "acceptsEscKeyEverywhere".to_string(),
+            serde_json::json!(returns_to_game),
+        );
+        if returns_to_game {
+            fields.insert(
+                "onClickMessage".to_string(),
+                serde_json::json!("PausePanelMessage:Close"),
+            );
+        }
         let navigation = fields
             .entry("navigation")
             .or_insert_with(|| serde_json::json!({}))
@@ -1222,12 +1243,25 @@ fn route_pause_buttons_to_keyboard_gateways(
     Ok(routed)
 }
 
-fn patch_pause_keyboard_gateway(
+fn rebuild_pause_keyboard_gateway(
     mpq_directory: &Path,
-    storage: Option<&casc_core::Storage>,
+    storage: &casc_core::Storage,
     relative_path: &str,
 ) -> Result<(), String> {
-    let mut document = read_local_or_casc_json(mpq_directory, storage, relative_path)?;
+    // A source layout can run arbitrary panel messages as soon as Escape opens
+    // it. Rebuild from this installation's native data so source widgets, timers
+    // and message chains never enter the generated pause layout.
+    let mut document = read_casc_json_asset(storage, relative_path)
+        .map_err(|error| format!("从游戏原版重建暂停布局失败：{error}"))?;
+    if find_layout_node(&document, "ReturnToGame")
+        .and_then(|node| node.get("type"))
+        .and_then(serde_json::Value::as_str)
+        != Some("ButtonWidget")
+    {
+        return Err(format!(
+            "游戏原版 {relative_path} 缺少返回游戏按钮 ReturnToGame，无法接管 Esc"
+        ));
+    }
 
     // PausePanel normally focuses a real menu action. Start on a no-op hub so a
     // dropped arrow cannot make Return invoke that action. The mouse can still
@@ -1272,6 +1306,7 @@ fn patch_pause_keyboard_gateway(
         "name": KEYBOARD_GATEWAY_HUB,
         "fields": {
             "rect": { "x": -9999, "y": -9999, "width": 1, "height": 1 },
+            "acceptsEscKeyEverywhere": false,
             "acceptsReturnKey": false,
             "focusOnMouseOver": false,
             "navigation": {
@@ -1312,6 +1347,7 @@ fn patch_pause_keyboard_gateway(
             "name": name,
             "fields": {
                 "rect": { "x": -9999, "y": -9999, "width": 1, "height": 1 },
+                "acceptsEscKeyEverywhere": false,
                 "acceptsReturnKey": true,
                 "focusOnMouseOver": false,
                 "onClickMessage": format!("PanelManager:OpenPanel:{opener}"),
@@ -1820,26 +1856,9 @@ fn install_in_game_room_tools(
     storage: Option<&casc_core::Storage>,
     compatibility: &mut Vec<AudioModCompatibility>,
 ) -> Result<bool, String> {
-    let required_game_layouts = [
-        HUD_WARNINGS_LAYOUT,
-        LOBBY_BACKGROUND_LAYOUT,
-        PAUSE_LAYOUTS[0],
-        PAUSE_LAYOUTS[1],
-        "data/global/ui/layouts/creategamepanelhd.json",
-        "data/global/ui/layouts/joingamepanelhd.json",
-    ];
-    if storage.is_none()
-        && required_game_layouts
-            .iter()
-            .any(|relative_path| !mpq_directory.join(relative_path).is_file())
-    {
-        compatibility.push(AudioModCompatibility {
-            target: "局内房间工具".to_string(),
-            action: "skip_without_game_layouts".to_string(),
-            detail: "源 Mod 未包含完整 HUD/大厅/建房/加入布局，且未提供可读取的 D2R 游戏目录；为避免用不完整布局覆盖游戏原界面，本次未追加局内房间工具。".to_string(),
-        });
-        return Ok(false);
-    }
+    let game_storage = storage.ok_or_else(|| {
+        "局内房间工具需要从游戏原版重建暂停菜单，请提供可读取的 D2R 游戏目录（含 .build.info 与 Data）；不能使用源 Mod 的暂停布局代替。".to_string()
+    })?;
     let mut hud = read_local_or_casc_json(mpq_directory, storage, HUD_WARNINGS_LAYOUT)?;
     // D2RHub toggles only this launcher message. Preserve the choice when
     // upgrading or inheriting a processed Mod; keyboard gateways are independent.
@@ -1947,7 +1966,7 @@ fn install_in_game_room_tools(
         "GameNameInput",
     )?;
     for relative_path in PAUSE_LAYOUTS {
-        patch_pause_keyboard_gateway(mpq_directory, storage, relative_path)?;
+        rebuild_pause_keyboard_gateway(mpq_directory, game_storage, relative_path)?;
     }
     patch_room_form_layout(
         mpq_directory,
@@ -1961,7 +1980,7 @@ fn install_in_game_room_tools(
     compatibility.push(AudioModCompatibility {
         target: "局内房间工具".to_string(),
         action: "add_in_game_create_join_and_recreate".to_string(),
-        detail: "局内“下一局”使用 0.5 秒窗口内左键双击，首次点击不显示二级确认条；确认双击后先打开在线 PauseLayoutGarden，再按 JCY 的顺序发送 PausePanelMessage:ExitGame 与 CharacterSelect:LoadCharacter:2，使客户端按主动退出路径进入下一局。创建与加入表单保持单击打开，但所有实际提交入口都会先转入独立控制器：打开 PauseLayoutGarden 后依次发送 PausePanelMessage:ExitGame 与原生 CreateGame:CreateGame 或 JoinGame:JoinGame，避免把主动换房识别成连接中断。三个按钮缩至 0.30 倍并在右上角以 280 布局单位紧凑排列。在两套 PausePanel 上增加不可见的无操作安全焦点与创建/加入键盘入口，并把所有真实暂停菜单按钮的左右导航汇入对应安全入口，避免鼠标悬停改写焦点。自动填写使用 Esc+左/右两次+确认打开并聚焦原生表单；方向消息漏掉时确认键不会触发暂停菜单按钮。随后以备份过的 F13 次键调用原生 CfgChat 文本态；不移动鼠标、不点击 HWND，也不再创建 alwaysAcceptsKeyInput 镜像输入框。".to_string(),
+        detail: "局内“下一局”使用 0.5 秒窗口内左键双击，首次点击不显示二级确认条。下一局、创建和加入统一采用分阶段切房：控制器启动 10ms 后打开在线 PauseLayoutGarden，50ms 后发送 PausePanelMessage:ExitGame，200ms 后发送加载角色或原生创建/加入消息，250ms 后关闭控制器；退出与提交间隔 150ms，固定延时不代表游戏已完成退出。两套高清暂停布局均从当前 D2R 游戏原版重建后注入房间入口，覆盖源 Mod 在这两份文件中的自定义外观、按钮、定时器和消息链；Esc 只通过 ReturnToGame 返回游戏。三个工具栏按钮缩至 0.30 倍并在右上角紧凑排列，暂停菜单保留隐藏安全焦点，所有原版按钮的左右导航汇入创建/加入入口。自动填写使用 Esc+左/右两次+确认打开原生表单，再以备份过的 F13 次键调用 CfgChat 文本态。".to_string(),
     });
     Ok(true)
 }
@@ -3858,6 +3877,23 @@ fn source_auto_exit_on_death_enabled(
 }
 
 fn routed_pause_button_count(node: &serde_json::Value) -> Option<usize> {
+    let accepts_esc = node.pointer("/fields/acceptsEscKeyEverywhere");
+    let is_button = node.get("type").and_then(serde_json::Value::as_str) == Some("ButtonWidget");
+    let returns_to_game = is_button
+        && node.get("name").and_then(serde_json::Value::as_str) == Some("ReturnToGame");
+    if (is_button || accepts_esc.is_some())
+        && accepts_esc.and_then(serde_json::Value::as_bool) != Some(returns_to_game)
+    {
+        return None;
+    }
+    if returns_to_game
+        && node
+            .pointer("/fields/onClickMessage")
+            .and_then(serde_json::Value::as_str)
+            != Some("PausePanelMessage:Close")
+    {
+        return None;
+    }
     let mut routed = 0;
     if node.get("type").and_then(serde_json::Value::as_str) == Some("ButtonWidget") {
         let name = node.get("name").and_then(serde_json::Value::as_str);
@@ -3892,6 +3928,13 @@ fn routed_pause_button_count(node: &serde_json::Value) -> Option<usize> {
 }
 
 fn pause_keyboard_gateway_layout_is_current(document: &serde_json::Value) -> bool {
+    if find_layout_node(document, "ReturnToGame")
+        .and_then(|node| node.get("type"))
+        .and_then(serde_json::Value::as_str)
+        != Some("ButtonWidget")
+    {
+        return false;
+    }
     if document
         .pointer("/fields/defaultWidget")
         .and_then(serde_json::Value::as_str)
@@ -4139,11 +4182,15 @@ fn source_room_tool_layouts_are_current(mpq_directory: &Path) -> Option<()> {
     ) || !layout_has_direct_timed_message(
         &quick_recreate,
         "PausePanelMessage:ExitGame",
-        ROOM_TRANSITION_COMMIT_DELAY_SECONDS,
+        ROOM_TRANSITION_EXIT_DELAY_SECONDS,
     ) || !layout_has_direct_timed_message(
         &quick_recreate,
         "CharacterSelect:LoadCharacter:2",
         ROOM_TRANSITION_COMMIT_DELAY_SECONDS,
+    ) || !layout_has_direct_timed_message(
+        &quick_recreate,
+        "PanelManager:ClosePanel:D2RHubQuickRecreate",
+        ROOM_TRANSITION_CLOSE_DELAY_SECONDS,
     ) {
         return None;
     }
@@ -4186,11 +4233,18 @@ fn source_room_tool_layouts_are_current(mpq_directory: &Path) -> Option<()> {
         ) || !layout_has_direct_timed_message(
             &commit,
             "PausePanelMessage:ExitGame",
-            ROOM_TRANSITION_COMMIT_DELAY_SECONDS,
+            ROOM_TRANSITION_EXIT_DELAY_SECONDS,
         ) || !layout_has_direct_timed_message(
             &commit,
             native_message,
             ROOM_TRANSITION_COMMIT_DELAY_SECONDS,
+        ) || !layout_has_direct_timed_message(
+            &commit,
+            &format!(
+                "PanelManager:ClosePanel:{}",
+                file_name.trim_end_matches("hd.json")
+            ),
+            ROOM_TRANSITION_CLOSE_DELAY_SECONDS,
         ) {
             return None;
         }
@@ -4506,6 +4560,9 @@ where
     );
     if request.build_mode == AudioModBuildMode::Minimal && game_root.is_none() {
         return Err("创建最小 Mod 需要有效的 D2R 游戏目录（含 .build.info 与 Data）".to_string());
+    }
+    if request.include_room_tools && game_root.is_none() {
+        return Err("局内房间工具需要有效的 D2R 游戏目录（含 .build.info 与 Data），用于从游戏原版重建暂停菜单。".to_string());
     }
     progress(BuildProgress::new("game_data", 8, "正在读取游戏资源…"));
     let casc_storage_path = game_root

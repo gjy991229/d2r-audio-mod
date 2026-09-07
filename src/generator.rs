@@ -33,14 +33,14 @@ pub const AUDIO_TELEMETRY_FEATURE_ID: &str = "audio_telemetry";
 pub const IN_GAME_ROOM_TOOLS_FEATURE_ID: &str = "in_game_room_tools";
 pub const AUTO_EXIT_ON_DEATH_FEATURE_ID: &str = "auto_exit_on_death";
 const AUDIO_TELEMETRY_FEATURE_RECIPE_VERSION: u32 = 3;
-const IN_GAME_ROOM_TOOLS_FEATURE_RECIPE_VERSION: u32 = 25;
+const IN_GAME_ROOM_TOOLS_FEATURE_RECIPE_VERSION: u32 = 26;
 const AUTO_EXIT_ON_DEATH_FEATURE_RECIPE_VERSION: u32 = 1;
 const MOD_MANIFEST_FILE_NAME: &str = "d2rhub-mod-manifest.json";
 const LEGACY_MANIFEST_FILE_NAME: &str = "audio-telemetry-manifest.json";
 const TERROR_IMMEDIATE_ENTRY_CAPABILITY: &str = "terror_zone_immediate_entry_marker_v1";
 const AREA_ENTRY_PROBE_CAPABILITY: &str = "area_entry_probe_burst_v1";
 const TERROR_ZONE_STATE_CAPABILITY: &str = "terror_zone_state_marker_v1";
-const IN_GAME_ROOM_TOOLS_CAPABILITY: &str = "in_game_room_tools_v25";
+const IN_GAME_ROOM_TOOLS_CAPABILITY: &str = "in_game_room_tools_v26";
 const AUTO_EXIT_ON_DEATH_CAPABILITY: &str = "auto_exit_on_death_v1";
 const UI_LAYOUTS_DIRECTORY: &str = "data/global/ui/layouts";
 const HUD_WARNINGS_LAYOUT: &str = "data/global/ui/layouts/HudWarningshd.json";
@@ -65,13 +65,15 @@ const QUICK_RECREATE_ARM_PANEL: &str = "D2RHubQuickRecreateArm";
 const QUICK_RECREATE_PANEL: &str = "D2RHubQuickRecreate";
 const COMMIT_CREATE_GAME_PANEL: &str = "D2RHubCommitCreateGame";
 const COMMIT_JOIN_GAME_PANEL: &str = "D2RHubCommitJoinGame";
+const IN_GAME_CREATE_FORM: &str = "D2RHubInGameCreateGame";
+const IN_GAME_JOIN_FORM: &str = "D2RHubInGameJoinGame";
 const QUICK_RECREATE_DOUBLE_CLICK_WINDOW_SECONDS: f64 = 0.5;
 const ROOM_TRANSITION_OPEN_PAUSE_DELAY_SECONDS: f64 = 0.01;
 const ROOM_TRANSITION_EXIT_DELAY_SECONDS: f64 = 0.05;
-// Leave 150 ms between requesting an exit and starting the next room. These
-// timers give the native transition breathing room; they are not a ready signal.
-const ROOM_TRANSITION_COMMIT_DELAY_SECONDS: f64 = 0.20;
-const ROOM_TRANSITION_CLOSE_DELAY_SECONDS: f64 = 0.25;
+// JCY queues exit and the next action in the same timer tick, in child order.
+// Delaying submission after exit loses the in-game form/controller context.
+const ROOM_TRANSITION_COMMIT_DELAY_SECONDS: f64 = ROOM_TRANSITION_EXIT_DELAY_SECONDS;
+const ROOM_TRANSITION_CLOSE_DELAY_SECONDS: f64 = ROOM_TRANSITION_EXIT_DELAY_SECONDS;
 const YOU_DIED_LAYOUT: &str = "data/global/ui/layouts/youdiedmodalhd.json";
 const AUTO_EXIT_ON_DEATH_PANEL: &str = "D2RHubAutoExitOnDeath";
 const AUTO_EXIT_ON_DEATH_LAUNCHER: &str = "D2RHubAutoExitOnDeathLauncher";
@@ -1094,9 +1096,9 @@ fn room_submission_layout(create: bool) -> serde_json::Value {
 
 fn room_panel_opener_layout(create: bool) -> serde_json::Value {
     let (name, native_panel, opposite_panel) = if create {
-        ("D2RHubOpenCreateGame", "CreateGamePanel", "JoinGamePanel")
+        ("D2RHubOpenCreateGame", IN_GAME_CREATE_FORM, IN_GAME_JOIN_FORM)
     } else {
-        ("D2RHubOpenJoinGame", "JoinGamePanel", "CreateGamePanel")
+        ("D2RHubOpenJoinGame", IN_GAME_JOIN_FORM, IN_GAME_CREATE_FORM)
     };
     // Match MDK's stock controller chain. The keyboard gateway opens this
     // controller before D2RHub invokes CfgChat through its F13 secondary
@@ -1137,11 +1139,11 @@ fn keyboard_room_opener_layout(create: bool) -> serde_json::Value {
     let (name, native_panel, opposite_panel) = if create {
         (
             "D2RHubKeyboardOpenCreate",
-            "CreateGamePanel",
-            "JoinGamePanel",
+            IN_GAME_CREATE_FORM,
+            IN_GAME_JOIN_FORM,
         )
     } else {
-        ("D2RHubKeyboardOpenJoin", "JoinGamePanel", "CreateGamePanel")
+        ("D2RHubKeyboardOpenJoin", IN_GAME_JOIN_FORM, IN_GAME_CREATE_FORM)
     };
     serde_json::json!({
         "type": "Panel",
@@ -1456,12 +1458,14 @@ fn patch_room_form_layout(
         ("CreateGame:CreateGame", COMMIT_CREATE_GAME_PANEL)
     };
     let routed_submit_message = format!("PanelManager:OpenPanel:{commit_panel}");
-    let routed_count = route_room_submission_messages(
+    // Restore the shared lobby form before cloning a dedicated in-game form.
+    // Only the clone may queue exit + submit; the lobby must never open pause.
+    route_room_submission_messages(
         &mut document,
-        native_submit_message,
         &routed_submit_message,
+        native_submit_message,
     );
-    if routed_count == 0 && layout_field_value_count(&document, &routed_submit_message) == 0 {
+    if layout_field_value_count(&document, native_submit_message) == 0 {
         return Err(format!(
             "{relative_path} 没有可路由的房间提交消息 {native_submit_message}"
         ));
@@ -1602,7 +1606,28 @@ fn patch_room_form_layout(
             "acceptsEscKeyEverywhere": true
         }
     }));
-    write_json_layout(mpq_directory, relative_path, &document)
+    write_json_layout(mpq_directory, relative_path, &document)?;
+
+    let in_game_panel = if primary_input_name == "NameInput" {
+        IN_GAME_JOIN_FORM
+    } else {
+        IN_GAME_CREATE_FORM
+    };
+    document["name"] = serde_json::json!(in_game_panel);
+    route_room_submission_messages(
+        &mut document,
+        native_submit_message,
+        &routed_submit_message,
+    );
+    let close = find_layout_node_mut(&mut document, "D2RHubCloseRoomForm")
+        .ok_or_else(|| format!("{relative_path} 缺少房间表单关闭按钮"))?;
+    close["fields"]["onClickMessage"] =
+        serde_json::json!(format!("PanelManager:ClosePanel:{in_game_panel}"));
+    write_json_layout(
+        mpq_directory,
+        &format!("{UI_LAYOUTS_DIRECTORY}/{in_game_panel}hd.json"),
+        &document,
+    )
 }
 
 fn auto_exit_on_death_panel_layout() -> serde_json::Value {
@@ -1899,10 +1924,7 @@ fn install_in_game_room_tools(
         ("D2RHubRoomToolbarhd.json", room_toolbar_layout()),
         ("D2RHubQuickRecreateArmhd.json", quick_recreate_arm_layout()),
         ("D2RHubQuickRecreatehd.json", quick_recreate_layout()),
-        (
-            "D2RHubCommitCreateGamehd.json",
-            room_submission_layout(true),
-        ),
+        ("D2RHubCommitCreateGamehd.json", room_submission_layout(true)),
         ("D2RHubCommitJoinGamehd.json", room_submission_layout(false)),
         (
             "D2RHubOpenCreateGamehd.json",
@@ -1930,6 +1952,8 @@ fn install_in_game_room_tools(
         "D2RHubQuickRecreate.json",
         "D2RHubCommitCreateGame.json",
         "D2RHubCommitJoinGame.json",
+        "D2RHubInGameCreateGame.json",
+        "D2RHubInGameJoinGame.json",
         "D2RHubOpenCreateGame.json",
         "D2RHubOpenJoinGame.json",
         "D2RHubKeyboardOpenCreate.json",
@@ -1952,7 +1976,7 @@ fn install_in_game_room_tools(
         if obsolete_path.exists() {
             std::fs::remove_file(&obsolete_path).map_err(|error| {
                 format!(
-                    "移除旧版下一局确认布局失败 {}: {error}",
+                    "移除旧版房间工具布局失败 {}: {error}",
                     obsolete_path.display()
                 )
             })?;
@@ -1980,7 +2004,7 @@ fn install_in_game_room_tools(
     compatibility.push(AudioModCompatibility {
         target: "局内房间工具".to_string(),
         action: "add_in_game_create_join_and_recreate".to_string(),
-        detail: "局内“下一局”使用 0.5 秒窗口内左键双击，首次点击不显示二级确认条。下一局、创建和加入统一采用分阶段切房：控制器启动 10ms 后打开在线 PauseLayoutGarden，50ms 后发送 PausePanelMessage:ExitGame，200ms 后发送加载角色或原生创建/加入消息，250ms 后关闭控制器；退出与提交间隔 150ms，固定延时不代表游戏已完成退出。两套高清暂停布局均从当前 D2R 游戏原版重建后注入房间入口，覆盖源 Mod 在这两份文件中的自定义外观、按钮、定时器和消息链；Esc 只通过 ReturnToGame 返回游戏。三个工具栏按钮缩至 0.30 倍并在右上角紧凑排列，暂停菜单保留隐藏安全焦点，所有原版按钮的左右导航汇入创建/加入入口。自动填写使用 Esc+左/右两次+确认打开原生表单，再以备份过的 F13 次键调用 CfgChat 文本态。".to_string(),
+        detail: "局内“下一局”使用 0.5 秒窗口内左键双击，首次点击不显示二级确认条。大厅与局内创建/加入使用独立表单：大厅保留原生提交，局内表单进入退出提交控制器。下一局、局内创建和加入参照 JCY 快速重开：10ms 打开暂停菜单，50ms 按子节点顺序依次提交退出、下一步动作及关闭控制器，退出和提交不再相隔 150ms。两套高清暂停布局均从当前 D2R 游戏原版重建后注入房间入口，覆盖源 Mod 在这两份文件中的自定义外观、按钮、定时器和消息链；Esc 只通过 ReturnToGame 返回游戏。三个工具栏按钮缩至 0.30 倍并在右上角紧凑排列，暂停菜单保留隐藏安全焦点，所有原版按钮的左右导航汇入创建/加入入口。自动填写使用 Esc+左/右两次+确认打开原生表单，再以备份过的 F13 次键调用 CfgChat 文本态。".to_string(),
     });
     Ok(true)
 }
@@ -4270,14 +4294,14 @@ fn source_room_tool_layouts_are_current(mpq_directory: &Path) -> Option<()> {
         (
             "D2RHubOpenCreateGamehd.json",
             "D2RHubOpenCreateGame",
-            "CreateGamePanel",
-            "JoinGamePanel",
+            IN_GAME_CREATE_FORM,
+            IN_GAME_JOIN_FORM,
         ),
         (
             "D2RHubOpenJoinGamehd.json",
             "D2RHubOpenJoinGame",
-            "JoinGamePanel",
-            "CreateGamePanel",
+            IN_GAME_JOIN_FORM,
+            IN_GAME_CREATE_FORM,
         ),
     ] {
         let opener = read_source_room_tool_layout(
@@ -4316,14 +4340,14 @@ fn source_room_tool_layouts_are_current(mpq_directory: &Path) -> Option<()> {
         (
             "D2RHubKeyboardOpenCreatehd.json",
             "D2RHubKeyboardOpenCreate",
-            "CreateGamePanel",
-            "JoinGamePanel",
+            IN_GAME_CREATE_FORM,
+            IN_GAME_JOIN_FORM,
         ),
         (
             "D2RHubKeyboardOpenJoinhd.json",
             "D2RHubKeyboardOpenJoin",
-            "JoinGamePanel",
-            "CreateGamePanel",
+            IN_GAME_JOIN_FORM,
+            IN_GAME_CREATE_FORM,
         ),
     ] {
         let opener = read_source_room_tool_layout(
@@ -4397,9 +4421,27 @@ fn source_room_tool_layouts_are_current(mpq_directory: &Path) -> Option<()> {
                 .and_then(|node| node.pointer("/fields/onClickMessage"))
                 .and_then(serde_json::Value::as_str)
                 != Some(close_action)
-            || layout_field_value_count(&form, native_submit) != 0
-            || layout_field_value_count(&form, routed_submit) == 0
+            || layout_field_value_count(&form, native_submit) == 0
+            || layout_field_value_count(&form, routed_submit) != 0
         {
+            return None;
+        }
+        let in_game_panel = if primary_input == "NameInput" {
+            IN_GAME_JOIN_FORM
+        } else {
+            IN_GAME_CREATE_FORM
+        };
+        let mut expected_in_game_form = form.clone();
+        expected_in_game_form["name"] = serde_json::json!(in_game_panel);
+        route_room_submission_messages(&mut expected_in_game_form, native_submit, routed_submit);
+        find_layout_node_mut(&mut expected_in_game_form, "D2RHubCloseRoomForm")?
+            ["fields"]["onClickMessage"] =
+            serde_json::json!(format!("PanelManager:ClosePanel:{in_game_panel}"));
+        let in_game_form = read_source_room_tool_layout(
+            mpq_directory,
+            &format!("{UI_LAYOUTS_DIRECTORY}/{in_game_panel}hd.json"),
+        )?;
+        if in_game_form != expected_in_game_form {
             return None;
         }
     }

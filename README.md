@@ -1,6 +1,15 @@
 # D2R Audio Mod
 
-当前版本 **v1.3.2**。这是独立、轻量的 D2R 音频遥测 Mod 生成/加工工具。它只读取游戏资源或源 Mod，输出一个新 Mod 与 v7 协议清单；不读取 D2RHub 配置、账号、数据库，也不会启用 Mod。
+当前版本 **v1.3.3**。这是独立、轻量的 D2R 音频遥测 Mod 生成/加工工具。它只读取游戏资源或源 Mod，输出一个新 Mod 与 v7 协议清单；不读取 D2RHub 配置、账号、数据库，也不会启用 Mod。
+
+本项目已按 [MIT License](LICENSE) 开源。Windows 独立工具可从 [Releases](https://github.com/gjy991229/d2r-audio-mod/releases) 下载；[D2RHub v0.9.96](https://github.com/gjy991229/D2RHub/releases) 已内置同版本生成器，无需另行安装。完整音频格式见 [protocol/](protocol/)，共享实现位于 [d2r-audio-protocol](crates/d2r-audio-protocol/)。
+
+## v1.3.3 更新
+
+- 发布独立 Windows 可执行文件，并公开生成器及 v7 协议源码；版本号与 D2RHub 分别维护。
+- 包含房间工具配方 **r26**：大厅使用原生创建/加入表单，局内使用独立表单，退出与下一步操作沿用 JCY 的同一时点顺序提交。
+- 从本机游戏重建两份高清暂停菜单，保留工具栏显示选择；旧房间工具升级时更新局内表单，未变化且验证完整的声纹组可复用。
+- 本次发布保持声纹 v7 协议、整体产物 r25 与各功能组配方版本不变；生成器软件版本不等于产物或功能组版本。
 
 生成器也可作为独立 sidecar 被接收软件调用。调用方必须显式传入游戏目录、源 Mod 与输出名称；生成器仍不会自行读取或修改调用方配置。使用 `--events` 时，标准输出会逐行返回 `progress`、`completed` 或 `error` JSON 事件，便于显示真实进度。
 
@@ -97,13 +106,26 @@ r22 的声纹组仍使用旧的环境音首包配方；r23 将普通 Area 改为
 - 本仓库不引用 D2RHub 源码或本机的 D2RHub 仓库路径；接收端只需实现同一协议并读取生成 Mod 内的清单。
 - 接收软件可以打包并调用编译后的生成器，但账号选择、启动参数修改和结果复核必须由接收软件自行完成；这不改变两个代码库的独立性。
 
-## 构建与验证
+## 从源码构建
 
 ```powershell
-cargo test
-cargo build --release
+git clone https://github.com/gjy991229/d2r-audio-mod.git
+Set-Location d2r-audio-mod
+cargo build --release --locked
 ```
+
+Windows 构建需要 Rust stable 的 MSVC 工具链、Visual Studio C++ Build Tools 与 Windows SDK。源代码自带协议实现，Cargo 会按锁文件下载依赖；构建不需要 D2RHub 仓库。生成 Mod 时仍需你自己的游戏安装或源 Mod 资源。
 
 发布文件为 `target/release/d2r-audio-mod.exe`。仓库不包含生成出的 Mod、游戏资源或构建目录。
 
 Windows 下游戏安装目录、源 Mod 与输出目录均支持中文、空格及 Windows 允许的特殊字符。新 Mod 名称仍仅允许 ASCII 字母、数字、`-` 和 `_`，以兼容 D2R 的启动参数与 Mod 目录约定。
+
+## English
+
+D2R Audio Mod **v1.3.3** is an independent, MIT-licensed Mod generator for Diablo II: Resurrected. Download the Windows executable from [Releases](https://github.com/gjy991229/d2r-audio-mod/releases), or use the same generator bundled with [D2RHub](https://github.com/gjy991229/D2RHub).
+
+Double-click the executable for its standalone UI, or use `minimal` / `augment` with `--features audio`, `rooms`, `death-exit`, or a comma-separated selection. Death-triggered exit is an explicit opt-in and is excluded from the default feature set. The generator creates a new output Mod, preserves the source, and never reads D2RHub accounts or settings. Enable the generated Mod using the launch arguments shown in its result.
+
+This release includes room-tools recipe r26 with separate lobby and in-game forms. Audio protocol v7 and the overall r25 output format are unchanged. Build with `cargo build --release --locked` using Rust and the Windows MSVC build tools; see [protocol/](protocol/) for the receiver-independent audio specification.
+
+Diablo II: Resurrected and Battle.net are trademarks of Blizzard Entertainment. This is an unofficial project; the MIT license covers this repository's code, not Blizzard game resources or third-party Mod assets.

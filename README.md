@@ -7,15 +7,15 @@
 ## v1.3.3 更新
 
 - 发布独立 Windows 可执行文件，并公开生成器及 v7 协议源码；版本号与 D2RHub 分别维护。
-- 包含房间工具配方 **r26**：大厅使用原生创建/加入表单，局内使用独立表单，退出与下一步操作沿用 JCY 的同一时点顺序提交。
-- 从本机游戏重建两份高清暂停菜单，保留工具栏显示选择；旧房间工具升级时更新局内表单，未变化且验证完整的声纹组可复用。
-- 本次发布保持声纹 v7 协议、整体产物 r25 与各功能组配方版本不变；生成器软件版本不等于产物或功能组版本。
+- 包含房间工具配方 **r27**：大厅使用原生创建/加入表单，局内使用独立表单，退出与下一步操作沿用 JCY 的同一时点顺序提交。
+- 从本机游戏重建两份高清暂停菜单，三个局内按钮始终隐藏，加入双击 Esc 下一局地狱；旧房间工具升级时更新局内表单，未变化且验证完整的声纹组可复用。
+- 本次发布保持声纹 v7 协议、整体产物 r25 和声纹组配方版本不变，房间工具组升级为 r27；生成器软件版本不等于产物或功能组版本。
 
 生成器也可作为独立 sidecar 被接收软件调用。调用方必须显式传入游戏目录、源 Mod 与输出名称；生成器仍不会自行读取或修改调用方配置。使用 `--events` 时，标准输出会逐行返回 `progress`、`completed` 或 `error` JSON 事件，便于显示真实进度。
 
 ## 简单界面
 
-包含局内房间工具的成品，可在 D2RHub 的 Mod 管理条目中切换右上角按钮显示，无需重新加工。D2RHub 仅将 `HudWarningshd.json` 中工具栏定时入口的消息在 `PanelManager:OpenPanel:D2RHubRoomToolbar` 与 `PanelManager:ClosePanel:D2RHubRoomToolbar` 之间切换；暂停菜单键盘入口和房间功能保持安装。游戏关闭后切换，下次启动生效。生成器继承源 Mod 的显示选择，隐藏状态仍视为完整的房间工具能力。
+局内“下一局、创建房间、加入房间”三个按钮始终不可见，不再提供显示开关，也不继承旧成品的显示选择。局内 0.5 秒内双击 Esc 进入下一局地狱；单击打开暂停菜单，超时后 Esc 正常返回游戏。`Esc → 左/右两次 → 回车` 仍可创建/加入房间，D2RHub 后台跟房使用此入口。旧成品需重新加工并重启游戏。
 
 直接双击 `d2r-audio-mod.exe`。界面只有三个输入：
 
@@ -25,11 +25,11 @@
 
 独立 GUI 仍默认生成全区域声纹和局内房间工具；D2RHub 或命令行可用 `--features audio`、`--features rooms`、`--features death-exit` 或逗号组合按需选择。`death-exit` 属于高影响的显式选项，不包含在默认 `all` 中。r25 清单会按功能组记录独立版本和参数指纹。把 r25 成品作为新一轮来源时，声纹版本、协议、覆盖范围、类别、增益、目录及全部文件均一致才会直接复用，不重新编码或覆盖 FLAC。源 MOD 永远不会被覆盖。
 
-选择 `rooms` 时会加入局内房间工具栏：`下一局` 需要在 0.5 秒内左键双击，首次点击不会显示二级确认条；`创建房间` 与 `加入房间` 保持单击打开表单。房间工具配方 r26 将大厅与局内表单分开。大厅 `CreateGamePanel` / `JoinGamePanel` 恢复原生提交；局内按钮和键盘入口打开独立的 `D2RHubInGameCreateGame` / `D2RHubInGameJoinGame`，其回车、按钮与房间列表入口进入退出提交控制器。下一局、局内创建和加入参照 JCY Esc 快速重开：10ms 打开暂停菜单，50ms 按子节点顺序依次发送退出、加载/提交与关闭控制器，退出与提交使用相同时间，不再相隔 150ms。大厅不再触发局内暂停菜单。升级旧产物时恢复大厅提交入口，同时生成独立局内表单。
+选择 `rooms` 时加入双击 Esc 下一局地狱和隐藏的创建/加入入口。双击 Esc 复用原“下一局”控制器：正常退出当前房间，再用当前角色加载地狱难度。房间工具配方 r27 保留大厅与局内表单分离。大厅 `CreateGamePanel` / `JoinGamePanel` 恢复原生提交；局内按钮和键盘入口打开独立的 `D2RHubInGameCreateGame` / `D2RHubInGameJoinGame`，其回车、按钮与房间列表入口进入退出提交控制器。下一局、局内创建和加入参照 JCY Esc 快速重开：10ms 打开暂停菜单，50ms 按子节点顺序依次发送退出、加载/提交与关闭控制器，退出与提交使用相同时间，不再相隔 150ms。大厅不再触发局内暂停菜单。升级旧产物时恢复大厅提交入口，同时生成独立局内表单。
 
-局内房间工具配方 r25 将 `pauselayouthd.json` 与 `pauselayoutgardenhd.json` 整份替换为从当前 D2R 游戏原版重建的布局，再注入房间工具。源 Mod 在这两份文件中的自定义外观、按钮、Esc 快捷行为、定时器和消息链均不再继承；只有 `ReturnToGame` 接收 Esc，并固定执行 `PausePanelMessage:Close`。加工 `rooms` 必须能读取有效的 D2R 游戏目录（含 `.build.info` 与 `Data`）；原版数据不可用时明确报错，不回退到源 Mod 的暂停布局。
+局内房间工具配方 r25 将 `pauselayouthd.json` 与 `pauselayoutgardenhd.json` 整份替换为从当前 D2R 游戏原版重建的布局，再注入房间工具。源 Mod 在这两份文件中的自定义外观、按钮、Esc 快捷行为、定时器和消息链均不再继承；r27 在暂停菜单打开后启用 0.5 秒的隐藏 Esc 接收入口，触发下一局地狱；超时后 Esc 通过 `ReturnToGame` 返回游戏，点击其他原生菜单动作会先清除双击状态。加工 `rooms` 必须能读取有效的 D2R 游戏目录（含 `.build.info` 与 `Data`）；原版数据不可用时明确报错，不回退到源 Mod 的暂停布局。
 
-三个工具栏按钮缩至 0.30 倍并紧凑排列，暂停菜单保留无操作安全焦点，所有原版按钮的左右导航汇入创建/加入安全入口。自动流程用 `Esc → 左/右两次 → 确认` 打开表单，随后通过 F13 调用原生 `CfgChat` 文本态，Tab 切换密码并提交。已有 r21-r25 房间工具需要重新加工升级，D2RHub 仍按旧配方读取它们作为升级来源。重建范围仅为上述两份高清暂停布局，其他文件中的界面或外部按键脚本不属于这项接管范围。
+三个工具栏按钮始终隐藏，暂停菜单保留无操作安全焦点，所有原版按钮的左右导航汇入创建/加入安全入口。自动流程用 `Esc → 左/右两次 → 确认` 打开表单，随后通过 F13 调用原生 `CfgChat` 文本态，Tab 切换密码并提交。已有 r21-r26 房间工具需要重新加工升级，D2RHub 仍按旧配方读取它们作为升级来源。重建范围仅为上述两份高清暂停布局，其他文件中的界面或外部按键脚本不属于这项接管范围。
 
 `rooms` 配方 r23 同时加入大厅背景的“按 Esc 键返回”提示，沿用 JCY 的暗金色、120 字号、水平/垂直居中样式及水平 -50 偏移。已有 JCY 提示会原位更新；其他大厅布局保留完整内容，并在背景下方加入屏幕锚点为 (0.5, 0.45) 的提示层。源 Mod 缺少大厅布局时从游戏数据补齐。重复加工不会叠加提示；这条提示依附大厅背景，不检测黑屏，也不改变 Esc 行为。
 
@@ -126,6 +126,6 @@ D2R Audio Mod **v1.3.3** is an independent, MIT-licensed Mod generator for Diabl
 
 Double-click the executable for its standalone UI, or use `minimal` / `augment` with `--features audio`, `rooms`, `death-exit`, or a comma-separated selection. Death-triggered exit is an explicit opt-in and is excluded from the default feature set. The generator creates a new output Mod, preserves the source, and never reads D2RHub accounts or settings. Enable the generated Mod using the launch arguments shown in its result.
 
-This release includes room-tools recipe r26 with separate lobby and in-game forms. Audio protocol v7 and the overall r25 output format are unchanged. Build with `cargo build --release --locked` using Rust and the Windows MSVC build tools; see [protocol/](protocol/) for the receiver-independent audio specification.
+This release includes room-tools recipe r27 with double-Esc Hell restart, permanently hidden toolbar buttons, and separate lobby/in-game forms. Audio protocol v7 and the overall r25 output format are unchanged. Build with `cargo build --release --locked` using Rust and the Windows MSVC build tools; see [protocol/](protocol/) for the receiver-independent audio specification.
 
 Diablo II: Resurrected and Battle.net are trademarks of Blizzard Entertainment. This is an unofficial project; the MIT license covers this repository's code, not Blizzard game resources or third-party Mod assets.

@@ -33,14 +33,14 @@ pub const AUDIO_TELEMETRY_FEATURE_ID: &str = "audio_telemetry";
 pub const IN_GAME_ROOM_TOOLS_FEATURE_ID: &str = "in_game_room_tools";
 pub const AUTO_EXIT_ON_DEATH_FEATURE_ID: &str = "auto_exit_on_death";
 const AUDIO_TELEMETRY_FEATURE_RECIPE_VERSION: u32 = 3;
-const IN_GAME_ROOM_TOOLS_FEATURE_RECIPE_VERSION: u32 = 26;
+const IN_GAME_ROOM_TOOLS_FEATURE_RECIPE_VERSION: u32 = 27;
 const AUTO_EXIT_ON_DEATH_FEATURE_RECIPE_VERSION: u32 = 1;
 const MOD_MANIFEST_FILE_NAME: &str = "d2rhub-mod-manifest.json";
 const LEGACY_MANIFEST_FILE_NAME: &str = "audio-telemetry-manifest.json";
 const TERROR_IMMEDIATE_ENTRY_CAPABILITY: &str = "terror_zone_immediate_entry_marker_v1";
 const AREA_ENTRY_PROBE_CAPABILITY: &str = "area_entry_probe_burst_v1";
 const TERROR_ZONE_STATE_CAPABILITY: &str = "terror_zone_state_marker_v1";
-const IN_GAME_ROOM_TOOLS_CAPABILITY: &str = "in_game_room_tools_v26";
+const IN_GAME_ROOM_TOOLS_CAPABILITY: &str = "in_game_room_tools_v27";
 const AUTO_EXIT_ON_DEATH_CAPABILITY: &str = "auto_exit_on_death_v1";
 const UI_LAYOUTS_DIRECTORY: &str = "data/global/ui/layouts";
 const HUD_WARNINGS_LAYOUT: &str = "data/global/ui/layouts/HudWarningshd.json";
@@ -62,6 +62,7 @@ const ROOM_TOOL_CREATE_X: i64 = -760;
 const ROOM_TOOL_JOIN_X: i64 = -480;
 const ROOM_TOOL_TOOLTIP_OFFSET_Y: i64 = 267;
 const QUICK_RECREATE_ARM_PANEL: &str = "D2RHubQuickRecreateArm";
+const QUICK_RECREATE_ESC_ARM_PANEL: &str = "D2RHubQuickRecreateEscArm";
 const QUICK_RECREATE_PANEL: &str = "D2RHubQuickRecreate";
 const COMMIT_CREATE_GAME_PANEL: &str = "D2RHubCommitCreateGame";
 const COMMIT_JOIN_GAME_PANEL: &str = "D2RHubCommitJoinGame";
@@ -889,7 +890,7 @@ fn room_toolbar_layout() -> serde_json::Value {
         "fields": {
             "priority": 5,
             "anchor": { "x": 1.0 },
-            "rect": { "scale": 1.0 }
+            "rect": { "x": -9999, "y": -9999, "scale": 1.0 }
         },
         "children": [
             {
@@ -961,7 +962,7 @@ fn quick_recreate_arm_layout() -> serde_json::Value {
         "fields": {
             "priority": 6,
             "anchor": { "x": 1.0 },
-            "rect": { "scale": 1.0 }
+            "rect": { "x": -9999, "y": -9999, "scale": 1.0 }
         },
         "children": [
             {
@@ -996,6 +997,49 @@ fn quick_recreate_arm_layout() -> serde_json::Value {
     })
 }
 
+// The first Esc opens PausePanel. Its timer arms this invisible, higher-priority
+// Esc receiver for the same 500 ms window as the original Next Game button.
+// It has no default focus or mouse hit target, so pause navigation stays available.
+fn quick_recreate_esc_arm_layout() -> serde_json::Value {
+    serde_json::json!({
+        "type": "TooltipsPanel",
+        "name": QUICK_RECREATE_ESC_ARM_PANEL,
+        "fields": { "priority": 9002 },
+        "children": [
+            {
+                "type": "ButtonWidget",
+                "name": "D2RHubEscNextGame",
+                "fields": {
+                    "rect": { "x": -9999, "y": -9999, "width": 1, "height": 1 },
+                    "acceptsEscKeyEverywhere": true,
+                    "acceptsReturnKey": false,
+                    "focusOnMouseOver": false,
+                    "onClickMessage": format!("PanelManager:OpenPanel:{QUICK_RECREATE_PANEL}")
+                }
+            },
+            {
+                "type": "TimerWidget",
+                "name": "D2RHubEscNextGameTimeout",
+                "fields": {
+                    "time": QUICK_RECREATE_DOUBLE_CLICK_WINDOW_SECONDS,
+                    "message": format!("PanelManager:ClosePanel:{QUICK_RECREATE_ESC_ARM_PANEL}")
+                }
+            }
+        ]
+    })
+}
+
+fn close_esc_arm_timer() -> serde_json::Value {
+    serde_json::json!({
+        "type": "TimerWidget",
+        "name": "D2RHubCloseEscArm",
+        "fields": {
+            "time": 0.001,
+            "message": format!("PanelManager:ClosePanel:{QUICK_RECREATE_ESC_ARM_PANEL}")
+        }
+    })
+}
+
 fn quick_recreate_layout() -> serde_json::Value {
     serde_json::json!({
         "type": "MainMenuHDPanel",
@@ -1004,6 +1048,10 @@ fn quick_recreate_layout() -> serde_json::Value {
             "rect": { "x": -9999, "y": -9999, "scale": 0.01 }
         },
         "children": [
+            { "type": "TimerWidget", "name": "D2RHubCloseEscArmBeforeExit",
+              "fields": { "time": ROOM_TRANSITION_EXIT_DELAY_SECONDS,
+                "message": format!("PanelManager:ClosePanel:{QUICK_RECREATE_ESC_ARM_PANEL}") } },
+            close_esc_arm_timer(),
             {
                 "type": "TimerWidget",
                 "name": "D2RHubQuickRecreateCloseArm",
@@ -1058,6 +1106,10 @@ fn room_submission_layout(create: bool) -> serde_json::Value {
             "rect": { "x": -9999, "y": -9999, "scale": 0.01 }
         },
         "children": [
+            { "type": "TimerWidget", "name": "D2RHubCloseEscArmBeforeExit",
+              "fields": { "time": ROOM_TRANSITION_EXIT_DELAY_SECONDS,
+                "message": format!("PanelManager:ClosePanel:{QUICK_RECREATE_ESC_ARM_PANEL}") } },
+            close_esc_arm_timer(),
             {
                 "type": "TimerWidget",
                 "name": "D2RHubRoomSubmissionOpenPause",
@@ -1107,6 +1159,7 @@ fn room_panel_opener_layout(create: bool) -> serde_json::Value {
         "type": "Panel",
         "name": name,
         "children": [
+            close_esc_arm_timer(),
             {
                 "type": "TimerWidget",
                 "name": "D2RHubOpenNativeRoomPanel",
@@ -1149,6 +1202,7 @@ fn keyboard_room_opener_layout(create: bool) -> serde_json::Value {
         "type": "Panel",
         "name": name,
         "children": [
+            close_esc_arm_timer(),
             {
                 "type": "TimerWidget",
                 "name": "D2RHubKeyboardClosePause",
@@ -1245,6 +1299,43 @@ fn route_pause_buttons_to_keyboard_gateways(
     Ok(routed)
 }
 
+// Cancel the transient Esc receiver before any native menu action (including
+// mouse clicks) leaves the pause menu. Otherwise an Esc shortly after returning
+// to play could still be mistaken for the second press.
+fn wrap_pause_actions(
+    mpq_directory: &Path,
+    node: &mut serde_json::Value,
+    prefix: &str,
+    index: &mut usize,
+) -> Result<(), String> {
+    if node.get("type").and_then(serde_json::Value::as_str) == Some("ButtonWidget") {
+        let returns = node.get("name").and_then(serde_json::Value::as_str) == Some("ReturnToGame");
+        if let Some(action) = node.pointer("/fields/onClickMessage").and_then(serde_json::Value::as_str).map(str::to_owned) {
+            let panel = if returns { "D2RHubPauseReturnToGame".to_string() }
+                else { format!("D2RHubPause{prefix}Action{index}") };
+            *index += 1;
+            let helper = serde_json::json!({
+                "type": "Panel", "name": panel,
+                "children": [
+                    close_esc_arm_timer(),
+                    { "type": "TimerWidget", "name": "D2RHubNativePauseAction",
+                      "fields": { "time": 0.005, "message": action } },
+                    { "type": "TimerWidget", "name": "D2RHubClosePauseAction",
+                      "fields": { "time": 0.005, "message": format!("PanelManager:ClosePanel:{panel}") } }
+                ]
+            });
+            write_json_layout(mpq_directory, &format!("{UI_LAYOUTS_DIRECTORY}/{panel}hd.json"), &helper)?;
+            write_json_layout(mpq_directory, &format!("{UI_LAYOUTS_DIRECTORY}/{panel}.json"),
+                &serde_json::json!({ "type": "Panel", "name": panel }))?;
+            node["fields"]["onClickMessage"] = serde_json::json!(format!("PanelManager:OpenPanel:{panel}"));
+        }
+    }
+    if let Some(children) = node.get_mut("children").and_then(serde_json::Value::as_array_mut) {
+        for child in children { wrap_pause_actions(mpq_directory, child, prefix, index)?; }
+    }
+    Ok(())
+}
+
 fn rebuild_pause_keyboard_gateway(
     mpq_directory: &Path,
     storage: &casc_core::Storage,
@@ -1285,6 +1376,9 @@ fn rebuild_pause_keyboard_gateway(
     if route_pause_buttons_to_keyboard_gateways(&mut document, relative_path)? == 0 {
         return Err(format!("{relative_path} 没有可路由的暂停菜单按钮"));
     }
+
+    wrap_pause_actions(mpq_directory, &mut document,
+        if relative_path.contains("garden") { "Garden" } else { "Classic" }, &mut 0)?;
 
     let children = document
         .get_mut("children")
@@ -1357,6 +1451,14 @@ fn rebuild_pause_keyboard_gateway(
             }
         }));
     }
+    children.push(serde_json::json!({
+        "type": "TimerWidget",
+        "name": "D2RHubEscNextGameLauncher",
+        "fields": {
+            "time": 0.01,
+            "message": format!("PanelManager:OpenPanel:{QUICK_RECREATE_ESC_ARM_PANEL}")
+        }
+    }));
     write_json_layout(mpq_directory, relative_path, &document)
 }
 
@@ -1885,11 +1987,6 @@ fn install_in_game_room_tools(
         "局内房间工具需要从游戏原版重建暂停菜单，请提供可读取的 D2R 游戏目录（含 .build.info 与 Data）；不能使用源 Mod 的暂停布局代替。".to_string()
     })?;
     let mut hud = read_local_or_casc_json(mpq_directory, storage, HUD_WARNINGS_LAYOUT)?;
-    // D2RHub toggles only this launcher message. Preserve the choice when
-    // upgrading or inheriting a processed Mod; keyboard gateways are independent.
-    let toolbar_hidden = layout_has_direct_child_message(
-        &hud, "message", "PanelManager:ClosePanel:D2RHubRoomToolbar",
-    );
     let children = hud
         .as_object_mut()
         .ok_or_else(|| format!("{HUD_WARNINGS_LAYOUT} 顶层必须是 JSON 对象"))?
@@ -1903,6 +2000,8 @@ fn install_in_game_room_tools(
             Some("PanelManager:OpenPanel:D2RHubRoomToolbar" | "PanelManager:ClosePanel:D2RHubRoomToolbar")
         )
     });
+    children.retain(|child| child.get("name").and_then(serde_json::Value::as_str) != Some("D2RHubCloseEscArm"));
+    children.push(close_esc_arm_timer());
     children.insert(
         0,
         serde_json::json!({
@@ -1910,11 +2009,7 @@ fn install_in_game_room_tools(
             "name": "D2RHubRoomToolbarLauncher",
             "fields": {
                 "time": 0.01,
-                "message": if toolbar_hidden {
-                    "PanelManager:ClosePanel:D2RHubRoomToolbar"
-                } else {
-                    "PanelManager:OpenPanel:D2RHubRoomToolbar"
-                }
+                "message": "PanelManager:ClosePanel:D2RHubRoomToolbar"
             }
         }),
     );
@@ -1923,6 +2018,7 @@ fn install_in_game_room_tools(
     for (file_name, document) in [
         ("D2RHubRoomToolbarhd.json", room_toolbar_layout()),
         ("D2RHubQuickRecreateArmhd.json", quick_recreate_arm_layout()),
+        ("D2RHubQuickRecreateEscArmhd.json", quick_recreate_esc_arm_layout()),
         ("D2RHubQuickRecreatehd.json", quick_recreate_layout()),
         ("D2RHubCommitCreateGamehd.json", room_submission_layout(true)),
         ("D2RHubCommitJoinGamehd.json", room_submission_layout(false)),
@@ -1948,6 +2044,7 @@ fn install_in_game_room_tools(
     }
     for file_name in [
         "D2RHubRoomToolbar.json",
+        "D2RHubQuickRecreateEscArm.json",
         "D2RHubQuickRecreateArm.json",
         "D2RHubQuickRecreate.json",
         "D2RHubCommitCreateGame.json",
@@ -2004,7 +2101,7 @@ fn install_in_game_room_tools(
     compatibility.push(AudioModCompatibility {
         target: "局内房间工具".to_string(),
         action: "add_in_game_create_join_and_recreate".to_string(),
-        detail: "局内“下一局”使用 0.5 秒窗口内左键双击，首次点击不显示二级确认条。大厅与局内创建/加入使用独立表单：大厅保留原生提交，局内表单进入退出提交控制器。下一局、局内创建和加入参照 JCY 快速重开：10ms 打开暂停菜单，50ms 按子节点顺序依次提交退出、下一步动作及关闭控制器，退出和提交不再相隔 150ms。两套高清暂停布局均从当前 D2R 游戏原版重建后注入房间入口，覆盖源 Mod 在这两份文件中的自定义外观、按钮、定时器和消息链；Esc 只通过 ReturnToGame 返回游戏。三个工具栏按钮缩至 0.30 倍并在右上角紧凑排列，暂停菜单保留隐藏安全焦点，所有原版按钮的左右导航汇入创建/加入入口。自动填写使用 Esc+左/右两次+确认打开原生表单，再以备份过的 F13 次键调用 CfgChat 文本态。".to_string(),
+        detail: "局内 0.5 秒内双击 Esc 进入下一局地狱，复用下一局控制器。大厅与局内创建/加入使用独立表单：大厅保留原生提交，局内表单进入退出提交控制器。下一局、局内创建和加入参照 JCY 快速重开：10ms 打开暂停菜单，50ms 按子节点顺序依次提交退出、下一步动作及关闭控制器，退出和提交不再相隔 150ms。两套高清暂停布局均从当前 D2R 游戏原版重建后注入房间入口，覆盖源 Mod 在这两份文件中的自定义外观、按钮、定时器和消息链；单击 Esc 打开暂停菜单，双击窗口结束后 Esc 返回游戏。下一局、创建和加入三个工具栏按钮始终隐藏，暂停菜单保留隐藏安全焦点，所有原版按钮的左右导航汇入创建/加入入口。自动填写使用 Esc+左/右两次+确认打开原生表单，再以备份过的 F13 次键调用 CfgChat 文本态。".to_string(),
     });
     Ok(true)
 }
@@ -3914,7 +4011,7 @@ fn routed_pause_button_count(node: &serde_json::Value) -> Option<usize> {
         && node
             .pointer("/fields/onClickMessage")
             .and_then(serde_json::Value::as_str)
-            != Some("PausePanelMessage:Close")
+            != Some("PanelManager:OpenPanel:D2RHubPauseReturnToGame")
     {
         return None;
     }
@@ -3952,6 +4049,12 @@ fn routed_pause_button_count(node: &serde_json::Value) -> Option<usize> {
 }
 
 fn pause_keyboard_gateway_layout_is_current(document: &serde_json::Value) -> bool {
+    if !layout_has_direct_timed_message(
+        document, "PanelManager:OpenPanel:D2RHubQuickRecreateEscArm", 0.01,
+    ) {
+        return false;
+    }
+
     if find_layout_node(document, "ReturnToGame")
         .and_then(|node| node.get("type"))
         .and_then(serde_json::Value::as_str)
@@ -4100,6 +4203,12 @@ fn layout_field_value_count(document: &serde_json::Value, expected: &str) -> usi
 }
 
 fn source_room_tool_layouts_are_current(mpq_directory: &Path) -> Option<()> {
+    let return_helper = read_source_room_tool_layout(mpq_directory,
+        &format!("{UI_LAYOUTS_DIRECTORY}/D2RHubPauseReturnToGamehd.json"))?;
+    if !layout_has_direct_timed_message(&return_helper, "PanelManager:ClosePanel:D2RHubQuickRecreateEscArm", 0.001)
+        || !layout_has_direct_timed_message(&return_helper, "PausePanelMessage:Close", 0.005) {
+        return None;
+    }
     let lobby = read_source_room_tool_layout(mpq_directory, LOBBY_BACKGROUND_LAYOUT)?;
     if find_layout_node(&lobby, LOBBY_RETURN_HINT)? != &lobby_return_hint_widget() {
         return None;
@@ -4111,14 +4220,26 @@ fn source_room_tool_layouts_are_current(mpq_directory: &Path) -> Option<()> {
     let toolbar_closed = layout_has_direct_child_message(
         &hud, "message", "PanelManager:ClosePanel:D2RHubRoomToolbar",
     );
-    if toolbar_open == toolbar_closed {
+    if toolbar_open || !toolbar_closed {
         return None;
     }
 
+    let esc_arm = read_source_room_tool_layout(
+        mpq_directory,
+        &format!("{UI_LAYOUTS_DIRECTORY}/D2RHubQuickRecreateEscArmhd.json"),
+    )?;
+    if esc_arm != quick_recreate_esc_arm_layout() {
+        return None;
+    }
     let toolbar = read_source_room_tool_layout(
         mpq_directory,
         &format!("{UI_LAYOUTS_DIRECTORY}/D2RHubRoomToolbarhd.json"),
     )?;
+    if toolbar.pointer("/fields/rect/x").and_then(serde_json::Value::as_i64) != Some(-9999)
+        || toolbar.pointer("/fields/rect/y").and_then(serde_json::Value::as_i64) != Some(-9999)
+    {
+        return None;
+    }
     for action in [
         "PanelManager:OpenPanel:D2RHubQuickRecreateArm",
         "PanelManager:OpenPanel:D2RHubOpenCreateGame",

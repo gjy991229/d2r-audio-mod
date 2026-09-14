@@ -33,14 +33,16 @@ pub const AUDIO_TELEMETRY_FEATURE_ID: &str = "audio_telemetry";
 pub const IN_GAME_ROOM_TOOLS_FEATURE_ID: &str = "in_game_room_tools";
 pub const AUTO_EXIT_ON_DEATH_FEATURE_ID: &str = "auto_exit_on_death";
 const AUDIO_TELEMETRY_FEATURE_RECIPE_VERSION: u32 = 3;
-const IN_GAME_ROOM_TOOLS_FEATURE_RECIPE_VERSION: u32 = 27;
+const IN_GAME_ROOM_TOOLS_FEATURE_RECIPE_VERSION: u32 = 28;
+pub const ESC_NEXT_GAME_FEATURE_ID: &str = "esc_next_game";
+const ESC_NEXT_GAME_CAPABILITY: &str = "esc_next_game_v1";
 const AUTO_EXIT_ON_DEATH_FEATURE_RECIPE_VERSION: u32 = 1;
 const MOD_MANIFEST_FILE_NAME: &str = "d2rhub-mod-manifest.json";
 const LEGACY_MANIFEST_FILE_NAME: &str = "audio-telemetry-manifest.json";
 const TERROR_IMMEDIATE_ENTRY_CAPABILITY: &str = "terror_zone_immediate_entry_marker_v1";
 const AREA_ENTRY_PROBE_CAPABILITY: &str = "area_entry_probe_burst_v1";
 const TERROR_ZONE_STATE_CAPABILITY: &str = "terror_zone_state_marker_v1";
-const IN_GAME_ROOM_TOOLS_CAPABILITY: &str = "in_game_room_tools_v27";
+const IN_GAME_ROOM_TOOLS_CAPABILITY: &str = "in_game_room_tools_v28";
 const AUTO_EXIT_ON_DEATH_CAPABILITY: &str = "auto_exit_on_death_v1";
 const UI_LAYOUTS_DIRECTORY: &str = "data/global/ui/layouts";
 const HUD_WARNINGS_LAYOUT: &str = "data/global/ui/layouts/HudWarningshd.json";
@@ -127,6 +129,9 @@ pub struct BuildAudioModRequest {
     /// opt-in because it changes gameplay flow and cannot prevent a death that already occurred.
     #[serde(default)]
     pub include_auto_exit_on_death: bool,
+    /// Independently opt into double-Esc next Hell game.
+    #[serde(default)]
+    pub include_esc_next_game: bool,
 }
 
 fn default_enabled() -> bool {
@@ -1451,14 +1456,6 @@ fn rebuild_pause_keyboard_gateway(
             }
         }));
     }
-    children.push(serde_json::json!({
-        "type": "TimerWidget",
-        "name": "D2RHubEscNextGameLauncher",
-        "fields": {
-            "time": 0.01,
-            "message": format!("PanelManager:OpenPanel:{QUICK_RECREATE_ESC_ARM_PANEL}")
-        }
-    }));
     write_json_layout(mpq_directory, relative_path, &document)
 }
 
@@ -1978,6 +1975,76 @@ fn install_lobby_return_hint(
     write_json_layout(mpq_directory, LOBBY_BACKGROUND_LAYOUT, &lobby)
 }
 
+fn esc_next_game_feature_group() -> ModFeatureGroup {
+    ModFeatureGroup {
+        id: ESC_NEXT_GAME_FEATURE_ID.to_string(),
+        recipe_version: 1,
+        fingerprint: "esc-next-game-v1;window_ms=500".to_string(),
+        reused_from_source: false,
+    }
+}
+
+fn install_esc_next_game(
+    mpq_directory: &Path,
+    storage: Option<&casc_core::Storage>,
+    room_tools_available: bool,
+) -> Result<(), String> {
+    for (panel, document) in [
+        (QUICK_RECREATE_ESC_ARM_PANEL, quick_recreate_esc_arm_layout()),
+        (QUICK_RECREATE_ARM_PANEL, quick_recreate_arm_layout()),
+        (QUICK_RECREATE_PANEL, quick_recreate_layout()),
+    ] {
+        write_json_layout(mpq_directory, &format!("{UI_LAYOUTS_DIRECTORY}/{panel}hd.json"), &document)?;
+        write_json_layout(mpq_directory, &format!("{UI_LAYOUTS_DIRECTORY}/{panel}.json"),
+            &serde_json::json!({ "type": "Panel", "name": panel }))?;
+    }
+    let mut hud = read_local_or_casc_json(mpq_directory, storage, HUD_WARNINGS_LAYOUT)?;
+    let children = hud.get_mut("children").and_then(serde_json::Value::as_array_mut)
+        .ok_or_else(|| "HUD children 必须是数组".to_string())?;
+    children.retain(|child| child.get("name").and_then(serde_json::Value::as_str) != Some("D2RHubCloseEscArm"));
+    children.push(close_esc_arm_timer());
+    write_json_layout(mpq_directory, HUD_WARNINGS_LAYOUT, &hud)?;
+    for relative_path in PAUSE_LAYOUTS {
+        // Preserve the room module's navigation; standalone mode starts from native pause.
+        let mut document = if room_tools_available {
+            read_local_or_casc_json(mpq_directory, storage, relative_path)?
+        } else {
+            read_casc_json_asset(storage.ok_or_else(|| "双击 Esc 下一局需要可读取的 D2R 游戏目录".to_string())?, relative_path)?
+        };
+        if !room_tools_available {
+            configure_standalone_pause_escape(&mut document);
+            wrap_pause_actions(mpq_directory, &mut document,
+                if relative_path.contains("garden") { "Garden" } else { "Classic" }, &mut 0)?;
+        }
+        let children = document.get_mut("children").and_then(serde_json::Value::as_array_mut)
+            .ok_or_else(|| format!("{relative_path}.children 必须是数组"))?;
+        children.retain(|child| child.get("name").and_then(serde_json::Value::as_str) != Some("D2RHubEscNextGameLauncher"));
+        children.push(serde_json::json!({
+            "type": "TimerWidget",
+            "name": "D2RHubEscNextGameLauncher",
+            "fields": {
+                "time": 0.01,
+                "message": format!("PanelManager:OpenPanel:{QUICK_RECREATE_ESC_ARM_PANEL}")
+            }
+        }));
+        write_json_layout(mpq_directory, relative_path, &document)?;
+    }
+    Ok(())
+}
+
+fn configure_standalone_pause_escape(node: &mut serde_json::Value) {
+    let returns = node.get("name").and_then(serde_json::Value::as_str) == Some("ReturnToGame");
+    if let Some(fields) = node.get_mut("fields").and_then(serde_json::Value::as_object_mut) {
+        fields.insert("acceptsEscKeyEverywhere".to_string(), serde_json::json!(returns));
+        if returns {
+            fields.insert("onClickMessage".to_string(), serde_json::json!("PausePanelMessage:Close"));
+        }
+    }
+    if let Some(children) = node.get_mut("children").and_then(serde_json::Value::as_array_mut) {
+        for child in children { configure_standalone_pause_escape(child); }
+    }
+}
+
 fn install_in_game_room_tools(
     mpq_directory: &Path,
     storage: Option<&casc_core::Storage>,
@@ -2101,7 +2168,7 @@ fn install_in_game_room_tools(
     compatibility.push(AudioModCompatibility {
         target: "局内房间工具".to_string(),
         action: "add_in_game_create_join_and_recreate".to_string(),
-        detail: "局内 0.5 秒内双击 Esc 进入下一局地狱，复用下一局控制器。大厅与局内创建/加入使用独立表单：大厅保留原生提交，局内表单进入退出提交控制器。下一局、局内创建和加入参照 JCY 快速重开：10ms 打开暂停菜单，50ms 按子节点顺序依次提交退出、下一步动作及关闭控制器，退出和提交不再相隔 150ms。两套高清暂停布局均从当前 D2R 游戏原版重建后注入房间入口，覆盖源 Mod 在这两份文件中的自定义外观、按钮、定时器和消息链；单击 Esc 打开暂停菜单，双击窗口结束后 Esc 返回游戏。下一局、创建和加入三个工具栏按钮始终隐藏，暂停菜单保留隐藏安全焦点，所有原版按钮的左右导航汇入创建/加入入口。自动填写使用 Esc+左/右两次+确认打开原生表单，再以备份过的 F13 次键调用 CfgChat 文本态。".to_string(),
+        detail: "双击 Esc 下一局地狱已拆分为独立可选模块。大厅与局内创建/加入使用独立表单：大厅保留原生提交，局内表单进入退出提交控制器。下一局、局内创建和加入参照 JCY 快速重开：10ms 打开暂停菜单，50ms 按子节点顺序依次提交退出、下一步动作及关闭控制器，退出和提交不再相隔 150ms。两套高清暂停布局均从当前 D2R 游戏原版重建后注入房间入口，覆盖源 Mod 在这两份文件中的自定义外观、按钮、定时器和消息链；单击 Esc 打开暂停菜单，再次 Esc 返回游戏。下一局、创建和加入三个工具栏按钮始终隐藏，暂停菜单保留隐藏安全焦点，所有原版按钮的左右导航汇入创建/加入入口。自动填写使用 Esc+左/右两次+确认打开原生表单，再以备份过的 F13 次键调用 CfgChat 文本态。".to_string(),
     });
     Ok(true)
 }
@@ -4049,12 +4116,6 @@ fn routed_pause_button_count(node: &serde_json::Value) -> Option<usize> {
 }
 
 fn pause_keyboard_gateway_layout_is_current(document: &serde_json::Value) -> bool {
-    if !layout_has_direct_timed_message(
-        document, "PanelManager:OpenPanel:D2RHubQuickRecreateEscArm", 0.01,
-    ) {
-        return false;
-    }
-
     if find_layout_node(document, "ReturnToGame")
         .and_then(|node| node.get("type"))
         .and_then(serde_json::Value::as_str)
@@ -4671,6 +4732,7 @@ where
     progress(BuildProgress::new("validate", 2, "正在检查游戏与 Mod…"));
     if !request.include_audio_telemetry
         && !request.include_room_tools
+        && !request.include_esc_next_game
         && !request.include_auto_exit_on_death
     {
         return Err("请至少选择一个要加工的功能组".to_string());
@@ -4724,7 +4786,7 @@ where
     if request.build_mode == AudioModBuildMode::Minimal && game_root.is_none() {
         return Err("创建最小 Mod 需要有效的 D2R 游戏目录（含 .build.info 与 Data）".to_string());
     }
-    if request.include_room_tools && game_root.is_none() {
+    if (request.include_room_tools || request.include_esc_next_game) && game_root.is_none() {
         return Err("局内房间工具需要有效的 D2R 游戏目录（含 .build.info 与 Data），用于从游戏原版重建暂停菜单。".to_string());
     }
     progress(BuildProgress::new("game_data", 8, "正在读取游戏资源…"));
@@ -4816,6 +4878,11 @@ where
             false
         };
         let room_tools_available = room_tools_installed || source_has_room_tools;
+        let esc_next_game_available = request.include_esc_next_game || source_feature_report.as_ref()
+            .is_some_and(|report| report.feature_groups.iter().any(|group| group.id == ESC_NEXT_GAME_FEATURE_ID));
+        if esc_next_game_available {
+            install_esc_next_game(&mpq_directory, storage.as_ref(), room_tools_available)?;
+        }
         if request.include_room_tools && !room_tools_available {
             return Err("局内房间工具安装失败：没有找到可安全复用的完整游戏 UI 布局".to_string());
         }
@@ -4864,7 +4931,7 @@ where
                 .map_err(|error| format!("生成 modinfo.json 失败: {error}"))?,
         )?;
         let mut capabilities = reused.capabilities.clone();
-        capabilities.retain(|value| value != IN_GAME_ROOM_TOOLS_CAPABILITY);
+        capabilities.retain(|value| !value.starts_with("in_game_room_tools_v"));
         if room_tools_available
             && !capabilities
                 .iter()
@@ -4898,6 +4965,12 @@ where
             feature_groups.push(auto_exit_on_death_feature_group(
                 !auto_exit_on_death_installed && source_auto_exit_on_death_enabled.is_some(),
             ));
+        }
+        feature_groups.retain(|group| group.id != ESC_NEXT_GAME_FEATURE_ID);
+        capabilities.retain(|capability| capability != ESC_NEXT_GAME_CAPABILITY);
+        if esc_next_game_available {
+            feature_groups.push(esc_next_game_feature_group());
+            capabilities.push(ESC_NEXT_GAME_CAPABILITY.to_string());
         }
         let report = BuildAudioModReport {
             manifest_format: "d2r-audio-telemetry-mod".to_string(),
@@ -4982,6 +5055,11 @@ where
             false
         };
         let room_tools_available = room_tools_installed || source_has_room_tools;
+        let esc_next_game_available = request.include_esc_next_game || source_feature_report.as_ref()
+            .is_some_and(|report| report.feature_groups.iter().any(|group| group.id == ESC_NEXT_GAME_FEATURE_ID));
+        if esc_next_game_available {
+            install_esc_next_game(&mpq_directory, storage.as_ref(), room_tools_available)?;
+        }
         if request.include_room_tools && !room_tools_available {
             return Err("局内房间工具安装失败：没有找到可安全复用的完整游戏 UI 布局".to_string());
         }
@@ -5051,7 +5129,7 @@ where
             .as_ref()
             .map(|report| report.capabilities.clone())
             .unwrap_or_default();
-        capabilities.retain(|value| value != IN_GAME_ROOM_TOOLS_CAPABILITY);
+        capabilities.retain(|value| !value.starts_with("in_game_room_tools_v"));
         if room_tools_available
             && !capabilities
                 .iter()
@@ -5102,6 +5180,12 @@ where
             });
         }
         let preserved = preserved_audio.as_ref();
+        feature_groups.retain(|group| group.id != ESC_NEXT_GAME_FEATURE_ID);
+        capabilities.retain(|capability| capability != ESC_NEXT_GAME_CAPABILITY);
+        if esc_next_game_available {
+            feature_groups.push(esc_next_game_feature_group());
+            capabilities.push(ESC_NEXT_GAME_CAPABILITY.to_string());
+        }
         let report = BuildAudioModReport {
             manifest_format: "d2r-audio-telemetry-mod".to_string(),
             producer: "d2r-audio-mod".to_string(),
@@ -5285,6 +5369,11 @@ where
         false
     };
     let room_tools_available = room_tools_installed || source_has_room_tools;
+    let esc_next_game_available = request.include_esc_next_game || source_feature_report.as_ref()
+        .is_some_and(|report| report.feature_groups.iter().any(|group| group.id == ESC_NEXT_GAME_FEATURE_ID));
+    if esc_next_game_available {
+        install_esc_next_game(&mpq_directory, storage.as_ref(), room_tools_available)?;
+    }
     let auto_exit_on_death_installed =
         if request.include_auto_exit_on_death && source_auto_exit_on_death_enabled.is_none() {
             install_auto_exit_on_death(&mpq_directory, storage.as_ref(), true, &mut compatibility)?
@@ -5642,6 +5731,12 @@ where
         feature_groups.push(auto_exit_on_death_feature_group(
             !auto_exit_on_death_installed && source_auto_exit_on_death_enabled.is_some(),
         ));
+    }
+    feature_groups.retain(|group| group.id != ESC_NEXT_GAME_FEATURE_ID);
+    capabilities.retain(|capability| capability != ESC_NEXT_GAME_CAPABILITY);
+    if esc_next_game_available {
+        feature_groups.push(esc_next_game_feature_group());
+        capabilities.push(ESC_NEXT_GAME_CAPABILITY.to_string());
     }
     let report = BuildAudioModReport {
         manifest_format: "d2r-audio-telemetry-mod".to_string(),

@@ -1978,8 +1978,8 @@ fn install_lobby_return_hint(
 fn esc_next_game_feature_group() -> ModFeatureGroup {
     ModFeatureGroup {
         id: ESC_NEXT_GAME_FEATURE_ID.to_string(),
-        recipe_version: 1,
-        fingerprint: "esc-next-game-v1;window_ms=500".to_string(),
+        recipe_version: 2,
+        fingerprint: "esc-next-game-v2;window_ms=500;pause_timeout=1".to_string(),
         reused_from_source: false,
     }
 }
@@ -2018,13 +2018,26 @@ fn install_esc_next_game(
         }
         let children = document.get_mut("children").and_then(serde_json::Value::as_array_mut)
             .ok_or_else(|| format!("{relative_path}.children 必须是数组"))?;
-        children.retain(|child| child.get("name").and_then(serde_json::Value::as_str) != Some("D2RHubEscNextGameLauncher"));
+        children.retain(|child| !matches!(
+            child.get("name").and_then(serde_json::Value::as_str),
+            Some("D2RHubEscNextGameLauncher" | "D2RHubEscNextGamePauseTimeout")
+        ));
         children.push(serde_json::json!({
             "type": "TimerWidget",
             "name": "D2RHubEscNextGameLauncher",
             "fields": {
                 "time": 0.01,
                 "message": format!("PanelManager:OpenPanel:{QUICK_RECREATE_ESC_ARM_PANEL}")
+            }
+        }));
+        // Bound the receiver lifetime from the pause menu too, rather than
+        // relying exclusively on updates inside the transient tooltip panel.
+        children.push(serde_json::json!({
+            "type": "TimerWidget",
+            "name": "D2RHubEscNextGamePauseTimeout",
+            "fields": {
+                "time": QUICK_RECREATE_DOUBLE_CLICK_WINDOW_SECONDS,
+                "message": format!("PanelManager:ClosePanel:{QUICK_RECREATE_ESC_ARM_PANEL}")
             }
         }));
         write_json_layout(mpq_directory, relative_path, &document)?;

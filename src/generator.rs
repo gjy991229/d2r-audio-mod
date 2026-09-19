@@ -2718,6 +2718,10 @@ fn load_item_localization(
         .collect())
 }
 
+fn is_missing_compatibility_asset_error(error: &str) -> bool {
+    error.contains("CascLib reported error 0x2 (CascOpenFile)")
+}
+
 fn patch_item_unit_definitions(
     mpq_directory: &Path,
     storage: Option<&casc_core::Storage>,
@@ -2790,7 +2794,20 @@ fn patch_item_unit_definitions(
             ));
         }
         let (mut state_machine, state_machine_source) =
-            read_json_asset(mpq_directory, storage, &normalized_original)?;
+            match read_json_asset(mpq_directory, storage, &normalized_original) {
+                Ok(asset) => asset,
+                Err(error) if is_missing_compatibility_asset_error(&error) => {
+                    compatibility.push(AudioModCompatibility {
+                        target: format!("{} ({})", definition.fallback_name, definition.code),
+                        action: "skip_missing_original_state_machine".to_string(),
+                        detail: format!(
+                            "原始状态机 {normalized_original} 无法从源 Mod 或本机 D2R CASC 读取，已保留该物品原配置并跳过声纹注入；其他物品继续按兼容模式处理。详情：{error}"
+                        ),
+                    });
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
         let (flippy_index, flippy_id, ground_id, original_audio_id) = {
             let states = state_machine
                 .get("states")

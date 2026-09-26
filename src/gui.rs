@@ -368,7 +368,7 @@ unsafe fn update_mode(state: &mut AppState) {
         ) {
             set_text(state.source_edit, &game.to_string_lossy());
         }
-        set_text(state.status,"从本机游戏生成轻量资源。默认纹理最大边4，UI图片保持原版尺寸，VFX纹理保留原版以避免色块。生成后请在游戏中确认效果。");
+        set_text(state.status,"从本机游戏生成轻量资源。默认纹理最大边4，背包等UI保持原版尺寸；地图/血球单独优化，VFX分类降清。生成后请在游戏中确认效果。");
     } else {
         if is_game_root(Path::new(&source)) {
             set_text(state.source_edit, "");
@@ -697,7 +697,7 @@ unsafe fn create_app_window() -> Result<HWND, String> {
         ID_SPRITE,
         instance,
     )?;
-    for text in ["UI图片：保持原版尺寸"] {
+    for text in ["普通UI：保持原版尺寸"] {
         let text = wide(text);
         SendMessageW(sprite, CB_ADDSTRING, 0, text.as_ptr() as isize);
     }

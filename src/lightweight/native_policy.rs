@@ -20,7 +20,9 @@ fn blocked(s: &str, disabled: &HashSet<String>) -> bool {
 
 pub fn is_vfx_texture(path: &str) -> bool {
     let p = resource_path(path);
-    p.starts_with("data/hd/vfx/") && p.ends_with(".texture")
+    p.ends_with(".texture")
+        && (p.starts_with("data/hd/vfx/")
+            || p.rsplit('/').next().is_some_and(|n| n.starts_with("fx_")))
 }
 
 /// Particle suppression follows actual references in already-scoped native JSON.

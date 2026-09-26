@@ -2,6 +2,7 @@ mod assets;
 mod memory_policy;
 mod native_policy;
 pub mod recipe;
+mod targeted_policy;
 
 use crate::casc_path::CascStoragePath;
 use recipe::{Action, Recipe};
@@ -315,17 +316,6 @@ pub fn build(
             );
             continue;
         }
-        if matches!(target.action, Action::NativeTexture)
-            && native_policy::is_vfx_texture(&target.path)
-        {
-            note(
-                &mut report,
-                &target.path,
-                "vfx_native_texture",
-                "保留原版特效纹理，避免极低分辨率破坏透明度和形状".into(),
-            );
-            continue;
-        }
         let category = match target.action {
             Action::Empty => "empty",
             Action::NativeJson => "json",
@@ -345,7 +335,10 @@ pub fn build(
             *report.counts.entry("empty".into()).or_default() += 1;
             continue;
         }
-        if request.sprite_scale == 1 && matches!(target.action, Action::NativeSprite) {
+        if request.sprite_scale == 1
+            && matches!(target.action, Action::NativeSprite)
+            && !targeted_policy::special_sprite(&report.profile, &target.path)
+        {
             note(
                 &mut report,
                 &target.path,
@@ -372,8 +365,32 @@ pub fn build(
                 let mut value = recipe::parse(&original)
                     .map_err(|e| format!("原版 JSON 无法解析 {}: {e}", target.path))?;
                 let before = value.clone();
-                let changes = native_policy::json(&mut value, &disabled)
-                    + memory_policy::apply(&mut value, shared_biome);
+                let mut changes = native_policy::json(&mut value, &disabled);
+                if report.profile == "min"
+                    && value.get("type").and_then(serde_json::Value::as_str)
+                        == Some("UnitDefinition")
+                {
+                    targeted_policy::no_model(&mut value)
+                        .map_err(|e| format!("无模型规则 {}: {e}", target.path))?;
+                    changes += 1;
+                    note(
+                        &mut report,
+                        &target.path,
+                        "minimal_unit",
+                        "保留原版根身份，移除骨骼组件及 HD 模型、材质、动作加载链".into(),
+                    );
+                } else if target.path.starts_with("data/hd/character/player/")
+                    && value.get("type").and_then(serde_json::Value::as_str)
+                        == Some("UnitDefinition")
+                {
+                    let reused = targeted_policy::light_variants(&mut value);
+                    changes += reused;
+                    *report
+                        .counts
+                        .entry("reused_light_model_references".into())
+                        .or_default() += reused;
+                }
+                changes += memory_policy::apply(&mut value, shared_biome);
                 for group in [
                     "models",
                     "skeletons",
@@ -421,20 +438,64 @@ pub fn build(
                     path: target.path.clone(),
                     action: "native_reference_pruning".into(),
                     reason: format!(
-                        "独立规则处理 {changes} 项：场景/地形裁剪、共享简化 biome、无引用模型/骨骼预加载清理；保留活动状态机与所需动画"
+                        "独立规则处理 {changes} 项：场景/地形裁剪、共享简化 biome、无引用模型/骨骼预加载清理；main/filler 保留活动状态机；min 执行无模型策略"
                     ),
                 });
                 serde_json::to_vec(&value).map_err(|e| e.to_string())
             }
-            Action::NativeTexture => assets::texture(
-                &original,
-                if request.texture_size == 0 {
+            Action::NativeTexture => {
+                let limit = if native_policy::is_vfx_texture(&target.path) {
+                    let limit = targeted_policy::vfx_limit(&original)?;
+                    report.details.push(Outcome{path:target.path.clone(),action:"vfx_native_mip".into(),reason:format!("使用原版 mip；轮廓最长边 64、长条渐变最长边 512；本项上限 {limit}，不统一压成4×4")});
+                    limit
+                } else if request.texture_size == 0 {
                     4
                 } else {
                     request.texture_size
-                },
-            ),
-            Action::NativeSprite => Err("UI sprite 尺寸变更已停用".into()),
+                };
+                assets::texture(&original, limit)
+            }
+            Action::NativeSprite => {
+                if report.profile == "filler" && target.path == targeted_policy::HEALTH_IDLE {
+                    let result = targeted_policy::first_frame(&original);
+                    if result.is_ok() {
+                        note(
+                            &mut report,
+                            &target.path,
+                            "static_health_frame",
+                            "提取原版第0帧，单帧宽高和帧宽元数据不变".into(),
+                        );
+                    }
+                    result
+                } else if report.profile == "min" && targeted_policy::is_map(&target.path) {
+                    let candidate = target
+                        .path
+                        .strip_suffix(".sprite")
+                        .map(|s| format!("{s}.lowend.sprite"))
+                        .unwrap();
+                    match read(&storage, &candidate) {
+                        Ok(low) => {
+                            let result = targeted_policy::lowend_map(&original, &low);
+                            if result.is_ok() {
+                                note(&mut report,&target.path,"native_map_lowend",format!("使用游戏自带地图图集 {candidate}；不变更帧数，不处理背包等像素布局背景"));
+                            }
+                            result
+                        }
+                        Err(e) if missing(&e) => {
+                            note(
+                                &mut report,
+                                &target.path,
+                                "map_kept_native",
+                                "没有原版低清图集，保留原版".into(),
+                            );
+                            continue;
+                        }
+                        Err(e) => Err(format!("地图图集读取失败：{e}")),
+                    }
+                } else {
+                    Err("UI sprite 尺寸变更已停用".into())
+                }
+            }
             _ => unreachable!(),
         };
         let generated = match generated {
@@ -470,7 +531,7 @@ pub fn build(
         &staging.path.join("lightweight-manifest.json"),
         &serde_json::to_vec_pretty(&report).map_err(|e| e.to_string())?,
     )?;
-    let readme=format!("D2R 轻量资源测试版 {}\r\n启动参数：{}\r\n\r\n只从本机游戏生成，不包含 lowHD 成品素材。目标范围参考 lowHD；处理规则依据游戏原版制定，不复现作者配置或遮罩。\r\n纹理尺寸选项 {}（0=自动4），sprite 策略 {}（1=保留原版尺寸）。\r\n逐资源策略、颜色差异、缺失及无需覆盖的资源见 lightweight-manifest.json。未确认策略会阻止生成。\r\n本版不重写非空粒子、不修改 missiles.txt、不新增房间工具或声纹。\r\nVFX 纹理使用原版；粒子关闭模式及新增的空覆盖见清单。正常音频加工功能仍可单独用于该成品。\r\n未启动游戏验证。源游戏、原 MOD 和已有同名产物不会覆盖。\r\n",report.profile,report.launch_arguments,request.texture_size,request.sprite_scale);
+    let readme=format!("D2R 轻量资源测试版 {}\r\n启动参数：{}\r\n\r\n只从本机游戏生成，不包含 lowHD 成品素材。目标范围参考 lowHD；处理规则依据游戏原版制定，不复现作者配置或遮罩。\r\n纹理尺寸选项 {}（0=自动4），sprite 策略 {}（1=保留原版尺寸）。\r\n逐资源策略、颜色差异、缺失及无需覆盖的资源见 lightweight-manifest.json。未确认策略会阻止生成。\r\n本版不重写非空粒子、不修改 missiles.txt、不新增房间工具或声纹。\r\nVFX 使用分类后的原版 mip；min 地图低清、filler 血球静态帧；粒子关闭模式及新增的空覆盖见清单。正常音频加工功能仍可单独用于该成品。\r\n未启动游戏验证。源游戏、原 MOD 和已有同名产物不会覆盖。\r\n",report.profile,report.launch_arguments,request.texture_size,request.sprite_scale);
     write(&staging.path.join("README.txt"), readme.as_bytes())?;
     if destination.exists() {
         return Err("输出名称在生成期间被占用，未覆盖；请重试".into());

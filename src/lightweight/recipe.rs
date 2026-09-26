@@ -8,9 +8,8 @@ use std::{
     path::Path,
 };
 
-/// This is a structural selection rule, never a replacement game document.
-/// Nonzero numbers, arbitrary strings, pixel data and new source-mod entities
-/// are intentionally not serialized into recipes.
+/// Conservative UI-only selection rules. Custom UI values/entities are excluded.
+/// Non-UI resources use JsonDelta to preserve reference parameters and redirects.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", content = "args", rename_all = "snake_case")]
 pub enum Shape {
@@ -153,6 +152,7 @@ impl Shape {
 pub enum Action {
     Empty,
     Json(Shape),
+    JsonDelta(super::json_delta::Plan),
     Texture,
     Sprite,
     ReferenceSprite(SpritePlan),
@@ -315,7 +315,30 @@ fn scan(
                     } else {
                         let bytes = fs::read(&p).map_err(|e| e.to_string())?;
                         match parse(&bytes) {
-                            Ok(value) => Action::Json(Shape::from_reference(&value)),
+                            Ok(value) if relative.contains("/ui/") => {
+                                Action::Json(Shape::from_reference(&value))
+                            }
+                            Ok(value) => {
+                                // lowHD's new default biome is a simplified native biome,
+                                // not an external image or an omitted unresolved dependency.
+                                let source_path = if relative == "data/hd/env/biome/default.json" {
+                                    "data/hd/env/biome/act1_outdoors.json"
+                                } else {
+                                    relative.as_str()
+                                };
+                                match native(storage, source_path)? {
+                                    Some(bytes) => {
+                                        Action::JsonDelta(super::json_delta::Plan::derive(
+                                            source_path,
+                                            &bytes,
+                                            &value,
+                                        )?)
+                                    }
+                                    None => {
+                                        Action::Unresolved(format!("JSON 基线缺失：{source_path}"))
+                                    }
+                                }
+                            }
                             Err(error) => {
                                 Action::Native(format!("参考定义无法解析，未导入: {error}"))
                             }
@@ -348,7 +371,7 @@ pub fn import(
     scan(source, source, &mut targets, &storage)?;
     targets.sort_by(|a, b| a.path.cmp(&b.path));
     let count = targets.len();
-    let recipe=Recipe{version:2,profile:profile.into(),provenance:"Per-target geometry, visible-region erase/fill, frame selection, native lowend substitutions and JSON culling derived from lowHD. No reference RGB buffers or game asset payloads included. https://www.nexusmods.com/diablo2resurrected/mods/1054".into(),targets};
+    let recipe=Recipe{version:3,profile:profile.into(),provenance:"Per-target geometry, visible-region erase/fill, frame selection, native lowend substitutions and native-based JSON reference deltas derived from lowHD. No reference RGB buffers or game asset payloads included. https://www.nexusmods.com/diablo2resurrected/mods/1054".into(),targets};
     let bytes = serde_json::to_vec(&recipe).map_err(|e| e.to_string())?;
     let file = fs::OpenOptions::new()
         .create_new(true)
@@ -371,13 +394,18 @@ pub fn decode(bytes: &[u8]) -> Result<Recipe, String> {
         return Err("配方解压后过大".into());
     }
     let recipe: Recipe = serde_json::from_slice(&decoded).map_err(|e| e.to_string())?;
-    if recipe.version != 2 {
-        return Err("需要逐资源策略配方 v2；旧的统一缩放配方已停用".into());
+    if ![2, 3].contains(&recipe.version) {
+        return Err("需要逐资源策略配方 v2/v3；旧的统一缩放配方已停用".into());
     }
     let mut paths = std::collections::HashSet::new();
     for target in &recipe.targets {
         if !safe_path(&target.path) || !paths.insert(target.path.to_ascii_lowercase()) {
             return Err(format!("非法或重复配方路径: {}", target.path));
+        }
+        if let Action::JsonDelta(plan) = &target.action {
+            if !safe_path(&plan.source) {
+                return Err("非法 JSON 基线路径".into());
+            }
         }
         if let Action::ReferenceSprite(plan) = &target.action {
             if !safe_path(&plan.source) {

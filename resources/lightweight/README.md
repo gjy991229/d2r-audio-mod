@@ -1,7 +1,8 @@
 # Built-in lightweight recipes
 
 `min.json.gz`, `filler.json.gz`, and `main.json.gz` contain paths, action types,
-structural JSON selection rules, native fingerprints, dimensions, frame selections,
+JSON scalar/array/structural deltas (including reference parameter values), UI
+selection rules, native fingerprints, dimensions, frame selections,
 and transparent/black rectangle operations. They contain no sprite/texture/audio
 payloads or complete replacement game definitions. Source target selection:
 lowHD by celloboy126 / evilbelgian, from the user's local reference packages.

@@ -39,22 +39,23 @@ to a changed game image. Native overrides (`sprite-scale=1`) are explicit user c
 RGBA byte size still depends on canvas dimensions even when most pixels are clear.
 Clearing background pixels alone does not establish a VRAM reduction.
 
-## JSON selection recipes
+## JSON recipes (beta.4)
 
-The lowHD directories supplied locally by the user provide target paths and
-structural selection rules. Native CASC is the only source of output values.
-Rules can remove object keys, select existing named/identified array members,
-clear strings/lists, disable flags, set numeric fields to zero, or redirect a
-mapping to another native entry. Unknown mod-only entities and arbitrary
-replacement strings/numbers are never transplanted. New lowHD-only paths that
-do not exist in native CASC are reported and omitted. This is not a byte-for-byte
-or behaviourally identical rebuild of lowHD.
+Non-UI JSON/frontend targets use fingerprinted native input plus recursive deltas.
+Changed strings, nonzero numbers, booleans, nulls and dependency arrays are now
+preserved, including fake.texture, null skeletons and default-biome redirects.
+Only differences are encoded; identical values come from the installed game.
+Object removals/edits and array edits describe structural changes. Recipes contain
+reference parameter values, not merely target paths; they are not independent of
+the reference author's configuration. No reference image payloads are embedded.
+The missing default biome is derived from native act1_outdoors.json and edited
+to the reference definition. Import verifies reconstruction against the reference.
+Runtime rejects changed native fingerprints instead of misapplying positional edits.
 
-Most nonempty custom UI layouts fall back to native UI. Selected layouts keep
-structural culling but use native surviving fields. Mod-only timers and custom
-party panels are not added. Empty overrides retain the reference profile's
-blocking intent. Nonempty particles, DDS/DC6 and table modifications are not
-regenerated in this version; the manifest explicitly identifies native fallbacks.
+UI paths retain the prior policy: selected layouts receive structural culling;
+other custom UI layouts fall back to the game. Mod-only timers/party panels are
+not added. Empty overrides retain the reference blocking intent. Nonempty
+particles, DDS/DC6 and table changes remain explicit exclusions.
 
 ## Safety and validation
 

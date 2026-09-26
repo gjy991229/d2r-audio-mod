@@ -1,5 +1,6 @@
 mod assets;
 mod blocks;
+mod json_delta;
 pub mod recipe;
 mod reference;
 
@@ -225,7 +226,7 @@ pub fn build(
         }
         let category = match target.action {
             Action::Empty => "empty",
-            Action::Json(_) => "json",
+            Action::Json(_) | Action::JsonDelta(_) => "json",
             Action::Texture | Action::ReferenceTexture(_) => "texture",
             Action::Sprite | Action::ReferenceSprite(_) => "sprite",
             Action::Native(_) | Action::Unresolved(_) => "native",
@@ -253,6 +254,8 @@ pub fn build(
         }
         let source_path = if let Action::ReferenceSprite(plan) = &target.action {
             plan.source.as_str()
+        } else if let Action::JsonDelta(plan) = &target.action {
+            plan.source.as_str()
         } else {
             target.path.as_str()
         };
@@ -261,7 +264,7 @@ pub fn build(
             Err(e) if missing(&e) => {
                 if matches!(
                     target.action,
-                    Action::ReferenceSprite(_) | Action::ReferenceTexture(_)
+                    Action::ReferenceSprite(_) | Action::ReferenceTexture(_) | Action::JsonDelta(_)
                 ) {
                     return Err(format!(
                         "配方对应的原版资源已缺失 {source_path}，请重新核对配方：{e}"
@@ -291,6 +294,19 @@ pub fn build(
                 // its child list. Use an empty native panel shell for this cut.
                 if target.path.ends_with("/loadscreenpanelhd.json") {
                     value = serde_json::json!({"type":"TitleScreenHDPanel","name":"LoadScreenPanel","fields":{"fitToParent":true}});
+                }
+                serde_json::to_vec(&value).map_err(|e| e.to_string())
+            }
+            Action::JsonDelta(plan) => {
+                let value = plan.apply(&original)?;
+                if plan.source == target.path && value == recipe::parse(&original)? {
+                    note(
+                        &mut report,
+                        &target.path,
+                        "unchanged_native",
+                        "JSON 参考逻辑与原版一致，无需覆盖".into(),
+                    );
+                    continue;
                 }
                 serde_json::to_vec(&value).map_err(|e| e.to_string())
             }
@@ -510,6 +526,15 @@ mod tests {
         for name in ["min", "filler", "main"] {
             let r = builtin(name).unwrap();
             assert_eq!(r.profile, name);
+            assert_eq!(r.version, 3);
+            assert!(r
+                .targets
+                .iter()
+                .any(|t| matches!(t.action, Action::JsonDelta(_))));
+            assert!(!r
+                .targets
+                .iter()
+                .any(|t| matches!(t.action, Action::Unresolved(_))));
             assert!(r.targets.len() > 10000);
             assert!(r
                 .targets

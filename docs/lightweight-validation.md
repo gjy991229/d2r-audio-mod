@@ -1,3 +1,68 @@
+# beta4 JSON consistency validation
+
+Native-based JSON deltas now preserve reference paths, nonzero parameters, dependency lists and structure. Default biome is derived from the native act1_outdoors template. Texture maximum side 4 and post-reference sprite divisor 2 are unchanged.
+
+| Profile | Non-UI exact matches | All comparable exact matches | Resource MiB |
+|---|---:|---:|---:|
+| main | 2946/2946 (100%) | 2949/2968 (99.4%) | 16.42 |
+| filler | 269/269 (100%) | 271/281 (96.4%) | 14.09 |
+| min | 17/17 (100%) | 19/28 (67.9%) | 18.98 |
+
+Comparison parses JSON/JSON5, ignores formatting/key order, preserves array order and includes .frontend. Empty files are excluded. Missing generated overrides are compared using the installed game baseline. Main has one invalid reference UI file and three absent custom UI paths, excluded from the comparable denominator. All remaining content differences are UI-policy exclusions. This is JSON content equality, not a whole-MOD runtime equivalence claim.
+
+49 regression checks passed; four opt-in tests ignored and the same three known room-tool fixture failures excluded. Every generated sprite/texture (including empty overrides) was byte-compared against beta3 and is unchanged. No game was launched; rendering and memory impact remain unverified.
+
+Test MODs: `C:\Diablo II Resurrected\mods\D2RLight-{main,filler,min}-b4`. Preview: `target/lightweight-preview-b4/d2r-audio-mod.exe`. Stable sidecar and previous outputs are preserved.
+
+## Remaining comparable UI differences: main
+
+- `data/global/ui/layouts/characterstatspanelhd.json`
+- `data/global/ui/layouts/creategamepanelhd.json`
+- `data/global/ui/layouts/hireablespanelhd.json`
+- `data/global/ui/layouts/hirelinginventorypanelhd.json`
+- `data/global/ui/layouts/horadriccubelayouthd.json`
+- `data/global/ui/layouts/hudpanelhd.json`
+- `data/global/ui/layouts/joingamepanelhd.json`
+- `data/global/ui/layouts/lobbybackgroundpanelhd.json`
+- `data/global/ui/layouts/mainmenubuttonribbonhd.json`
+- `data/global/ui/layouts/partypanelhd.json`
+- `data/global/ui/layouts/pauselayout.json`
+- `data/global/ui/layouts/pauselayoutgarden.json`
+- `data/global/ui/layouts/pauselayoutgardenhd.json`
+- `data/global/ui/layouts/pauselayouthd.json`
+- `data/global/ui/layouts/questlogpanelexpansionhd.json`
+- `data/global/ui/layouts/vendorpanellayouthd.json`
+- `data/global/ui/layouts/waypointspaneloriginalhd.json`
+- `data/global/ui/layouts/_profilehd.json`
+- `data/hd/env/preset/ui/charactercreate.json`
+
+## Remaining comparable UI differences: filler
+
+- `data/global/ui/layouts/creategamepanelhd.json`
+- `data/global/ui/layouts/hudpanelhd.json`
+- `data/global/ui/layouts/joingamepanelhd.json`
+- `data/global/ui/layouts/lobbybackgroundpanelhd.json`
+- `data/global/ui/layouts/mainmenubuttonribbonhd.json`
+- `data/global/ui/layouts/pauselayout.json`
+- `data/global/ui/layouts/pauselayoutgarden.json`
+- `data/global/ui/layouts/pauselayoutgardenhd.json`
+- `data/global/ui/layouts/pauselayouthd.json`
+- `data/hd/env/preset/ui/charactercreate.json`
+
+## Remaining comparable UI differences: min
+
+- `data/global/ui/layouts/creategamepanelhd.json`
+- `data/global/ui/layouts/hudpanelhd.json`
+- `data/global/ui/layouts/joingamepanelhd.json`
+- `data/global/ui/layouts/lobbybackgroundpanelhd.json`
+- `data/global/ui/layouts/mainmenubuttonribbonhd.json`
+- `data/global/ui/layouts/pauselayout.json`
+- `data/global/ui/layouts/pauselayoutgarden.json`
+- `data/global/ui/layouts/pauselayoutgardenhd.json`
+- `data/global/ui/layouts/pauselayouthd.json`
+
+---
+
 # v1.4.0-beta.3 validation
 
 Default texture maximum side is 4. Default sprite divisor is 2, applied after

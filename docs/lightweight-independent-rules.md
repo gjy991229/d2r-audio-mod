@@ -1,3 +1,28 @@
+# beta7 加载链精简
+
+以 lowHD 的共享环境与依赖截断思路为参考，规则由原版 schema 决定，
+不导入作者的数值、实体 ID、自定义颜色或完整 JSON。
+
+- 范围内 Preset：移除 terrain，清空 perTileBiomeOverrides / specialTiles，
+  去掉这些内容的依赖。main/filler 场景统一引用既有目标 default.json。
+- 共享及范围内 biome：从原版 act1_outdoors 模板/对应原版定义生成，保留
+  原生地形层结构，移除地形外附的 foliage/tile mask 等加载项；四种材质
+  改指向原版生成的 1×1 Albedo/Normal/ORM/Noise。默认环境使用游戏自带
+  1_default_day.json 的光照定义，不复制 lowHD 的光照参数。
+- 必要支持文件：data/hd/env/texture/d2rlight/terrain_*.texture，共四张、
+  当前版本总计 232 字节。它们是新引用必需的材质，不是新内容或特效；
+  manifest 逐条记录原版来源，生成前校验模板和默认环境存在。
+- UnitDefinition/OverlayDefinition：移除正文没有引用的模型、骨骼预加载。
+  存在状态机/动画绑定时保留动画依赖；否则仅去掉没有正文引用的动画预加载。
+  不直接清空角色状态机，不修改状态机内容或单位 entities 图。
+- min 没有扩展到新场景范围；本次改善较小，不宣称它已达到 lowHDmin 的
+  激进程度。main/filler 也保留原版默认光照和 cubemap，未把环境全部置空。
+
+保留 beta6 的 UI 原尺寸、VFX 原纹理以及可选粒子关闭。实际内存收益、
+空地形效果和交互稳定性需游戏验证。下面为历史规则记录。
+
+---
+
 # beta6 correction
 
 实测反馈确认旧版直接缩小 UI sprite 会使背景与槽位错位。beta6 默认并强制

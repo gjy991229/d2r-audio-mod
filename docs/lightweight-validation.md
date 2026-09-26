@@ -1,3 +1,43 @@
+# beta7 memory-load-chain validation
+
+Reference idea: shared simplified environment and pruning dead preload dependencies.
+The implementation derives structures/materials from native game data; no lowHD
+JSON parameter tables or authored images are copied into rules.
+
+| Profile | Presets sharing biome | Removed model preloads vs b6 | Removed skeleton preloads vs b6 | Removed animation preloads vs b6 |
+|---|---:|---:|---:|---:|
+| main | 2041 | 202 | 5 | 5 |
+| filler | 9 | 78 | 0 | 0 |
+| min | 0 | 2 | 0 | 0 |
+| main-off | 2041 | 202 | 5 | 5 |
+
+Main's scoped presets go from 42 unique biome paths to one, filler from five to
+one. Main/filler each have three reduced biome definitions. The native layer
+structure is retained, but Albedo/Normal/ORM/Noise point to four valid native-derived
+1x1 texture files totaling 232 bytes. Every new texture reference resolves to an
+output file; default visual/template inputs were checked in CASC before generation.
+Preset terrain is removed and per-tile overrides/special tiles are cleared.
+
+Independent streaming CASC audit compared UnitDefinition/OverlayDefinition entities
+and AnimationStateMachine documents with the effective beta6 versions: unchanged.
+Only unused model/skeleton preloads and animation preloads without live motion
+bindings are removed. Min retains live motion; its change is intentionally small.
+These are reference-entry counts, not unique resident assets or measured RAM savings.
+
+All non-helper sprite/texture bytes match beta6; no nonempty UI sprite override was
+introduced. Output paths are limited to prior scope, documented particle overrides
+and the four required terrain material helpers. All generated JSON was parsed.
+48 tests passed; four opt-in tests ignored and the same three known room-tool
+fixture failures excluded. No game was launched: visual/interaction stability and
+actual process RAM/VRAM reduction still require in-game comparison.
+
+Test outputs: D2RLight-main-b7, D2RLight-filler-b7, D2RLight-min-b7,
+D2RLight-main-b7-off. Previous outputs and stable D2RHub sidecar were preserved.
+Compare main-b6-off and main-b7-off under the same area and settings to isolate
+this change from particle suppression.
+
+---
+
 # beta6 UI and VFX correction validation
 
 User-reported inventory misalignment was consistent with replacing a 1162x1507

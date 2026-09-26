@@ -1,4 +1,5 @@
 mod assets;
+mod memory_policy;
 mod native_policy;
 pub mod recipe;
 
@@ -151,6 +152,40 @@ pub fn build(
     }
     let alias = CascStoragePath::prepare(&request.game)?;
     let storage = casc_core::Storage::open(alias.as_path()).map_err(|e| e.to_string())?;
+    let shared_biome =
+        recipe.targets.iter().any(|t| {
+            t.path == memory_policy::SHARED_BIOME && matches!(t.action, Action::NativeJson)
+        }) && request.asset_types.iter().any(|s| s == "json");
+    if shared_biome {
+        read(&storage, memory_policy::BIOME_BASE)
+            .map_err(|e| format!("简化 biome 原版模板缺失：{e}"))?;
+        read(&storage, memory_policy::DEFAULT_VIS)
+            .map_err(|e| format!("原版默认环境定义缺失：{e}"))?;
+    }
+    let mut terrain_support = Vec::new();
+    if shared_biome {
+        let bytes = read(&storage, memory_policy::BIOME_BASE).map_err(|e| e.to_string())?;
+        let biome = recipe::parse(&bytes)?;
+        let layer = biome
+            .pointer("/terrainDataLow/terrainLayers/0")
+            .ok_or("原版 biome 缺少低画质地形层，未猜测占位纹理")?;
+        for channel in memory_policy::TERRAIN_CHANNELS {
+            let source = layer
+                .get(channel)
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| format!("原版地形层缺少 {channel}"))?;
+            let source = native_policy::resource_path(source);
+            let original =
+                read(&storage, &source).map_err(|e| format!("读取地形占位基线 {source}: {e}"))?;
+            let small = assets::texture(&original, 1)?;
+            terrain_support.push((
+                memory_policy::tiny_terrain_path(channel),
+                small,
+                source,
+                original.len(),
+            ));
+        }
+    }
     let version = read(&storage, "data/global/dataversionbuild.txt").map_err(|e| e.to_string())?;
     let parent = request.output.unwrap_or_else(|| request.game.join("mods"));
     fs::create_dir_all(&parent).map_err(|e| e.to_string())?;
@@ -200,6 +235,17 @@ pub fn build(
         details: Vec::new(),
         runtime_verified: false,
     };
+    for (path, bytes, source, size) in terrain_support {
+        write(&mpq.join(&path), &bytes)?;
+        report.original_transformed_bytes += size as u64;
+        report.generated_asset_bytes += bytes.len() as u64;
+        note(
+            &mut report,
+            &path,
+            "required_terrain_texture",
+            format!("共享简化 biome 必需的 1×1 地形材质，来自原版 {source}"),
+        );
+    }
     let mut disabled: std::collections::HashSet<String> = recipe
         .targets
         .iter()
@@ -308,7 +354,11 @@ pub fn build(
             );
             continue;
         }
-        let source_path = target.path.as_str();
+        let source_path = if target.path == memory_policy::SHARED_BIOME && shared_biome {
+            memory_policy::BIOME_BASE
+        } else {
+            target.path.as_str()
+        };
         let original = match read(&storage, source_path) {
             Ok(bytes) => bytes,
             Err(e) if missing(&e) => {
@@ -321,13 +371,49 @@ pub fn build(
             Action::NativeJson => {
                 let mut value = recipe::parse(&original)
                     .map_err(|e| format!("原版 JSON 无法解析 {}: {e}", target.path))?;
-                let changes = native_policy::json(&mut value, &disabled);
+                let before = value.clone();
+                let changes = native_policy::json(&mut value, &disabled)
+                    + memory_policy::apply(&mut value, shared_biome);
+                for group in [
+                    "models",
+                    "skeletons",
+                    "animations",
+                    "textures",
+                    "json",
+                    "physics",
+                ] {
+                    let old = before
+                        .get("dependencies")
+                        .and_then(|d| d.get(group))
+                        .and_then(serde_json::Value::as_array)
+                        .map_or(0, Vec::len);
+                    let new = value
+                        .get("dependencies")
+                        .and_then(|d| d.get(group))
+                        .and_then(serde_json::Value::as_array)
+                        .map_or(0, Vec::len);
+                    if old > new {
+                        *report
+                            .counts
+                            .entry(format!("removed_preload_{group}"))
+                            .or_default() += old - new;
+                    }
+                }
+                if shared_biome
+                    && value.get("type").and_then(serde_json::Value::as_str) == Some("Preset")
+                {
+                    *report
+                        .counts
+                        .entry("shared_biome_presets".into())
+                        .or_default() += 1;
+                }
+
                 if changes == 0 {
                     note(
                         &mut report,
                         &target.path,
                         "unchanged_native",
-                        "原版没有引用本方案屏蔽目标，不新增覆盖".into(),
+                        "引用和加载链无需改变，不新增覆盖".into(),
                     );
                     continue;
                 }
@@ -335,7 +421,7 @@ pub fn build(
                     path: target.path.clone(),
                     action: "native_reference_pruning".into(),
                     reason: format!(
-                        "独立规则裁剪 {changes} 项：Preset 移除场景实体及无引用依赖；其他定义仅清理已屏蔽资源；保留原版参数和 ID"
+                        "独立规则处理 {changes} 项：场景/地形裁剪、共享简化 biome、无引用模型/骨骼预加载清理；保留活动状态机与所需动画"
                     ),
                 });
                 serde_json::to_vec(&value).map_err(|e| e.to_string())

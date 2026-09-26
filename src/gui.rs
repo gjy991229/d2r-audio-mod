@@ -368,7 +368,7 @@ unsafe fn update_mode(state: &mut AppState) {
         ) {
             set_text(state.source_edit, &game.to_string_lossy());
         }
-        set_text(state.status,"从本机游戏生成轻量资源。默认纹理最大边4，UI图片先执行参考裁除和帧选择，再缩小2倍。生成后请在游戏中确认效果。");
+        set_text(state.status,"从本机游戏生成轻量资源。默认纹理最大边4，UI图片使用原版 lowend（可用时）并按帧缩小2倍。生成后请在游戏中确认效果。");
     } else {
         if is_game_root(Path::new(&source)) {
             set_text(state.source_edit, "");
@@ -670,7 +670,7 @@ unsafe fn create_app_window() -> Result<HWND, String> {
         instance,
     )?;
     for text in [
-        "纹理：按参考尺寸",
+        "纹理：自动4",
         "纹理最大边：1",
         "纹理最大边：2",
         "纹理最大边：4",
@@ -697,11 +697,11 @@ unsafe fn create_app_window() -> Result<HWND, String> {
         instance,
     )?;
     for text in [
-        "UI图片：参考尺寸",
+        "UI图片：原版lowend尺寸",
         "UI图片：选用原版",
-        "UI图片：处理后缩小2倍",
-        "UI图片：处理后缩小4倍",
-        "UI图片：处理后缩小8倍",
+        "UI图片：原版缩小2倍",
+        "UI图片：原版缩小4倍",
+        "UI图片：原版缩小8倍",
     ] {
         let text = wide(text);
         SendMessageW(sprite, CB_ADDSTRING, 0, text.as_ptr() as isize);

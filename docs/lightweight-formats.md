@@ -1,3 +1,12 @@
+# Current beta5
+
+Current independent rules are documented in [independent rules](lightweight-independent-rules.md).
+The reference-specific rules below describe retired beta2–beta4 implementations;
+their recipe formats, JSON deltas, masks and image geometry are no longer shipped
+or accepted by beta5. The native texture/sprite byte layouts remain relevant.
+
+---
+
 # Lightweight resource generator — format and provenance notes
 
 This implementation consumes files from the user's local CASC. It does not

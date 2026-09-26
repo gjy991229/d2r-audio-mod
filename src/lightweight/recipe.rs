@@ -1,163 +1,18 @@
-use super::reference::{self, SpritePlan, TexturePlan};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
-    collections::BTreeMap,
     fs,
     io::{Read, Write},
     path::Path,
 };
 
-/// Conservative UI-only selection rules. Custom UI values/entities are excluded.
-/// Non-UI resources use JsonDelta to preserve reference parameters and redirects.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "op", content = "args", rename_all = "snake_case")]
-pub enum Shape {
-    Keep,
-    EmptyString,
-    Zero,
-    False,
-    Object(BTreeMap<String, Shape>),
-    Array(Vec<Selection>),
-    Alias(String),
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Selection {
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub identity: BTreeMap<String, Value>,
-    pub index: usize,
-    pub shape: Shape,
-}
-
-impl Shape {
-    pub fn from_reference(value: &Value) -> Self {
-        match value {
-            Value::String(s) if s.is_empty() => Self::EmptyString,
-            Value::Bool(false) => Self::False,
-            Value::Number(n) if n.as_f64() == Some(0.0) => Self::Zero,
-            Value::Object(map) => Self::Object(
-                map.iter()
-                    .map(|(key, value)| {
-                        let rule = if let Some(alias) =
-                            value.as_str().filter(|s| map.contains_key(*s) && *s != key)
-                        {
-                            Self::Alias(alias.to_string())
-                        } else {
-                            Self::from_reference(value)
-                        };
-                        (key.clone(), rule)
-                    })
-                    .collect(),
-            ),
-            Value::Array(values) if values.is_empty() || values.iter().all(Value::is_object) => {
-                Self::Array(
-                    values
-                        .iter()
-                        .enumerate()
-                        .map(|(index, v)| Selection {
-                            index,
-                            identity: ["id", "name", "_name", "path", "type"]
-                                .iter()
-                                .filter_map(|&k| {
-                                    v.get(k)
-                                        .filter(|v| v.is_string() || v.is_number())
-                                        .map(|v| (k.to_string(), v.clone()))
-                                })
-                                .collect(),
-                            shape: Self::from_reference(v),
-                        })
-                        .collect(),
-                )
-            }
-            _ => Self::Keep,
-        }
-    }
-
-    pub fn apply(&self, native: &mut Value) {
-        match self {
-            Self::Keep | Self::Alias(_) => {}
-            Self::EmptyString if native.is_string() => *native = Value::String(String::new()),
-            Self::Zero if native.is_number() => *native = serde_json::json!(0),
-            Self::False if native.is_boolean() => *native = Value::Bool(false),
-            Self::Object(rules) => {
-                if let Some(map) = native.as_object_mut() {
-                    let original = map.clone();
-                    map.retain(|key, _| rules.contains_key(key));
-                    for (key, rule) in rules {
-                        if let Some(value) = map.get_mut(key) {
-                            if let Self::Alias(other) = rule {
-                                if let Some(original) = original.get(other) {
-                                    *value = original.clone();
-                                }
-                            } else {
-                                rule.apply(value);
-                            }
-                        }
-                    }
-                }
-            }
-            Self::Array(selections) => {
-                if let Some(items) = native.as_array_mut() {
-                    let original = std::mem::take(items);
-                    let mut used = vec![false; original.len()];
-                    for selection in selections {
-                        let mut index = None;
-                        // Stable IDs first, then names. Never transplant a new
-                        // mod-only entity using its positional index.
-                        for key in ["id", "name", "_name", "path"] {
-                            if let Some(identity) = selection.identity.get(key) {
-                                index = original.iter().enumerate().find_map(|(i, v)| {
-                                    (!used[i]
-                                        && v.get(key) == Some(identity)
-                                        && selection
-                                            .identity
-                                            .get("type")
-                                            .is_none_or(|t| v.get("type") == Some(t)))
-                                    .then_some(i)
-                                });
-                                if index.is_some() {
-                                    break;
-                                }
-                            }
-                        }
-                        if selection.identity.keys().all(|k| k == "type") {
-                            let i = selection.index;
-                            if i < original.len()
-                                && !used[i]
-                                && selection
-                                    .identity
-                                    .get("type")
-                                    .is_none_or(|t| original[i].get("type") == Some(t))
-                            {
-                                index = Some(i);
-                            }
-                        }
-                        if let Some(i) = index {
-                            used[i] = true;
-                            let mut value = original[i].clone();
-                            selection.shape.apply(&mut value);
-                            items.push(value);
-                        }
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "action", content = "rule", rename_all = "snake_case")]
 pub enum Action {
     Empty,
-    Json(Shape),
-    JsonDelta(super::json_delta::Plan),
-    Texture,
-    Sprite,
-    ReferenceSprite(SpritePlan),
-    ReferenceTexture(TexturePlan),
-    Unresolved(String),
+    NativeJson,
+    NativeTexture,
+    NativeSprite,
     Native(String),
 }
 
@@ -204,54 +59,20 @@ pub fn parse(bytes: &[u8]) -> Result<Value, String> {
         .map_err(|e| e.to_string())
 }
 
-fn is_culling_layout(path: &str) -> bool {
-    let name = path.rsplit('/').next().unwrap_or("");
-    [
-        "lobbybackgroundpanelhd.json",
-        "titlescreenpanelhd.json",
-        "mainmenubuttonribbonhd.json",
-        "loadscreenpanelhd.json",
-        "characterstatspanelhd.json",
-        "hirelinginventorypanelhd.json",
-        "horadriccubelayouthd.json",
-        "panelborderspanelhd.json",
-        "partypanelhd.json",
-        "playerinventoryexpansionlayouthd.json",
-        "questlogpanelexpansionhd.json",
-        "waypointspaneloriginalhd.json",
-    ]
-    .contains(&name)
-}
-
-fn native(storage: &casc_core::Storage, path: &str) -> Result<Option<Vec<u8>>, String> {
-    match storage.read(&format!("data:{}", path.replace('/', "\\"))) {
-        Ok(bytes) => Ok(Some(bytes)),
-        Err(casc_core::CascError::Backend {
-            op: "CascOpenFile",
-            code: 2,
-        })
-        | Err(casc_core::CascError::NotFound(_)) => Ok(None),
-        Err(e) => Err(format!("{path}: {e}")),
-    }
-}
-
-fn scan(
-    root: &Path,
-    dir: &Path,
-    targets: &mut Vec<Target>,
-    storage: &casc_core::Storage,
-) -> Result<(), String> {
+// Scope import reads only paths, file size and BOM sentinels. It does not read
+// reference JSON definitions or image payloads into generation recipes.
+fn scan(root: &Path, dir: &Path, targets: &mut Vec<Target>) -> Result<(), String> {
     for entry in fs::read_dir(dir).map_err(|e| e.to_string())? {
         let entry = entry.map_err(|e| e.to_string())?;
         if entry.file_type().map_err(|e| e.to_string())?.is_symlink() {
-            return Err("源清单不接受符号链接".into());
+            return Err("源范围不接受符号链接".into());
         }
-        let p = entry.path();
-        if p.is_dir() {
-            scan(root, &p, targets, storage)?;
+        let path = entry.path();
+        if path.is_dir() {
+            scan(root, &path, targets)?;
             continue;
         }
-        let relative = p
+        let relative = path
             .strip_prefix(root)
             .map_err(|e| e.to_string())?
             .to_string_lossy()
@@ -260,92 +81,30 @@ fn scan(
             continue;
         }
         if !safe_path(&relative) {
-            return Err(format!("不安全的资源路径: {relative}"));
+            return Err(format!("非法目标路径 {relative}"));
         }
         let len = entry.metadata().map_err(|e| e.to_string())?.len();
-        let ext = p
+        let sentinel = len <= 3
+            && matches!(
+                fs::read(&path).map_err(|e| e.to_string())?.as_slice(),
+                b"\xff\xfe" | b"\xfe\xff" | b"\xef\xbb\xbf"
+            );
+        let ext = path
             .extension()
             .and_then(|s| s.to_str())
             .unwrap_or("")
             .to_ascii_lowercase();
-        let sentinel = len <= 3
-            && matches!(
-                fs::read(&p).map_err(|e| e.to_string())?.as_slice(),
-                b"\xff\xfe" | b"\xfe\xff" | b"\xef\xbb\xbf"
-            );
         let action = if len == 0 || sentinel {
             Action::Empty
         } else {
             match ext.as_str() {
-                "texture" | "sprite" => {
-                    let reference = fs::read(&p).map_err(|e| e.to_string())?;
-                    if let Some(original) = native(storage, &relative)? {
-                        if original == reference {
-                            Action::Native("参考文件与当前原版一致，不新增覆盖".into())
-                        } else if ext == "texture" {
-                            match reference::derive_texture(&original,&reference) {
-                                Ok(plan)=>Action::ReferenceTexture(plan),
-                                Err(e) if reference.get(8..16)==Some(&[0x10,0x20,0x20,0x20,0x10,0x20,0x20,0x20]) => Action::Native(format!("参考纹理头损坏（尺寸字段被空格污染），无法确认替换效果，明确跳过：{e}")),
-                                Err(e)=>Action::Unresolved(format!("纹理策略未确认: {e}")),
-                            }
-                        } else {
-                            let lowend_path = relative
-                                .strip_suffix(".sprite")
-                                .filter(|_| !relative.ends_with(".lowend.sprite"))
-                                .map(|p| format!("{p}.lowend.sprite"));
-                            let lowend = lowend_path
-                                .as_ref()
-                                .map(|p| native(storage, p))
-                                .transpose()?
-                                .flatten();
-                            let lowend = lowend_path.as_deref().zip(lowend.as_deref());
-                            match reference::derive_sprite(&relative, &original, &reference, lowend)
-                            {
-                                Ok(plan) => Action::ReferenceSprite(plan),
-                                Err(e) => Action::Unresolved(format!("sprite 策略未确认: {e}")),
-                            }
-                        }
-                    } else {
-                        Action::Native("参考目标在当前游戏中不存在，未生成外来素材".into())
-                    }
+                "json" | "frontend" if relative.contains("/ui/") => {
+                    Action::Native("独立规则保留原版 UI 布局".into())
                 }
-                "json" | "frontend" => {
-                    if relative.contains("/ui/") && !is_culling_layout(&relative) {
-                        Action::Native("使用原版 UI，排除自定义导航和计时器".into())
-                    } else {
-                        let bytes = fs::read(&p).map_err(|e| e.to_string())?;
-                        match parse(&bytes) {
-                            Ok(value) if relative.contains("/ui/") => {
-                                Action::Json(Shape::from_reference(&value))
-                            }
-                            Ok(value) => {
-                                // lowHD's new default biome is a simplified native biome,
-                                // not an external image or an omitted unresolved dependency.
-                                let source_path = if relative == "data/hd/env/biome/default.json" {
-                                    "data/hd/env/biome/act1_outdoors.json"
-                                } else {
-                                    relative.as_str()
-                                };
-                                match native(storage, source_path)? {
-                                    Some(bytes) => {
-                                        Action::JsonDelta(super::json_delta::Plan::derive(
-                                            source_path,
-                                            &bytes,
-                                            &value,
-                                        )?)
-                                    }
-                                    None => {
-                                        Action::Unresolved(format!("JSON 基线缺失：{source_path}"))
-                                    }
-                                }
-                            }
-                            Err(error) => {
-                                Action::Native(format!("参考定义无法解析，未导入: {error}"))
-                            }
-                        }
-                    }
-                }
-                _ => Action::Native("本版不复制非空第三方资源；此类型保持游戏原版".into()),
+                "json" | "frontend" => Action::NativeJson,
+                "texture" => Action::NativeTexture,
+                "sprite" => Action::NativeSprite,
+                _ => Action::Native("无独立处理规则，保留原版".into()),
             }
         };
         targets.push(Target {
@@ -358,7 +117,7 @@ fn scan(
 
 pub fn import(
     source: &Path,
-    game: &Path,
+    _game: &Path,
     profile: &str,
     destination: &Path,
 ) -> Result<usize, String> {
@@ -366,12 +125,10 @@ pub fn import(
         return Err("--source 请直接指定包含 modinfo.json 的 .mpq 目录".into());
     }
     let mut targets = Vec::new();
-    let alias = crate::casc_path::CascStoragePath::prepare(game)?;
-    let storage = casc_core::Storage::open(alias.as_path()).map_err(|e| e.to_string())?;
-    scan(source, source, &mut targets, &storage)?;
+    scan(source, source, &mut targets)?;
     targets.sort_by(|a, b| a.path.cmp(&b.path));
     let count = targets.len();
-    let recipe=Recipe{version:3,profile:profile.into(),provenance:"Per-target geometry, visible-region erase/fill, frame selection, native lowend substitutions and native-based JSON reference deltas derived from lowHD. No reference RGB buffers or game asset payloads included. https://www.nexusmods.com/diablo2resurrected/mods/1054".into(),targets};
+    let recipe=Recipe{version:4,profile:profile.into(),provenance:"Imported target boundary and blocking intent; no reference JSON parameters, image masks or geometry. Independent native-data processing rules.".into(),targets};
     let bytes = serde_json::to_vec(&recipe).map_err(|e| e.to_string())?;
     let file = fs::OpenOptions::new()
         .create_new(true)
@@ -394,23 +151,23 @@ pub fn decode(bytes: &[u8]) -> Result<Recipe, String> {
         return Err("配方解压后过大".into());
     }
     let recipe: Recipe = serde_json::from_slice(&decoded).map_err(|e| e.to_string())?;
-    if ![2, 3].contains(&recipe.version) {
-        return Err("需要逐资源策略配方 v2/v3；旧的统一缩放配方已停用".into());
+    if recipe.version != 4 {
+        return Err("需要独立规则范围配方 v4；历史参考内容复现配方已停用".into());
     }
     let mut paths = std::collections::HashSet::new();
     for target in &recipe.targets {
+        if !matches!(
+            target.action,
+            Action::Empty
+                | Action::NativeJson
+                | Action::NativeTexture
+                | Action::NativeSprite
+                | Action::Native(_)
+        ) {
+            return Err("独立规则配方不能包含参考参数、遮罩或复现指令".into());
+        }
         if !safe_path(&target.path) || !paths.insert(target.path.to_ascii_lowercase()) {
             return Err(format!("非法或重复配方路径: {}", target.path));
-        }
-        if let Action::JsonDelta(plan) = &target.action {
-            if !safe_path(&plan.source) {
-                return Err("非法 JSON 基线路径".into());
-            }
-        }
-        if let Action::ReferenceSprite(plan) = &target.action {
-            if !safe_path(&plan.source) {
-                return Err("非法 sprite 源路径".into());
-            }
         }
     }
     Ok(recipe)
@@ -419,23 +176,6 @@ pub fn decode(bytes: &[u8]) -> Result<Recipe, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn structural_rules_do_not_copy_mod_values_or_new_components() {
-        let reference = serde_json::json!({"name":"mod-only-name","entities":[{"name":"root","id":999,"components":[{"type":"Root","name":"root","state":""},{"type":"Custom","name":"injected"}]}]});
-        let mut native = serde_json::json!({"name":"original","dependencies":{"models":["x"]},"entities":[{"name":"mesh","id":1},{"name":"root","id":2,"components":[{"type":"Root","name":"root","state":"old"},{"type":"Model","name":"mesh"}]}]});
-        Shape::from_reference(&reference).apply(&mut native);
-        assert_eq!(native["name"], "original");
-        assert!(native.get("dependencies").is_none());
-        assert_eq!(native["entities"][0]["id"], 2);
-        assert_eq!(
-            native["entities"][0]["components"]
-                .as_array()
-                .unwrap()
-                .len(),
-            1
-        );
-        assert_eq!(native["entities"][0]["components"][0]["state"], "");
-    }
     #[test]
     fn unsafe_paths_are_rejected() {
         for p in [

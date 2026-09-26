@@ -1,8 +1,7 @@
 mod assets;
-mod blocks;
-mod json_delta;
+mod geometry;
+mod native_policy;
 pub mod recipe;
-mod reference;
 
 use crate::casc_path::CascStoragePath;
 use recipe::{Action, Recipe};
@@ -113,10 +112,12 @@ pub fn build(
     mut progress: impl FnMut(usize, usize, &str),
 ) -> Result<Report, String> {
     if ![0, 1, 2, 4, 8, 16, 32].contains(&request.texture_size) {
-        return Err("纹理尺寸使用 0（参考尺寸），或显式指定 1、2、4、8、16、32".into());
+        return Err("纹理尺寸使用 0（自动4），或显式指定 1、2、4、8、16、32".into());
     }
     if ![0, 1, 2, 4, 8].contains(&request.sprite_scale) {
-        return Err("sprite 使用 0（参考尺寸）、1（原版）或 2、4、8（参考处理后缩小）".into());
+        return Err(
+            "sprite 使用 0（原版 lowend 尺寸）、1（不覆盖）或 2、4、8（原版按帧缩小）".into(),
+        );
     }
     if request.asset_types.is_empty()
         || request
@@ -131,29 +132,6 @@ pub fn build(
     } else {
         builtin(&request.profile)?
     };
-    let unresolved: Vec<_> = recipe
-        .targets
-        .iter()
-        .filter_map(|t| {
-            if let Action::Unresolved(reason) = &t.action {
-                Some(format!("{}: {reason}", t.path))
-            } else {
-                None
-            }
-        })
-        .collect();
-    if !unresolved.is_empty() {
-        return Err(format!(
-            "参考策略尚有 {} 项未确认，未生成 MOD，也未恢复原版整图：\n{}",
-            unresolved.len(),
-            unresolved
-                .iter()
-                .take(12)
-                .cloned()
-                .collect::<Vec<_>>()
-                .join("\n")
-        ));
-    }
     let name = request
         .name
         .unwrap_or_else(|| format!("D2RLight-{}", recipe.profile));
@@ -219,6 +197,12 @@ pub fn build(
         details: Vec::new(),
         runtime_verified: false,
     };
+    let disabled: std::collections::HashSet<String> = recipe
+        .targets
+        .iter()
+        .filter(|t| matches!(t.action, Action::Empty))
+        .map(|t| native_policy::resource_path(&t.path))
+        .collect();
     let total = recipe.targets.len();
     for (index, target) in recipe.targets.iter().enumerate() {
         if index % 100 == 0 {
@@ -226,10 +210,10 @@ pub fn build(
         }
         let category = match target.action {
             Action::Empty => "empty",
-            Action::Json(_) | Action::JsonDelta(_) => "json",
-            Action::Texture | Action::ReferenceTexture(_) => "texture",
-            Action::Sprite | Action::ReferenceSprite(_) => "sprite",
-            Action::Native(_) | Action::Unresolved(_) => "native",
+            Action::NativeJson => "json",
+            Action::NativeTexture => "texture",
+            Action::NativeSprite => "sprite",
+            Action::Native(_) => "native",
         };
         if let Action::Native(reason) = &target.action {
             note(&mut report, &target.path, "kept_native", reason.clone());
@@ -243,7 +227,7 @@ pub fn build(
             *report.counts.entry("empty".into()).or_default() += 1;
             continue;
         }
-        if request.sprite_scale == 1 && matches!(target.action, Action::ReferenceSprite(_)) {
+        if request.sprite_scale == 1 && matches!(target.action, Action::NativeSprite) {
             note(
                 &mut report,
                 &target.path,
@@ -252,91 +236,90 @@ pub fn build(
             );
             continue;
         }
-        let source_path = if let Action::ReferenceSprite(plan) = &target.action {
-            plan.source.as_str()
-        } else if let Action::JsonDelta(plan) = &target.action {
-            plan.source.as_str()
-        } else {
-            target.path.as_str()
-        };
+        let source_path = target.path.as_str();
         let original = match read(&storage, source_path) {
             Ok(bytes) => bytes,
             Err(e) if missing(&e) => {
-                if matches!(
-                    target.action,
-                    Action::ReferenceSprite(_) | Action::ReferenceTexture(_) | Action::JsonDelta(_)
-                ) {
-                    return Err(format!(
-                        "配方对应的原版资源已缺失 {source_path}，请重新核对配方：{e}"
-                    ));
-                }
                 note(&mut report, &target.path, "missing_native", e.to_string());
                 continue;
             }
             Err(e) => return Err(format!("游戏资源读取失败 {}: {e}", target.path)),
         };
         let generated = match &target.action {
-            Action::Json(rule) => {
+            Action::NativeJson => {
                 let mut value = recipe::parse(&original)
                     .map_err(|e| format!("原版 JSON 无法解析 {}: {e}", target.path))?;
-                let before = value.clone();
-                rule.apply(&mut value);
-                if value == before {
+                let changes = native_policy::json(&mut value, &disabled);
+                if changes == 0 {
                     note(
                         &mut report,
                         &target.path,
                         "unchanged_native",
-                        "裁剪后定义未变化，不输出冗余覆盖".into(),
+                        "原版没有引用本方案屏蔽目标，不新增覆盖".into(),
                     );
                     continue;
                 }
-                // LoadScreenPanel has implicit render behaviour independent of
-                // its child list. Use an empty native panel shell for this cut.
-                if target.path.ends_with("/loadscreenpanelhd.json") {
-                    value = serde_json::json!({"type":"TitleScreenHDPanel","name":"LoadScreenPanel","fields":{"fitToParent":true}});
-                }
+                report.details.push(Outcome {
+                    path: target.path.clone(),
+                    action: "native_reference_pruning".into(),
+                    reason: format!(
+                        "独立规则裁剪 {changes} 项：Preset 移除场景实体及无引用依赖；其他定义仅清理已屏蔽资源；保留原版参数和 ID"
+                    ),
+                });
                 serde_json::to_vec(&value).map_err(|e| e.to_string())
             }
-            Action::JsonDelta(plan) => {
-                let value = plan.apply(&original)?;
-                if plan.source == target.path && value == recipe::parse(&original)? {
-                    note(
-                        &mut report,
-                        &target.path,
-                        "unchanged_native",
-                        "JSON 参考逻辑与原版一致，无需覆盖".into(),
-                    );
-                    continue;
+            Action::NativeTexture => assets::texture(
+                &original,
+                if request.texture_size == 0 {
+                    4
+                } else {
+                    request.texture_size
+                },
+            ),
+            Action::NativeSprite => {
+                let mut pixels = original.clone();
+                let mut source = target.path.clone();
+                if !target.path.ends_with(".lowend.sprite") {
+                    if let Some(stem) = target.path.strip_suffix(".sprite") {
+                        let candidate = format!("{stem}.lowend.sprite");
+                        match read(&storage, &candidate) {
+                            Ok(low) => {
+                                let high = geometry::Geometry::read(&pixels)?;
+                                if let Ok(g) = geometry::Geometry::read(&low) {
+                                    if g.frames == high.frames
+                                        && g.width <= high.width
+                                        && g.height <= high.height
+                                    {
+                                        pixels = low;
+                                        source = candidate;
+                                    }
+                                }
+                            }
+                            Err(e) if missing(&e) => {}
+                            Err(e) => return Err(format!("原版 lowend 读取失败 {candidate}: {e}")),
+                        }
+                    }
                 }
-                serde_json::to_vec(&value).map_err(|e| e.to_string())
-            }
-            Action::ReferenceTexture(plan) => {
-                reference::texture(&original, plan, request.texture_size)
-            }
-            Action::ReferenceSprite(plan) => {
-                let result = reference::sprite_scaled(&original, plan, request.sprite_scale);
-                if result.is_ok() {
-                    report.details.push(Outcome{path:target.path.clone(),action:plan.policy.clone(),reason:format!("源 {}；参考 {}×{}、{} 帧；擦除矩形 {}，黑色填充矩形 {}；去除参考文件无效尾部 {} 字节；颜色采用原版：{}",plan.source,plan.output.width,plan.output.height,plan.output.frames,plan.clear_rects.len(),plan.black_rects.len(),plan.discarded_reference_tail_bytes,plan.native_colors_retained)});
+                let output = native_policy::sprite(&pixels, request.sprite_scale);
+                if output.is_ok() {
                     report.details.push(Outcome {
                         path: target.path.clone(),
-                        action: "sprite_output".into(),
+                        action: "native_sprite_resize".into(),
                         reason: format!(
-                            "参考处理后缩小 {} 倍；输出 {} 字节",
-                            request.sprite_scale.max(1),
-                            result.as_ref().unwrap().len()
+                            "原版源 {source}；保留原版构图和帧数；缩小 {} 倍；不导入作者遮罩",
+                            request.sprite_scale.max(1)
                         ),
                     });
                 }
-                result
+                output
             }
-            Action::Texture | Action::Sprite => Err("旧统一缩放策略已停用".into()),
             _ => unreachable!(),
         };
         let generated = match generated {
             Ok(bytes) => bytes,
             Err(reason) => {
                 return Err(format!(
-                    "无法执行已确认的参考策略 {}: {reason}；未回退到完整原版图片",
+                    "无法执行独立生成规则 {}: {reason}；未回退到完整原版图片",
                     target.path
                 ));
             }
@@ -365,7 +348,7 @@ pub fn build(
         &staging.path.join("lightweight-manifest.json"),
         &serde_json::to_vec_pretty(&report).map_err(|e| e.to_string())?,
     )?;
-    let readme=format!("D2R 轻量资源测试版 {}\r\n启动参数：{}\r\n\r\n只从本机游戏生成，不包含 lowHD 成品素材。清单和结构选择参考 lowHD；不是完全相同的复制版。\r\n纹理尺寸选项 {}（0=参考），sprite 策略 {}（0=参考，1=用户选择原版，2/4/8=参考处理后缩小）。\r\n逐资源策略、颜色差异、缺失及无需覆盖的资源见 lightweight-manifest.json。未确认策略会阻止生成。\r\n本版不重写非空粒子、不修改 missiles.txt、不新增房间工具或声纹。\r\n正常音频加工功能仍可单独用于该成品。\r\n未启动游戏验证。源游戏、原 MOD 和已有同名产物不会覆盖。\r\n",report.profile,report.launch_arguments,request.texture_size,request.sprite_scale);
+    let readme=format!("D2R 轻量资源测试版 {}\r\n启动参数：{}\r\n\r\n只从本机游戏生成，不包含 lowHD 成品素材。目标范围参考 lowHD；处理规则依据游戏原版制定，不复现作者配置或遮罩。\r\n纹理尺寸选项 {}（0=自动4），sprite 策略 {}（0=原版 lowend 尺寸，1=不覆盖，2/4/8=原版按帧缩小）。\r\n逐资源策略、颜色差异、缺失及无需覆盖的资源见 lightweight-manifest.json。未确认策略会阻止生成。\r\n本版不重写非空粒子、不修改 missiles.txt、不新增房间工具或声纹。\r\n正常音频加工功能仍可单独用于该成品。\r\n未启动游戏验证。源游戏、原 MOD 和已有同名产物不会覆盖。\r\n",report.profile,report.launch_arguments,request.texture_size,request.sprite_scale);
     write(&staging.path.join("README.txt"), readme.as_bytes())?;
     if destination.exists() {
         return Err("输出名称在生成期间被占用，未覆盖；请重试".into());
@@ -379,7 +362,7 @@ pub fn build(
 pub fn cli(args: &[std::ffi::OsString], import: bool) -> Result<(), String> {
     use std::io::Write;
     if args.iter().any(|s| s == "--help" || s == "-h") {
-        println!("轻量资源生成（实验版）\n  lightweight --game <游戏目录> [--profile main|filler|min]\n    [--texture-size 0|1|2|4|8|16|32] 默认4；0=参考尺寸\n    [--sprite-scale 0|1|2|4|8] 默认2=参考处理后缩小2倍；0=参考尺寸；1=原版\n    [--output <输出父目录>] [--name <MOD名称>]\n    [--asset-types empty,json,texture,sprite] 默认全部\n    [--recipe <自定义.json.gz>] [--json|--events]\n\n开发用清单导入（不复制成品素材）：\n  lightweight-import --source <参考.mpq目录> --game <游戏目录> --profile main --output <新配方.json.gz>\n\n运行生成只需要本机游戏与程序内置配方，无需原 lowHD 包。\n未确认的策略阻止生成；不重写粒子内部结构，不修改原游戏或启用 MOD。");
+        println!("轻量资源生成（实验版）\n  lightweight --game <游戏目录> [--profile main|filler|min]\n    [--texture-size 0|1|2|4|8|16|32] 默认4；0=自动4\n    [--sprite-scale 0|1|2|4|8] 默认2=原版按帧缩小2倍；0=原版 lowend 尺寸；1=不覆盖\n    [--output <输出父目录>] [--name <MOD名称>]\n    [--asset-types empty,json,texture,sprite] 默认全部\n    [--recipe <自定义.json.gz>] [--json|--events]\n\n开发用范围导入（仅路径、空覆盖意图和资源类型，不提取内容）：\n  lightweight-import --source <参考.mpq目录> --game <游戏目录> --profile main --output <新配方.json.gz>\n\n运行生成只需要本机游戏与程序内置配方，无需原 lowHD 包。\n未确认的策略阻止生成；不重写粒子内部结构，不修改原游戏或启用 MOD。");
         return Ok(());
     }
     let mut options = BTreeMap::new();
@@ -444,7 +427,7 @@ pub fn cli(args: &[std::ffi::OsString], import: bool) -> Result<(), String> {
         let game = PathBuf::from(
             options
                 .get("--game")
-                .ok_or("参考策略导入必须提供 --game 以比对原版")?,
+                .ok_or("范围导入需要提供 --game 作为游戏目录标识")?,
         );
         let count = recipe::import(&source, &game, &profile, &output)?;
         println!(
@@ -526,24 +509,21 @@ mod tests {
         for name in ["min", "filler", "main"] {
             let r = builtin(name).unwrap();
             assert_eq!(r.profile, name);
-            assert_eq!(r.version, 3);
+            assert_eq!(r.version, 4);
             assert!(r
                 .targets
                 .iter()
-                .any(|t| matches!(t.action, Action::JsonDelta(_))));
-            assert!(!r
-                .targets
-                .iter()
-                .any(|t| matches!(t.action, Action::Unresolved(_))));
+                .any(|t| matches!(t.action, Action::NativeJson)));
+
             assert!(r.targets.len() > 10000);
             assert!(r
                 .targets
                 .iter()
-                .any(|t| matches!(t.action, Action::ReferenceSprite(_))));
+                .any(|t| matches!(t.action, Action::NativeSprite)));
             assert!(r
                 .targets
                 .iter()
-                .any(|t| matches!(t.action, Action::Json(_))));
+                .any(|t| matches!(t.action, Action::NativeJson)));
             assert!(!r.targets.iter().any(|t| t.path == "modinfo.json"));
         }
     }

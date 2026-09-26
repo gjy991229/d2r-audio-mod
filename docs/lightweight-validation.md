@@ -1,3 +1,23 @@
+# beta5 independent-rule validation
+
+See [independent rules](lightweight-independent-rules.md) for the exact processing boundary. Reference JSON deltas, parameters, image masks and per-file geometry have been removed from built-ins and their legacy reconstruction code retired. Historical target selection/blocking intent remains explicitly attributed, not claimed as independently discovered.
+
+| Profile | Resource MiB | JSON | Textures | Sprites |
+|---|---:|---:|---:|---:|
+| main | 11.46 | 2322 | 4508 | 20 |
+| filler | 7.69 | 150 | 1322 | 19 |
+| min | 15.09 | 10 | 0 | 64 |
+
+44 checks passed; four opt-in data tests ignored and the same three known room-tool fixture failures excluded. Retired reference-reconstruction tests were removed with their implementation, rather than reporting their results as tests of the new rules.
+
+Independent artifact audit verified exact target-set and empty-target-set equality with beta4 scopes, with no expansion. Every generated nonempty JSON was parsed and its scalar multiset compared against native CASC data: no new nonempty string, ID, boolean or numeric value. No embedded recipe contains JSON deltas, masks, dimensions or frame selection. All 5,830 generated nonempty textures passed dimension/mip range checks; all 103 nonempty sprites passed geometry/payload checks.
+
+Release EXE: 2,180,608 bytes. It only needs installed game data and the embedded scope list. Main/filler each omit the missing default biome; no new redirect to that path is created. Native UI composition/animation differs from beta4 because authored cutouts/frame choices are not reproduced. Prior invalid third-party texture headers are excluded, not repaired by guessing.
+
+Game rendering, interaction and memory savings remain unverified. Test outputs are `C:\Diablo II Resurrected\mods\D2RLight-{main,filler,min}-b5`. Old outputs and the stable D2RHub sidecar remain unchanged.
+
+---
+
 # beta4 JSON consistency validation
 
 Native-based JSON deltas now preserve reference paths, nonzero parameters, dependency lists and structure. Default biome is derived from the native act1_outdoors template. Texture maximum side 4 and post-reference sprite divisor 2 are unchanged.

@@ -1,24 +1,14 @@
-# Built-in lightweight recipes
+# Independent native-data processing scopes (beta.5)
 
-`min.json.gz`, `filler.json.gz`, and `main.json.gz` contain paths, action types,
-JSON scalar/array/structural deltas (including reference parameter values), UI
-selection rules, native fingerprints, dimensions, frame selections,
-and transparent/black rectangle operations. They contain no sprite/texture/audio
-payloads or complete replacement game definitions. Source target selection:
-lowHD by celloboy126 / evilbelgian, from the user's local reference packages.
+The compressed files contain only target paths, abstract actions and exclusion
+reasons. Historical target boundaries and empty-override intent originate from
+the local lowHD reference packages, retained to avoid scope expansion. These
+boundaries are NOT claimed as independently discovered.
 
-Generation reads the corresponding original assets from the user's installed
-D2R game. The reference lowHD directory is not needed at runtime. Rules are
-intentionally not advertised as an independent recreation of the source's
-complete behaviour or as a grant of rights to its contents.
+No reference JSON values, IDs, scalar deltas, sprite masks, dimensions or frame
+matches remain. Processing is defined in src/lightweight/native_policy.rs and
+assets.rs using installed game assets only. The legacy reference-reconstruction
+recipe formats are rejected. Scope import reads file metadata and BOM markers;
+it no longer imports JSON or image contents.
 
-To rebuild a recipe locally, use a fresh output filename:
-
-```powershell
-d2r-audio-mod lightweight-import --source "C:\path\lowHDmain.mpq" --game "C:\path\Diablo II Resurrected" --profile main --output main-new.json.gz
-```
-
-Review the imported recipe before replacing a bundled file. This developer
-command never copies reference asset payloads and refuses to overwrite its output.
-See [format notes](../../docs/lightweight-formats.md) for supported operations
-and limitations.
+See docs/lightweight-independent-rules.md for exact rules and limitations.

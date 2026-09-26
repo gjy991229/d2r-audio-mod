@@ -1,28 +1,30 @@
 # D2R Audio Mod
 
-当前分支预览版 **v1.4.0-beta.8**（稳定版仍为 v1.3.4）。这是独立、轻量的 D2R Mod 生成/加工工具，包含原有音频遥测加工和实验性轻量资源生成。它只读取游戏资源或源 Mod，输出一个新 Mod；不读取 D2RHub 配置、账号、数据库，也不会启用 Mod。
+当前分支预览版 **v1.4.0-beta.9**（稳定版仍为 v1.3.4）。这是独立、轻量的 D2R Mod 生成/加工工具，包含原有音频遥测加工和实验性轻量资源生成。它只读取游戏资源或源 Mod，输出一个新 Mod；不读取 D2RHub 配置、账号、数据库，也不会启用 Mod。
 
-## 轻量资源生成预览
+## lowHD 原包模板生成
 
-双击程序后，可在顶部选择“轻量资源：main / filler / min”，指定本机游戏目录、纹理尺寸与原版 UI，再生成一个独立 Mod。原有“音频加工”模式保持不变。轻量化与音频加工是两个独立步骤：先生成轻量 Mod，再按需使用原有加工功能。
+本分支现按用户指定的本机 lowHD 原包复制生成，不再套用之前的独立精简、
+缩图、无模型或粒子关闭规则。GUI 可选 main / filler / min，游戏目录的
+mods 下必须有对应 lowHDmain / lowHDfiller / lowHDmin 原包。
 
 ```powershell
-d2r-audio-mod lightweight --game "C:\Diablo II Resurrected" --profile main --name D2RLight-main
-# 保持非空 UI 图片原版，或单独比较资源类型
-d2r-audio-mod lightweight --game "C:\Diablo II Resurrected" --profile filler --sprite-scale 1
-d2r-audio-mod lightweight --game "C:\Diablo II Resurrected" --profile main --asset-types json,texture
+d2r-audio-mod lightweight --game "C:\Diablo II Resurrected" --profile main
+d2r-audio-mod lightweight --game "C:\Diablo II Resurrected" --profile filler
+d2r-audio-mod lightweight --game "C:\Diablo II Resurrected" --profile min
+# 也可显式选择包含 modinfo.json 的模板目录：
+d2r-audio-mod lightweight --game "C:\Diablo II Resurrected" --profile min --source "C:\templates\lowHDmin.mpq"
 ```
 
-- 历史 lowHD 目标路径和空覆盖意图仅作为范围上限，保留来源说明；内置配方已移除作者的参数差量、像素遮罩、尺寸和帧选择。
-- JSON 按原版结构独立处理：HD Preset 裁掉场景实体、地形和无引用依赖；main/filler 使用共享简化 biome，地形材质换为四张原版生成的 1×1 小图。min 的范围内角色定义变为无模型实体，断开 HD 模型、材质和动作链；main/filler 复用同部位轻型装备模型并保留动作。原版 UI 布局不改写。
-- 普通纹理默认最大边 4；VFX 使用原版 mip 分类降清：轮廓最大边 64，长条渐变最大边 512。背包等普通 UI 保持原版尺寸；min 地图图集使用原版 lowend，filler 血球使用原版第0帧且单帧尺寸不变。
-- `--effects off` 可关闭范围内粒子：读取既有 JSON 范围的原版粒子依赖，为这些粒子增加空覆盖；不修改伤害、投射物表或音效。不是全游戏无特效保证，额外路径逐条记录在清单。GUI 默认保留既有粒子策略。
-- 缺失路径和未定义规则的资源明确报告并跳过；格式转换失败则停止生成。非空粒子、旧格式资源、表格修改仍未实现。
-- 具体边界和操作见 [独立规则说明](docs/lightweight-independent-rules.md)。这不是 lowHD 的等效复刻，也不宣称历史目标清单独立发现。
-- 默认启动参数只有 `-mod 名称`，不需要 `-txt`。新包不自带声纹识别、房间工具或自动退出功能。
-- 输出使用事务目录；原游戏与原 Mod 不改写，同名目录不覆盖。首次生成需要读取较多本机游戏资源。生成成功不代表已验证游戏内画面、操作或内存收益。
-
-更多实现与来源说明：[轻量资源格式说明](docs/lightweight-formats.md)、[内置配方](resources/lightweight/README.md)。
+- 默认生成 D2RLowHD-main / D2RLowHD-filler / D2RLowHD-min；同名目录不覆盖。
+- 文件集和内容逐字节核验；唯一改动是 modinfo.json 的 name。原作者注释、
+  savepath、数据版本标记以及原包中不规范/空白的资源都保留。
+- main 原包包含 missiles.txt，启动参数带 -txt 以启用原表格编译；不启动游戏。
+- **这依赖本机 lowHD 原包，不是只靠游戏 CASC 独立重建。** 原包素材和许可
+  不因复制而变成本项目原创或受本项目 MIT 许可重新授权。
+- 旧的 --texture-size、--sprite-scale、--effects、--recipe、--asset-types 和
+  lightweight-import 参数停用，避免生成内容再偏离模板。
+- 原有音频加工独立保留，稳定 D2RHub sidecar 不自动替换。
 
 本项目已按 [MIT License](LICENSE) 开源。Windows 独立工具可从 [Releases](https://github.com/gjy991229/d2r-audio-mod/releases) 下载；[D2RHub v0.9.96](https://github.com/gjy991229/D2RHub/releases) 已内置生成器，无需另行安装。完整音频格式见 [protocol/](protocol/)，共享实现位于 [d2r-audio-protocol](crates/d2r-audio-protocol/)。
 

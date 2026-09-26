@@ -255,9 +255,8 @@ unsafe fn set_busy(state: &AppState, busy: bool) {
     ] {
         EnableWindow(control, enabled);
     }
-    let light = SendMessageW(state.mode, CB_GETCURSEL, 0, 0) > 0;
-    EnableWindow(state.texture, if !busy && light { 1 } else { 0 });
-    EnableWindow(state.sprite, if !busy && light { 1 } else { 0 });
+    EnableWindow(state.texture, 0);
+    EnableWindow(state.sprite, 0);
     if busy {
         EnableWindow(state.open_button, 0);
     }
@@ -346,13 +345,15 @@ unsafe fn update_mode(state: &mut AppState) {
             "源 MOD（可不选）"
         },
     );
-    EnableWindow(state.texture, if light { 1 } else { 0 });
-    EnableWindow(state.sprite, if light { 1 } else { 0 });
+    EnableWindow(state.texture, 0);
+    EnableWindow(state.sprite, 0);
     let current = control_text(state.name_edit);
-    if current == DEFAULT_MOD_NAME || current.starts_with("D2RLight-") {
+    if current == DEFAULT_MOD_NAME
+        || (current.starts_with("D2RLight-") || current.starts_with("D2RLowHD-"))
+    {
         let name = if light {
             format!(
-                "D2RLight-{}",
+                "D2RLowHD-{}",
                 ["main", "filler", "min"][(index - 1) as usize]
             )
         } else {
@@ -368,7 +369,7 @@ unsafe fn update_mode(state: &mut AppState) {
         ) {
             set_text(state.source_edit, &game.to_string_lossy());
         }
-        set_text(state.status,"从本机游戏生成轻量资源。默认纹理最大边4，背包等UI保持原版尺寸；地图/血球单独优化，VFX分类降清。生成后请在游戏中确认效果。");
+        set_text(state.status,"从游戏 mods 目录的 lowHDmain / lowHDfiller / lowHDmin 原包复制生成，仅改名称并逐文件核验。需要本机原包，不再精简或缩图。");
     } else {
         if is_game_root(Path::new(&source)) {
             set_text(state.source_edit, "");
@@ -396,9 +397,7 @@ unsafe fn start_lightweight_build(window: HWND, state: &mut AppState) {
         return;
     }
     let mode = SendMessageW(state.mode, CB_GETCURSEL, 0, 0);
-    let texture = SendMessageW(state.texture, CB_GETCURSEL, 0, 0);
-    let sprite = SendMessageW(state.sprite, CB_GETCURSEL, 0, 0);
-    if !(1..=3).contains(&mode) || !(0..7).contains(&texture) || sprite != 0 {
+    if !(1..=3).contains(&mode) {
         return;
     }
     let request = lightweight::Request {
@@ -406,18 +405,11 @@ unsafe fn start_lightweight_build(window: HWND, state: &mut AppState) {
         output: Some(PathBuf::from(output)),
         name: Some(name),
         profile: ["main", "filler", "min"][(mode - 1) as usize].into(),
-        texture_size: [0, 1, 2, 4, 8, 16, 32][texture as usize],
-        sprite_scale: 1,
-        disable_scoped_particles: false,
-        recipe_file: None,
-        asset_types: ["empty", "json", "texture", "sprite"]
-            .into_iter()
-            .map(str::to_string)
-            .collect(),
+        source: None,
     };
     state.last_output = None;
     set_busy(state, true);
-    set_text(state.status, "正在从本机游戏生成轻量资源…");
+    set_text(state.status, "正在按本机 lowHD 原包生成并验证…");
     let window_value = window as isize;
     std::thread::spawn(move || {
         let result = lightweight::build(request, |current, total, path| {
@@ -463,7 +455,7 @@ unsafe fn finish_build(state: &mut AppState, result: BuildResult) {
                 BuildOutput::Audio(report) => (report.mod_directory, report.launch_arguments,
                     "已包含：全区域、全部支持物品、主界面识别。源 MOD 没有被修改。".to_string()),
                 BuildOutput::Lightweight(report) => (report.mod_directory, report.launch_arguments,
-                    format!("轻量资源已生成：{:?}。\r\n逐资源策略、颜色差异和缺失项见目录内清单；未确认策略会阻止生成。尚未验证游戏内效果。", report.counts)),
+                    format!("轻量资源已生成：{:?}。\r\n除 modinfo 名称外全部与原包一致，原作者注释保留。尚未验证游戏内效果。", report.counts)),
             };
             state.last_output = Some(PathBuf::from(&directory));
             EnableWindow(state.open_button, 1);
@@ -649,9 +641,9 @@ unsafe fn create_app_window() -> Result<HWND, String> {
     )?;
     for text in [
         "音频加工（原功能）",
-        "轻量资源：main",
-        "轻量资源：filler",
-        "轻量资源：min",
+        "lowHD 原包：main",
+        "lowHD 原包：filler",
+        "lowHD 原包：min",
     ] {
         let text = wide(text);
         SendMessageW(mode, CB_ADDSTRING, 0, text.as_ptr() as isize);
@@ -670,19 +662,11 @@ unsafe fn create_app_window() -> Result<HWND, String> {
         ID_TEXTURE,
         instance,
     )?;
-    for text in [
-        "纹理：自动4",
-        "纹理最大边：1",
-        "纹理最大边：2",
-        "纹理最大边：4",
-        "纹理最大边：8",
-        "纹理最大边：16",
-        "纹理最大边：32",
-    ] {
+    for text in ["纹理：原包不改"] {
         let text = wide(text);
         SendMessageW(texture, CB_ADDSTRING, 0, text.as_ptr() as isize);
     }
-    SendMessageW(texture, CB_SETCURSEL, 3, 0);
+    SendMessageW(texture, CB_SETCURSEL, 0, 0);
     EnableWindow(texture, 0);
     let sprite = create_control(
         "COMBOBOX",
@@ -697,7 +681,7 @@ unsafe fn create_app_window() -> Result<HWND, String> {
         ID_SPRITE,
         instance,
     )?;
-    for text in ["普通UI：保持原版尺寸"] {
+    for text in ["UI：原包不改"] {
         let text = wide(text);
         SendMessageW(sprite, CB_ADDSTRING, 0, text.as_ptr() as isize);
     }

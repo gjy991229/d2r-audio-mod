@@ -1,3 +1,10 @@
+# Retired beta5–beta8 scope data
+
+These historical gzip scopes are not compiled into or read by beta9. Current
+lightweight mode copies local lowHD templates and verifies bytes. See README.md.
+
+---
+
 # Independent native-data processing scopes (beta.5)
 
 The compressed files contain only target paths, abstract actions and exclusion

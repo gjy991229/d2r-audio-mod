@@ -1,3 +1,42 @@
+# beta9 exact-template generation validation
+
+Current lightweight mode copies the installed original lowHD package. It requires
+that local package (or --source); it does not reconstruct it from game CASC or
+ship reference assets embedded in the executable. Retired reconstruction and
+optimization modules/scopes are not linked or used by this mode.
+
+| Profile | Verified files | Copied bytes | Launch arguments |
+|---|---:|---:|---|
+| main | 13044 | 62897087 | `-mod D2RLowHD-main -txt` |
+| filler | 21396 | 80672935 | `-mod D2RLowHD-filler` |
+| min | 21270 | 78848317 | `-mod D2RLowHD-min` |
+
+Generator performs a second full file-set and byte comparison before publishing.
+All files are identical to the original template except the quoted name value in
+modinfo.json. Source author comments, savepath, empty/BOM files, malformed resource
+bytes and the original dataversionbuild marker are preserved. Independent checks
+on real templates confirmed the exact name-only edit, attribution, version marker
+and Amazon character document. Original templates were not modified.
+
+35 active regression tests passed, four opt-in data tests ignored and the same
+three known room-tool fixture failures excluded. Current template tests cover
+empty/binary/JSON5/version files, attribution-preserving renaming, and rejecting
+output inside a template without modifying the template. Legacy optimization
+checks are no longer tests of the current build. The game was not launched and
+memory parity has not been measured; template-byte parity is verified.
+
+Cleanup: 17 prior D2RLight-* test directories were verified by path and producer
+manifest and sent to Windows Recycle Bin. Original lowHDmain/lowHDfiller/lowHDmin
+and unrelated mods were preserved. A permanent recursive deletion command was
+blocked; the safer recoverable recycle operation was accepted and completed.
+The deletion inventory is stored in target/recycled-test-mods.json.
+
+New outputs are D2RLowHD-main, D2RLowHD-filler and D2RLowHD-min. Main -txt follows
+the source package's missiles.txt compilation instruction. No old independent
+render, scaling, particle suppression or root-only actor rules are applied.
+
+---
+
 # beta8 targeted memory optimization validation
 
 Min now produces 16 native-root-only UnitDefinition documents, with no model,

@@ -1,3 +1,10 @@
+# Retired independent rules
+
+As of beta9 these rules are not applied. Current mode copies local lowHD templates
+with name-only modinfo changes. This document is historical context only.
+
+---
+
 # beta8 定向精简
 
 针对同场景内存反馈，补充此前遗漏的 JSON 层模型裁剪；不新增名单外对象。

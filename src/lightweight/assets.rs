@@ -29,7 +29,7 @@ fn pixel_size(w: usize, h: usize) -> Result<usize, String> {
 
 /// Area averaging, alpha-weighted to avoid dark transparent borders. Frames
 /// are resized independently: adjacent animation frames never bleed together.
-fn shrink_rgba(
+pub(super) fn shrink_rgba(
     src: &[u8],
     w: usize,
     h: usize,
@@ -37,7 +37,7 @@ fn shrink_rgba(
     nh: usize,
     alpha_weighted: bool,
 ) -> Result<Vec<u8>, String> {
-    if src.len() != pixel_size(w, h)? || nw > w || nh > h {
+    if src.len() != pixel_size(w, h)? {
         return Err("invalid RGBA dimensions".into());
     }
     let mut out = vec![0; pixel_size(nw, nh)?];
@@ -77,7 +77,7 @@ fn shrink_rgba(
 }
 
 pub fn texture(bytes: &[u8], max_side: usize) -> Result<Vec<u8>, String> {
-    if ![1, 2, 4, 8, 16, 32].contains(&max_side) {
+    if max_side == 0 || max_side > 16384 || !max_side.is_power_of_two() {
         return Err("unsupported target texture size".into());
     }
     if bytes.get(..4) != Some(&[0x3c, 0x44, 0x45, 0x28]) {
@@ -176,6 +176,7 @@ pub fn texture(bytes: &[u8], max_side: usize) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
+#[cfg(test)]
 pub fn sprite(bytes: &[u8], divisor: usize) -> Result<Vec<u8>, String> {
     if ![1, 2, 4, 8].contains(&divisor) {
         return Err("unsupported sprite divisor".into());

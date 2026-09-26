@@ -1,7 +1,8 @@
 # Built-in lightweight recipes
 
 `min.json.gz`, `filler.json.gz`, and `main.json.gz` contain paths, action types,
-and structural JSON selection rules. They contain no sprite/texture/audio
+structural JSON selection rules, native fingerprints, dimensions, frame selections,
+and transparent/black rectangle operations. They contain no sprite/texture/audio
 payloads or complete replacement game definitions. Source target selection:
 lowHD by celloboy126 / evilbelgian, from the user's local reference packages.
 
@@ -13,7 +14,7 @@ complete behaviour or as a grant of rights to its contents.
 To rebuild a recipe locally, use a fresh output filename:
 
 ```powershell
-d2r-audio-mod lightweight-import --source "C:\path\lowHDmain.mpq" --profile main --output main-new.json.gz
+d2r-audio-mod lightweight-import --source "C:\path\lowHDmain.mpq" --game "C:\path\Diablo II Resurrected" --profile main --output main-new.json.gz
 ```
 
 Review the imported recipe before replacing a bundled file. This developer

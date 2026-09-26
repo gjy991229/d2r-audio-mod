@@ -368,7 +368,7 @@ unsafe fn update_mode(state: &mut AppState) {
         ) {
             set_text(state.source_edit, &game.to_string_lossy());
         }
-        set_text(state.status,"从本机游戏生成轻量资源。纹理优先选用原版小 mip；UI 图片缩小为实验功能，可选原版。生成后请在游戏中确认效果。");
+        set_text(state.status,"从本机游戏生成轻量资源。默认使用参考的纹理尺寸、透明裁剪、帧选择和原版 lowend 替换；不再统一缩放 UI 图片。生成后请在游戏中确认效果。");
     } else {
         if is_game_root(Path::new(&source)) {
             set_text(state.source_edit, "");
@@ -398,7 +398,7 @@ unsafe fn start_lightweight_build(window: HWND, state: &mut AppState) {
     let mode = SendMessageW(state.mode, CB_GETCURSEL, 0, 0);
     let texture = SendMessageW(state.texture, CB_GETCURSEL, 0, 0);
     let sprite = SendMessageW(state.sprite, CB_GETCURSEL, 0, 0);
-    if !(1..=3).contains(&mode) || !(0..6).contains(&texture) || !(0..4).contains(&sprite) {
+    if !(1..=3).contains(&mode) || !(0..7).contains(&texture) || !(0..2).contains(&sprite) {
         return;
     }
     let request = lightweight::Request {
@@ -406,8 +406,8 @@ unsafe fn start_lightweight_build(window: HWND, state: &mut AppState) {
         output: Some(PathBuf::from(output)),
         name: Some(name),
         profile: ["main", "filler", "min"][(mode - 1) as usize].into(),
-        texture_size: [1, 2, 4, 8, 16, 32][texture as usize],
-        sprite_scale: [1, 2, 4, 8][sprite as usize],
+        texture_size: [0, 1, 2, 4, 8, 16, 32][texture as usize],
+        sprite_scale: [0, 1][sprite as usize],
         recipe_file: None,
         asset_types: ["empty", "json", "texture", "sprite"]
             .into_iter()
@@ -462,7 +462,7 @@ unsafe fn finish_build(state: &mut AppState, result: BuildResult) {
                 BuildOutput::Audio(report) => (report.mod_directory, report.launch_arguments,
                     "已包含：全区域、全部支持物品、主界面识别。源 MOD 没有被修改。".to_string()),
                 BuildOutput::Lightweight(report) => (report.mod_directory, report.launch_arguments,
-                    format!("轻量资源已生成：{:?}。\r\n缺失或不支持的资源保持原版，详情见目录内清单。尚未验证游戏内效果。", report.counts)),
+                    format!("轻量资源已生成：{:?}。\r\n逐资源策略、颜色差异和缺失项见目录内清单；未确认策略会阻止生成。尚未验证游戏内效果。", report.counts)),
             };
             state.last_output = Some(PathBuf::from(&directory));
             EnableWindow(state.open_button, 1);
@@ -670,6 +670,7 @@ unsafe fn create_app_window() -> Result<HWND, String> {
         instance,
     )?;
     for text in [
+        "纹理：按参考尺寸",
         "纹理最大边：1",
         "纹理最大边：2",
         "纹理最大边：4",
@@ -680,7 +681,7 @@ unsafe fn create_app_window() -> Result<HWND, String> {
         let text = wide(text);
         SendMessageW(texture, CB_ADDSTRING, 0, text.as_ptr() as isize);
     }
-    SendMessageW(texture, CB_SETCURSEL, 2, 0);
+    SendMessageW(texture, CB_SETCURSEL, 0, 0);
     EnableWindow(texture, 0);
     let sprite = create_control(
         "COMBOBOX",
@@ -695,16 +696,11 @@ unsafe fn create_app_window() -> Result<HWND, String> {
         ID_SPRITE,
         instance,
     )?;
-    for text in [
-        "UI图片：原版",
-        "UI图片：缩小2倍",
-        "UI图片：缩小4倍",
-        "UI图片：缩小8倍",
-    ] {
+    for text in ["UI图片：按参考策略", "UI图片：选用原版"] {
         let text = wide(text);
         SendMessageW(sprite, CB_ADDSTRING, 0, text.as_ptr() as isize);
     }
-    SendMessageW(sprite, CB_SETCURSEL, 1, 0);
+    SendMessageW(sprite, CB_SETCURSEL, 0, 0);
     EnableWindow(sprite, 0);
     let source_label = create_control(
         "STATIC",

@@ -1,9 +1,9 @@
 mod audio;
 mod casc_path;
 mod generator;
-mod lightweight;
 #[cfg(target_os = "windows")]
 mod gui;
+mod lightweight;
 
 use audio::BatchRequest;
 use d2r_audio_protocol::catalog::AREA_CATALOG_FILE_NAME;

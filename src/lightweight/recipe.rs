@@ -1,3 +1,4 @@
+use super::reference::{self, SpritePlan, TexturePlan};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
@@ -154,6 +155,9 @@ pub enum Action {
     Json(Shape),
     Texture,
     Sprite,
+    ReferenceSprite(SpritePlan),
+    ReferenceTexture(TexturePlan),
+    Unresolved(String),
     Native(String),
 }
 
@@ -219,7 +223,24 @@ fn is_culling_layout(path: &str) -> bool {
     .contains(&name)
 }
 
-fn scan(root: &Path, dir: &Path, targets: &mut Vec<Target>) -> Result<(), String> {
+fn native(storage: &casc_core::Storage, path: &str) -> Result<Option<Vec<u8>>, String> {
+    match storage.read(&format!("data:{}", path.replace('/', "\\"))) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(casc_core::CascError::Backend {
+            op: "CascOpenFile",
+            code: 2,
+        })
+        | Err(casc_core::CascError::NotFound(_)) => Ok(None),
+        Err(e) => Err(format!("{path}: {e}")),
+    }
+}
+
+fn scan(
+    root: &Path,
+    dir: &Path,
+    targets: &mut Vec<Target>,
+    storage: &casc_core::Storage,
+) -> Result<(), String> {
     for entry in fs::read_dir(dir).map_err(|e| e.to_string())? {
         let entry = entry.map_err(|e| e.to_string())?;
         if entry.file_type().map_err(|e| e.to_string())?.is_symlink() {
@@ -227,7 +248,7 @@ fn scan(root: &Path, dir: &Path, targets: &mut Vec<Target>) -> Result<(), String
         }
         let p = entry.path();
         if p.is_dir() {
-            scan(root, &p, targets)?;
+            scan(root, &p, targets, storage)?;
             continue;
         }
         let relative = p
@@ -247,12 +268,47 @@ fn scan(root: &Path, dir: &Path, targets: &mut Vec<Target>) -> Result<(), String
             .and_then(|s| s.to_str())
             .unwrap_or("")
             .to_ascii_lowercase();
-        let action = if len == 0 {
+        let sentinel = len <= 3
+            && matches!(
+                fs::read(&p).map_err(|e| e.to_string())?.as_slice(),
+                b"\xff\xfe" | b"\xfe\xff" | b"\xef\xbb\xbf"
+            );
+        let action = if len == 0 || sentinel {
             Action::Empty
         } else {
             match ext.as_str() {
-                "texture" => Action::Texture,
-                "sprite" => Action::Sprite,
+                "texture" | "sprite" => {
+                    let reference = fs::read(&p).map_err(|e| e.to_string())?;
+                    if let Some(original) = native(storage, &relative)? {
+                        if original == reference {
+                            Action::Native("参考文件与当前原版一致，不新增覆盖".into())
+                        } else if ext == "texture" {
+                            match reference::derive_texture(&original,&reference) {
+                                Ok(plan)=>Action::ReferenceTexture(plan),
+                                Err(e) if reference.get(8..16)==Some(&[0x10,0x20,0x20,0x20,0x10,0x20,0x20,0x20]) => Action::Native(format!("参考纹理头损坏（尺寸字段被空格污染），无法确认替换效果，明确跳过：{e}")),
+                                Err(e)=>Action::Unresolved(format!("纹理策略未确认: {e}")),
+                            }
+                        } else {
+                            let lowend_path = relative
+                                .strip_suffix(".sprite")
+                                .filter(|_| !relative.ends_with(".lowend.sprite"))
+                                .map(|p| format!("{p}.lowend.sprite"));
+                            let lowend = lowend_path
+                                .as_ref()
+                                .map(|p| native(storage, p))
+                                .transpose()?
+                                .flatten();
+                            let lowend = lowend_path.as_deref().zip(lowend.as_deref());
+                            match reference::derive_sprite(&relative, &original, &reference, lowend)
+                            {
+                                Ok(plan) => Action::ReferenceSprite(plan),
+                                Err(e) => Action::Unresolved(format!("sprite 策略未确认: {e}")),
+                            }
+                        }
+                    } else {
+                        Action::Native("参考目标在当前游戏中不存在，未生成外来素材".into())
+                    }
+                }
                 "json" | "frontend" => {
                     if relative.contains("/ui/") && !is_culling_layout(&relative) {
                         Action::Native("使用原版 UI，排除自定义导航和计时器".into())
@@ -277,15 +333,22 @@ fn scan(root: &Path, dir: &Path, targets: &mut Vec<Target>) -> Result<(), String
     Ok(())
 }
 
-pub fn import(source: &Path, profile: &str, destination: &Path) -> Result<usize, String> {
+pub fn import(
+    source: &Path,
+    game: &Path,
+    profile: &str,
+    destination: &Path,
+) -> Result<usize, String> {
     if !source.join("modinfo.json").is_file() {
         return Err("--source 请直接指定包含 modinfo.json 的 .mpq 目录".into());
     }
     let mut targets = Vec::new();
-    scan(source, source, &mut targets)?;
+    let alias = crate::casc_path::CascStoragePath::prepare(game)?;
+    let storage = casc_core::Storage::open(alias.as_path()).map_err(|e| e.to_string())?;
+    scan(source, source, &mut targets, &storage)?;
     targets.sort_by(|a, b| a.path.cmp(&b.path));
     let count = targets.len();
-    let recipe=Recipe{version:1,profile:profile.into(),provenance:"Target paths and structural culling selections derived from lowHD (celloboy126 / evilbelgian); no mod or game asset payloads included. https://www.nexusmods.com/diablo2resurrected/mods/1054".into(),targets};
+    let recipe=Recipe{version:2,profile:profile.into(),provenance:"Per-target geometry, visible-region erase/fill, frame selection, native lowend substitutions and JSON culling derived from lowHD. No reference RGB buffers or game asset payloads included. https://www.nexusmods.com/diablo2resurrected/mods/1054".into(),targets};
     let bytes = serde_json::to_vec(&recipe).map_err(|e| e.to_string())?;
     let file = fs::OpenOptions::new()
         .create_new(true)
@@ -308,13 +371,18 @@ pub fn decode(bytes: &[u8]) -> Result<Recipe, String> {
         return Err("配方解压后过大".into());
     }
     let recipe: Recipe = serde_json::from_slice(&decoded).map_err(|e| e.to_string())?;
-    if recipe.version != 1 {
-        return Err("不支持的轻量化配方版本".into());
+    if recipe.version != 2 {
+        return Err("需要逐资源策略配方 v2；旧的统一缩放配方已停用".into());
     }
     let mut paths = std::collections::HashSet::new();
     for target in &recipe.targets {
         if !safe_path(&target.path) || !paths.insert(target.path.to_ascii_lowercase()) {
             return Err(format!("非法或重复配方路径: {}", target.path));
+        }
+        if let Action::ReferenceSprite(plan) = &target.action {
+            if !safe_path(&plan.source) {
+                return Err("非法 sprite 源路径".into());
+            }
         }
     }
     Ok(recipe)

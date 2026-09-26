@@ -1,43 +1,39 @@
-# v1.4.0-beta.1 local generation record
+# v1.4.0-beta.2 local generation record
 
-Branch: `codex/lightweight-mod-generator`. Local game build: `93854`.
-Settings: texture maximum side 4, sprite divisor 2, all asset categories.
+Branch: `codex/lightweight-mod-generator`; local game build `93854`.
+Default settings: per-reference texture dimensions and sprite operations, all categories.
+Beta.1's uniform 2x sprite reduction has been withdrawn.
 
-| Output | Empty overrides | Rewritten JSON/frontend | Small textures | Resized sprites | Generated resource content |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| D2RLight-main-b1 | 4,972 | 2,666 | 4,613 | 21 | 15.68 MiB |
-| D2RLight-filler-b1 | 19,646 | 268 | 1,425 | 20 | 19.45 MiB |
-| D2RLight-min-b1 | 21,163 | 21 | 0 | 64 | 54.57 MiB |
+| Profile | Empty | JSON/frontend | Texture | Sprite | Resource MiB | ZIP MiB |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| main | 4973 | 2666 | 4508 | 20 | 56.32 | 6.90 |
+| filler | 19653 | 268 | 1322 | 19 | 54.34 | 8.03 |
+| min | 21163 | 21 | 0 | 64 | 75.07 | 20.15 |
 
-Sizes exclude README/manifest/metadata and filesystem overhead. They are not
-RAM or VRAM measurements. Min carries more nonempty sprite targets, explaining
-its larger generated package despite more aggressive world-resource blocking.
+Resource sizes exclude metadata and filesystem allocation; ZIPs include manifests.
+These are not RAM/VRAM measurements. Keeping the reference canvas makes raw
+RGBA larger than beta.1's incorrect blanket downscale, even when mostly clear.
+Min uses 52 native lowend substitutions plus 12 individually processed sprites.
+Filler's globe becomes one frame (490,040 bytes), discarding the reference's
+unused tail instead of restoring a 46-frame native animation.
 
-No unsupported native texture/sprite formats remained in these three runs.
-Main reported 456 missing original paths (455 texture paths and the mod-only
-default biome); filler reported 19 (18 texture paths plus that biome). They
-were omitted, not replaced with borrowed mod data. Some original definitions
-already matched the structural selection and required no generated override.
-The complete per-file results are stored in each generated manifest.
+46 unit/regression checks passed; 4 opt-in data tests were ignored. Three known
+pre-existing room-tool baseline-fixture failures were excluded (same exclusions
+as beta.1); this is not a claim that the entire unfiltered suite passes.
+Independent output verification checked every generated target against its recipe,
+parsed all nonempty JSON/frontend, validated every texture dimension/mip/range,
+and checked sprite dimensions/frame counts/exact payload sizes. All non-lowend
+sprite pixels transparent in the reference remain transparent in the output.
+No generated asset path was added outside the source target list (except mod
+metadata/build marker). Release EXE is 3,109,376 bytes (2.97 MiB).
 
-Validation performed:
+Explicit limitations: three main fallen-hair reference texture headers are corrupt
+and excluded with manifest reasons. Custom painted RGB colors, alpha gradients,
+nonempty particles and nonempty legacy image/table assets are not reconstructed;
+the game supplies original resources for documented exclusions. Missing mod-only
+paths are not invented. Output is not visually or behaviourally identical to lowHD.
 
-- 42 unit/regression checks passed, including all 9 new lightweight checks.
-- Three pre-existing room-tool tests were excluded: they require a game
-  baseline but their fixtures supply none; the same failures were previously
-  reproduced on the unchanged baseline. Four opt-in game-data tests remain
-  ignored in the normal suite.
-- Generated nonempty JSON/frontend files were independently parsed; every
-  generated texture's mip offsets, lengths, format, dimensions and total size
-  were checked; sprite payloads, frame counts and supported spacing were checked.
-- All generated nonempty texture dimensions had maximum side <= 4.
-- The original audio processor successfully augmented the generated main
-  profile with rune telemetry and Countess-route area markers in a separate
-  test output directory.
-- Release build succeeded. Standalone EXE: 2,384,384 bytes (2.27 MiB), versus
-  1,709,568 bytes for the prior v1.3.4 build: +674,816 bytes (~0.64 MiB).
-
-The game was **not launched**. Rendering, UI scale/hit targets, interactions,
-particle appearance and memory savings are not validated by these file checks.
-The Windows GUI was compiled but not interactively exercised. Use the standalone
-preview executable; the installed D2RHub sidecar was not replaced.
+The game was not launched. The GUI compiled but was not interactively exercised.
+The stable D2RHub sidecar and previous MOD folders were not replaced. Test outputs:
+`C:\Diablo II Resurrected\mods\D2RLight-{main,filler,min}-b2`.
+Standalone preview: `target/lightweight-preview-b2/d2r-audio-mod.exe`.

@@ -1,23 +1,23 @@
 # D2R Audio Mod
 
-当前分支预览版 **v1.4.0-beta.1**（稳定版仍为 v1.3.4）。这是独立、轻量的 D2R Mod 生成/加工工具，包含原有音频遥测加工和实验性轻量资源生成。它只读取游戏资源或源 Mod，输出一个新 Mod；不读取 D2RHub 配置、账号、数据库，也不会启用 Mod。
+当前分支预览版 **v1.4.0-beta.2**（稳定版仍为 v1.3.4）。这是独立、轻量的 D2R Mod 生成/加工工具，包含原有音频遥测加工和实验性轻量资源生成。它只读取游戏资源或源 Mod，输出一个新 Mod；不读取 D2RHub 配置、账号、数据库，也不会启用 Mod。
 
 ## 轻量资源生成预览
 
-双击程序后，可在顶部选择“轻量资源：main / filler / min”，指定本机游戏目录、纹理最大边和 UI 图片缩小倍数，再生成一个独立 Mod。原有“音频加工”模式保持不变。轻量化与音频加工是两个独立步骤：先生成轻量 Mod，再按需使用原有加工功能。
+双击程序后，可在顶部选择“轻量资源：main / filler / min”，指定本机游戏目录、纹理尺寸和 UI 图片参考策略，再生成一个独立 Mod。原有“音频加工”模式保持不变。轻量化与音频加工是两个独立步骤：先生成轻量 Mod，再按需使用原有加工功能。
 
 ```powershell
-d2r-audio-mod lightweight --game "C:\Diablo II Resurrected" --profile main --texture-size 4 --sprite-scale 2 --name D2RLight-main
+d2r-audio-mod lightweight --game "C:\Diablo II Resurrected" --profile main --name D2RLight-main
 # 保持非空 UI 图片原版，或单独比较资源类型
 d2r-audio-mod lightweight --game "C:\Diablo II Resurrected" --profile filler --sprite-scale 1
 d2r-audio-mod lightweight --game "C:\Diablo II Resurrected" --profile main --asset-types json,texture
 ```
 
 - 配方参考 lowHD 的目标清单和结构选择，压缩后内置于程序；运行生成不需要安装 lowHD、不下载素材，也不调用外部图片转换器。
-- 输出非空资源只来自本机游戏。JSON 执行删除/保留/清空规则，不复制参考 Mod 的完整定义或新实体；纹理优先提取游戏自带的 4×4 等小 mip，并保留原压缩格式。
-- RGBA sprite 按帧缩小并保留帧数、间隔结构；**这不保证游戏内渲染尺寸不变**。不确定时选 `--sprite-scale 1`，由游戏使用原版非空 sprite。
+- 输出非空资源只来自本机游戏。JSON 执行删除/保留/清空规则，不复制参考 Mod 的完整定义或新实体；纹理默认采用参考目标的尺寸、格式和 mip 数，从游戏小 mip 重建；可显式选择 4×4 等更小尺寸。
+- sprite 按目标执行透明裁除、黑色填充、帧选择和原版 lowend 替换，不再统一缩小 2 倍；不复制作者任意绘制的颜色。显式选 `--sprite-scale 1` 可保留原版非空 sprite。
 - 默认保留所选配方的空文件屏蔽，包括空 sprite。`--sprite-scale 1` 只控制非空 sprite，不撤销配方中的空覆盖；想排除全部空覆盖可使用 `--asset-types json,texture,sprite`。
-- 原版缺失的路径、不支持的格式以及无需覆盖的资源均记录在 `lightweight-manifest.json`；缺失/不支持时不猜测生成二进制。不重写非空粒子、不导入 `missiles.txt` 或自定义队伍面板，因此并非 lowHD 的等效复刻。
+- 原版缺失的路径、明确排除项以及无需覆盖的资源均记录在 `lightweight-manifest.json`；未确认策略及原版图片指纹变化会阻止生成。main 中 3 个参考头发纹理头损坏，明确跳过。不重写非空粒子、不导入 `missiles.txt` 或自定义队伍面板，因此并非 lowHD 的等效复刻。
 - 默认启动参数只有 `-mod 名称`，不需要 `-txt`。新包不自带声纹识别、房间工具或自动退出功能。
 - 输出使用事务目录；原游戏与原 Mod 不改写，同名目录不覆盖。首次生成需要读取较多本机游戏资源。生成成功不代表已验证游戏内画面、操作或内存收益。
 

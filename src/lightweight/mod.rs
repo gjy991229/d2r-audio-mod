@@ -1,5 +1,7 @@
 mod assets;
+mod blocks;
 pub mod recipe;
+mod reference;
 
 use crate::casc_path::CascStoragePath;
 use recipe::{Action, Recipe};
@@ -109,11 +111,13 @@ pub fn build(
     request: Request,
     mut progress: impl FnMut(usize, usize, &str),
 ) -> Result<Report, String> {
-    if ![1, 2, 4, 8, 16, 32].contains(&request.texture_size) {
-        return Err("纹理尺寸必须为 1、2、4、8、16 或 32".into());
+    if ![0, 1, 2, 4, 8, 16, 32].contains(&request.texture_size) {
+        return Err("纹理尺寸使用 0（参考尺寸），或显式指定 1、2、4、8、16、32".into());
     }
-    if ![1, 2, 4, 8].contains(&request.sprite_scale) {
-        return Err("sprite 缩小倍数必须为 1、2、4 或 8".into());
+    if ![0, 1].contains(&request.sprite_scale) {
+        return Err(
+            "统一 sprite 缩放已撤销；使用 0（逐资源参考策略）或 1（用户明确选择原版）".into(),
+        );
     }
     if request.asset_types.is_empty()
         || request
@@ -128,6 +132,29 @@ pub fn build(
     } else {
         builtin(&request.profile)?
     };
+    let unresolved: Vec<_> = recipe
+        .targets
+        .iter()
+        .filter_map(|t| {
+            if let Action::Unresolved(reason) = &t.action {
+                Some(format!("{}: {reason}", t.path))
+            } else {
+                None
+            }
+        })
+        .collect();
+    if !unresolved.is_empty() {
+        return Err(format!(
+            "参考策略尚有 {} 项未确认，未生成 MOD，也未恢复原版整图：\n{}",
+            unresolved.len(),
+            unresolved
+                .iter()
+                .take(12)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join("\n")
+        ));
+    }
     let name = request
         .name
         .unwrap_or_else(|| format!("D2RLight-{}", recipe.profile));
@@ -201,9 +228,9 @@ pub fn build(
         let category = match target.action {
             Action::Empty => "empty",
             Action::Json(_) => "json",
-            Action::Texture => "texture",
-            Action::Sprite => "sprite",
-            Action::Native(_) => "native",
+            Action::Texture | Action::ReferenceTexture(_) => "texture",
+            Action::Sprite | Action::ReferenceSprite(_) => "sprite",
+            Action::Native(_) | Action::Unresolved(_) => "native",
         };
         if let Action::Native(reason) = &target.action {
             note(&mut report, &target.path, "kept_native", reason.clone());
@@ -217,9 +244,31 @@ pub fn build(
             *report.counts.entry("empty".into()).or_default() += 1;
             continue;
         }
-        let original = match read(&storage, &target.path) {
+        if request.sprite_scale == 1 && matches!(target.action, Action::ReferenceSprite(_)) {
+            note(
+                &mut report,
+                &target.path,
+                "user_native",
+                "用户显式选择原版非空 sprite".into(),
+            );
+            continue;
+        }
+        let source_path = if let Action::ReferenceSprite(plan) = &target.action {
+            plan.source.as_str()
+        } else {
+            target.path.as_str()
+        };
+        let original = match read(&storage, source_path) {
             Ok(bytes) => bytes,
             Err(e) if missing(&e) => {
+                if matches!(
+                    target.action,
+                    Action::ReferenceSprite(_) | Action::ReferenceTexture(_)
+                ) {
+                    return Err(format!(
+                        "配方对应的原版资源已缺失 {source_path}，请重新核对配方：{e}"
+                    ));
+                }
                 note(&mut report, &target.path, "missing_native", e.to_string());
                 continue;
             }
@@ -247,29 +296,29 @@ pub fn build(
                 }
                 serde_json::to_vec(&value).map_err(|e| e.to_string())
             }
-            Action::Texture => assets::texture(&original, request.texture_size),
-            Action::Sprite => {
-                if request.sprite_scale == 1 {
-                    note(
-                        &mut report,
-                        &target.path,
-                        "unchanged_native",
-                        "sprite-scale=1，使用原版".into(),
-                    );
-                    continue;
-                }
-                assets::sprite(&original, request.sprite_scale)
+            Action::ReferenceTexture(plan) => {
+                reference::texture(&original, plan, request.texture_size)
             }
+            Action::ReferenceSprite(plan) => {
+                let result = reference::sprite(&original, plan);
+                if result.is_ok() {
+                    report.details.push(Outcome{path:target.path.clone(),action:plan.policy.clone(),reason:format!("源 {}；{}×{}、{} 帧；擦除矩形 {}，黑色填充矩形 {}；去除参考文件无效尾部 {} 字节；颜色采用原版：{}",plan.source,plan.output.width,plan.output.height,plan.output.frames,plan.clear_rects.len(),plan.black_rects.len(),plan.discarded_reference_tail_bytes,plan.native_colors_retained)});
+                }
+                result
+            }
+            Action::Texture | Action::Sprite => Err("旧统一缩放策略已停用".into()),
             _ => unreachable!(),
         };
         let generated = match generated {
             Ok(bytes) => bytes,
             Err(reason) => {
-                note(&mut report, &target.path, "unsupported_native", reason);
-                continue;
+                return Err(format!(
+                    "无法执行已确认的参考策略 {}: {reason}；未回退到完整原版图片",
+                    target.path
+                ));
             }
         };
-        if category != "json" && generated.len() >= original.len() {
+        if category == "texture" && generated == original {
             note(
                 &mut report,
                 &target.path,
@@ -293,7 +342,7 @@ pub fn build(
         &staging.path.join("lightweight-manifest.json"),
         &serde_json::to_vec_pretty(&report).map_err(|e| e.to_string())?,
     )?;
-    let readme=format!("D2R 轻量资源测试版 {}\r\n启动参数：{}\r\n\r\n只从本机游戏生成，不包含 lowHD 成品素材。清单和结构选择参考 lowHD；不是完全相同的复制版。\r\n纹理最大边 {}，sprite 缩小 {} 倍（实验性，可能影响 UI 显示尺寸）。\r\n未支持/缺失/无需覆盖的资源见 lightweight-manifest.json。\r\n本版不重写非空粒子、不修改 missiles.txt、不新增房间工具或声纹。\r\n正常音频加工功能仍可单独用于该成品。\r\n未启动游戏验证。源游戏、原 MOD 和已有同名产物不会覆盖。\r\n",report.profile,report.launch_arguments,request.texture_size,request.sprite_scale);
+    let readme=format!("D2R 轻量资源测试版 {}\r\n启动参数：{}\r\n\r\n只从本机游戏生成，不包含 lowHD 成品素材。清单和结构选择参考 lowHD；不是完全相同的复制版。\r\n纹理尺寸选项 {}（0=参考），sprite 策略 {}（0=参考，1=用户选择原版）。\r\n逐资源策略、颜色差异、缺失及无需覆盖的资源见 lightweight-manifest.json。未确认策略会阻止生成。\r\n本版不重写非空粒子、不修改 missiles.txt、不新增房间工具或声纹。\r\n正常音频加工功能仍可单独用于该成品。\r\n未启动游戏验证。源游戏、原 MOD 和已有同名产物不会覆盖。\r\n",report.profile,report.launch_arguments,request.texture_size,request.sprite_scale);
     write(&staging.path.join("README.txt"), readme.as_bytes())?;
     if destination.exists() {
         return Err("输出名称在生成期间被占用，未覆盖；请重试".into());
@@ -307,7 +356,7 @@ pub fn build(
 pub fn cli(args: &[std::ffi::OsString], import: bool) -> Result<(), String> {
     use std::io::Write;
     if args.iter().any(|s| s == "--help" || s == "-h") {
-        println!("轻量资源生成（实验版）\n  lightweight --game <游戏目录> [--profile main|filler|min]\n    [--texture-size 1|2|4|8|16|32] 默认4\n    [--sprite-scale 1|2|4|8] 默认2；1表示沿用原版\n    [--output <输出父目录>] [--name <MOD名称>]\n    [--asset-types empty,json,texture,sprite] 默认全部\n    [--recipe <自定义.json.gz>] [--json|--events]\n\n开发用清单导入（不复制成品素材）：\n  lightweight-import --source <参考.mpq目录> --profile main --output <新配方.json.gz>\n\n运行生成只需要本机游戏与程序内置配方，无需原 lowHD 包。\n不支持的格式回退原版并写入清单；不重写粒子内部结构，不修改原游戏或启用 MOD。");
+        println!("轻量资源生成（实验版）\n  lightweight --game <游戏目录> [--profile main|filler|min]\n    [--texture-size 0|1|2|4|8|16|32] 默认0=参考尺寸\n    [--sprite-scale 0|1] 默认0=逐资源参考策略；1为用户选择原版\n    [--output <输出父目录>] [--name <MOD名称>]\n    [--asset-types empty,json,texture,sprite] 默认全部\n    [--recipe <自定义.json.gz>] [--json|--events]\n\n开发用清单导入（不复制成品素材）：\n  lightweight-import --source <参考.mpq目录> --game <游戏目录> --profile main --output <新配方.json.gz>\n\n运行生成只需要本机游戏与程序内置配方，无需原 lowHD 包。\n未确认的策略阻止生成；不重写粒子内部结构，不修改原游戏或启用 MOD。");
         return Ok(());
     }
     let mut options = BTreeMap::new();
@@ -327,7 +376,7 @@ pub fn cli(args: &[std::ffi::OsString], import: bool) -> Result<(), String> {
             continue;
         }
         let allowed = if import {
-            vec!["--source", "--profile", "--output"]
+            vec!["--source", "--game", "--profile", "--output"]
         } else {
             vec![
                 "--game",
@@ -369,7 +418,12 @@ pub fn cli(args: &[std::ffi::OsString], import: bool) -> Result<(), String> {
                 .get("--output")
                 .ok_or("导入必须提供 --output 配方文件路径")?,
         );
-        let count = recipe::import(&source, &profile, &output)?;
+        let game = PathBuf::from(
+            options
+                .get("--game")
+                .ok_or("参考策略导入必须提供 --game 以比对原版")?,
+        );
+        let count = recipe::import(&source, &game, &profile, &output)?;
         println!(
             "已导入 {count} 个目标：{}（未包含源素材数据）",
             output.display()
@@ -388,13 +442,13 @@ pub fn cli(args: &[std::ffi::OsString], import: bool) -> Result<(), String> {
             .map(|s| s.to_string_lossy().parse())
             .transpose()
             .map_err(|_| "纹理尺寸不是整数")?
-            .unwrap_or(4),
+            .unwrap_or(0),
         sprite_scale: options
             .get("--sprite-scale")
             .map(|s| s.to_string_lossy().parse())
             .transpose()
             .map_err(|_| "sprite 缩小倍数不是整数")?
-            .unwrap_or(2),
+            .unwrap_or(0),
         recipe_file: options.get("--recipe").map(PathBuf::from),
         asset_types: options
             .get("--asset-types")
@@ -450,7 +504,10 @@ mod tests {
             let r = builtin(name).unwrap();
             assert_eq!(r.profile, name);
             assert!(r.targets.len() > 10000);
-            assert!(r.targets.iter().any(|t| matches!(t.action, Action::Sprite)));
+            assert!(r
+                .targets
+                .iter()
+                .any(|t| matches!(t.action, Action::ReferenceSprite(_))));
             assert!(r
                 .targets
                 .iter()

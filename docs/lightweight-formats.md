@@ -15,37 +15,27 @@ For observed 2D textures, the 36-byte header is followed by eight-byte mip
 records. Each mip offset is relative to the offset field itself, not the
 file start. The byte at offset 7 mirrors the mip count at offset 28.
 Formats 31 (RGBA), 57/58 (BC1), 61/62 (BC3), and 63 (BC4) are validated by
-their expected payload sizes. Unknown flags, formats, depth, ranges, or
-trailing data cause a native fallback recorded in the manifest.
+expected payload sizes. Default dimensions, format and mip count follow each
+reference target. Matching native mip payloads are retained directly; otherwise
+small native mips are decoded, resized independently by channel, and encoded
+with an independently implemented BC codec. Explicit texture-size overrides
+remain available. Unknown conversion strategies stop generation.
 
-The generator selects the first native mip whose longest side is no greater
-than the requested limit and retains its remaining mip chain. It rebuilds
-dimensions, counts and relative offsets; compressed payload bytes are not
-decoded or recompressed. This uses Blizzard's original small mip, including
-its treatment of normal/material channels. RGBA files without a suitable
-mip can be area-averaged and supplied with a new mip chain. Compressed files
-without a sufficiently small mip remain native rather than being guessed.
+## Reference sprite operations (beta.2)
 
-## SpA1 sprites
+RGBA `SpA1` and `SPa1` headers are supported. There is no default uniform divisor.
+Each recipe records source fingerprint, geometry, frame selection and rectangular
+transparent/black operations. Original game pixels supply surviving visible areas.
+Where reference geometry matches a native `.lowend.sprite`, the native lowend
+variant is used directly. Other sprites preserve reference dimensions, blank
+regions and selected frames. Unused reference trailing bytes are discarded.
+Arbitrary painted colors are not imported; differences are reported in the manifest.
+This preserves structural operations, not identical artwork or all alpha gradients.
 
-Header layout references: the pinned casc-core SpA1 notes and the public
-[SpriteEdit file writer](https://github.com/eezstreet/D2RModding-SpriteEdit).
-SpriteEdit source is GPL; no converter implementation is incorporated here.
-Only format facts were consulted. The reducer is independently implemented.
-
-This first version supports RGBA format 31 with a 40-byte header, horizontal
-frame strips and observed zero-, one- or two-pixel spacing. Both padding on
-every cell and gutters only between cells are supported. Frame-width metadata,
-atlas width/height, payload length and channel count are regenerated. Frames
-are independently area-averaged with alpha-weighted RGB to avoid cross-frame
-bleeding and dark transparent edges. Native sprites with zeroed size/channel
-header fields are accepted when actual RGBA payload dimensions agree exactly.
-
-Resizing preserves frame count and strip structure, **not a promise of the
-same rendered UI size**. D2R's consumer may use pixel dimensions for layout.
-Users can choose sprite-scale=1 to retain native nonempty sprites. Lowend
-counterparts follow the same selected divisor. Game-side validation remains
-necessary; successful file generation does not prove rendering correctness.
+Source fingerprint changes stop conversion so old masks cannot silently be applied
+to a changed game image. Native overrides (`sprite-scale=1`) are explicit user choices.
+RGBA byte size still depends on canvas dimensions even when most pixels are clear.
+Clearing background pixels alone does not establish a VRAM reduction.
 
 ## JSON selection recipes
 
@@ -69,7 +59,9 @@ regenerated in this version; the manifest explicitly identifies native fallbacks
 Every recipe path is validated and duplicate paths are rejected. Generation
 writes only into a new UUID staging directory under the selected output parent.
 Existing output names receive a numeric suffix. Fatal read/write failures remove
-only that owned transaction; unsupported formats are explicit per-file fallbacks.
+only that owned transaction. Unconfirmed conversion strategies stop generation.
+Three main reference hair textures have corrupt space-filled dimension fields;
+they are explicitly excluded and reported, without guessing a replacement.
 The tool never starts the game, changes active mods or rewrites original data.
 Unit checks cover mip offsets/payloads, RGBA averaging, frame boundaries/gutters,
 structural pruning, bundled profiles, traversal rejection and transaction cleanup.

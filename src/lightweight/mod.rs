@@ -1,5 +1,4 @@
 mod assets;
-mod geometry;
 mod native_policy;
 pub mod recipe;
 
@@ -19,6 +18,7 @@ pub struct Request {
     pub profile: String,
     pub texture_size: usize,
     pub sprite_scale: usize,
+    pub disable_scoped_particles: bool,
     pub recipe_file: Option<PathBuf>,
     pub asset_types: Vec<String>,
 }
@@ -43,6 +43,7 @@ pub struct Report {
     pub game_build: String,
     pub texture_size: usize,
     pub sprite_scale: usize,
+    pub disable_scoped_particles: bool,
     pub counts: BTreeMap<String, usize>,
     pub original_transformed_bytes: u64,
     pub generated_asset_bytes: u64,
@@ -114,10 +115,11 @@ pub fn build(
     if ![0, 1, 2, 4, 8, 16, 32].contains(&request.texture_size) {
         return Err("纹理尺寸使用 0（自动4），或显式指定 1、2、4、8、16、32".into());
     }
-    if ![0, 1, 2, 4, 8].contains(&request.sprite_scale) {
-        return Err(
-            "sprite 使用 0（原版 lowend 尺寸）、1（不覆盖）或 2、4、8（原版按帧缩小）".into(),
-        );
+    if request.sprite_scale != 1 {
+        return Err("UI 布局未同步缩放，非空 sprite 只支持 --sprite-scale 1（原版尺寸）".into());
+    }
+    if request.disable_scoped_particles && !request.asset_types.iter().any(|s| s == "empty") {
+        return Err("--effects off 需要包含 empty 类型，才能屏蔽粒子资源".into());
     }
     if request.asset_types.is_empty()
         || request
@@ -191,22 +193,92 @@ pub fn build(
             .into(),
         texture_size: request.texture_size,
         sprite_scale: request.sprite_scale,
+        disable_scoped_particles: request.disable_scoped_particles,
         counts: BTreeMap::new(),
         original_transformed_bytes: 0,
         generated_asset_bytes: 0,
         details: Vec::new(),
         runtime_verified: false,
     };
-    let disabled: std::collections::HashSet<String> = recipe
+    let mut disabled: std::collections::HashSet<String> = recipe
         .targets
         .iter()
         .filter(|t| matches!(t.action, Action::Empty))
         .map(|t| native_policy::resource_path(&t.path))
         .collect();
+    let mut effects = std::collections::HashSet::new();
+    if request.disable_scoped_particles {
+        for (index, target) in recipe.targets.iter().enumerate() {
+            if target.path.ends_with(".particles") {
+                effects.insert(target.path.clone());
+            }
+            if !matches!(target.action, Action::NativeJson) {
+                continue;
+            }
+            if index % 100 == 0 {
+                progress(index, recipe.targets.len(), "检查范围内 JSON 的粒子依赖");
+            }
+            match read(&storage, &target.path) {
+                Ok(bytes) => {
+                    let value = recipe::parse(&bytes)
+                        .map_err(|e| format!("粒子依赖读取失败 {}: {e}", target.path))?;
+                    native_policy::particle_references(&value, &mut effects);
+                }
+                Err(e) if missing(&e) => {}
+                Err(e) => return Err(format!("读取粒子依赖失败 {}: {e}", target.path)),
+            }
+        }
+        let existing: std::collections::HashSet<_> =
+            recipe.targets.iter().map(|t| t.path.as_str()).collect();
+        let mut sorted = effects.iter().cloned().collect::<Vec<_>>();
+        sorted.sort();
+        for path in sorted {
+            if existing.contains(path.as_str()) {
+                continue;
+            }
+            match read(&storage, &path) {
+                Ok(_) => {
+                    write(&mpq.join(&path), &[])?;
+                    note(
+                        &mut report,
+                        &path,
+                        "derived_particle_off",
+                        "来自范围内原版 JSON 的直接粒子依赖；仅增加空覆盖".into(),
+                    );
+                }
+                Err(e) if missing(&e) => {
+                    effects.remove(&path);
+                }
+                Err(e) => return Err(format!("粒子资源读取失败 {path}: {e}")),
+            }
+        }
+        disabled.extend(effects.iter().cloned());
+    }
     let total = recipe.targets.len();
     for (index, target) in recipe.targets.iter().enumerate() {
         if index % 100 == 0 {
             progress(index, total, &target.path);
+        }
+        if effects.contains(&target.path) {
+            write(&mpq.join(&target.path), &[])?;
+            note(
+                &mut report,
+                &target.path,
+                "scoped_particle_off",
+                "关闭本方案范围内的粒子资源".into(),
+            );
+            continue;
+        }
+        if matches!(target.action, Action::NativeTexture)
+            && native_policy::is_vfx_texture(&target.path)
+        {
+            note(
+                &mut report,
+                &target.path,
+                "vfx_native_texture",
+                "保留原版特效纹理，避免极低分辨率破坏透明度和形状".into(),
+            );
+            continue;
         }
         let category = match target.action {
             Action::Empty => "empty",
@@ -232,7 +304,7 @@ pub fn build(
                 &mut report,
                 &target.path,
                 "user_native",
-                "用户显式选择原版非空 sprite".into(),
+                "保留原版 UI sprite 尺寸和布局对应关系".into(),
             );
             continue;
         }
@@ -276,43 +348,7 @@ pub fn build(
                     request.texture_size
                 },
             ),
-            Action::NativeSprite => {
-                let mut pixels = original.clone();
-                let mut source = target.path.clone();
-                if !target.path.ends_with(".lowend.sprite") {
-                    if let Some(stem) = target.path.strip_suffix(".sprite") {
-                        let candidate = format!("{stem}.lowend.sprite");
-                        match read(&storage, &candidate) {
-                            Ok(low) => {
-                                let high = geometry::Geometry::read(&pixels)?;
-                                if let Ok(g) = geometry::Geometry::read(&low) {
-                                    if g.frames == high.frames
-                                        && g.width <= high.width
-                                        && g.height <= high.height
-                                    {
-                                        pixels = low;
-                                        source = candidate;
-                                    }
-                                }
-                            }
-                            Err(e) if missing(&e) => {}
-                            Err(e) => return Err(format!("原版 lowend 读取失败 {candidate}: {e}")),
-                        }
-                    }
-                }
-                let output = native_policy::sprite(&pixels, request.sprite_scale);
-                if output.is_ok() {
-                    report.details.push(Outcome {
-                        path: target.path.clone(),
-                        action: "native_sprite_resize".into(),
-                        reason: format!(
-                            "原版源 {source}；保留原版构图和帧数；缩小 {} 倍；不导入作者遮罩",
-                            request.sprite_scale.max(1)
-                        ),
-                    });
-                }
-                output
-            }
+            Action::NativeSprite => Err("UI sprite 尺寸变更已停用".into()),
             _ => unreachable!(),
         };
         let generated = match generated {
@@ -348,7 +384,7 @@ pub fn build(
         &staging.path.join("lightweight-manifest.json"),
         &serde_json::to_vec_pretty(&report).map_err(|e| e.to_string())?,
     )?;
-    let readme=format!("D2R 轻量资源测试版 {}\r\n启动参数：{}\r\n\r\n只从本机游戏生成，不包含 lowHD 成品素材。目标范围参考 lowHD；处理规则依据游戏原版制定，不复现作者配置或遮罩。\r\n纹理尺寸选项 {}（0=自动4），sprite 策略 {}（0=原版 lowend 尺寸，1=不覆盖，2/4/8=原版按帧缩小）。\r\n逐资源策略、颜色差异、缺失及无需覆盖的资源见 lightweight-manifest.json。未确认策略会阻止生成。\r\n本版不重写非空粒子、不修改 missiles.txt、不新增房间工具或声纹。\r\n正常音频加工功能仍可单独用于该成品。\r\n未启动游戏验证。源游戏、原 MOD 和已有同名产物不会覆盖。\r\n",report.profile,report.launch_arguments,request.texture_size,request.sprite_scale);
+    let readme=format!("D2R 轻量资源测试版 {}\r\n启动参数：{}\r\n\r\n只从本机游戏生成，不包含 lowHD 成品素材。目标范围参考 lowHD；处理规则依据游戏原版制定，不复现作者配置或遮罩。\r\n纹理尺寸选项 {}（0=自动4），sprite 策略 {}（1=保留原版尺寸）。\r\n逐资源策略、颜色差异、缺失及无需覆盖的资源见 lightweight-manifest.json。未确认策略会阻止生成。\r\n本版不重写非空粒子、不修改 missiles.txt、不新增房间工具或声纹。\r\nVFX 纹理使用原版；粒子关闭模式及新增的空覆盖见清单。正常音频加工功能仍可单独用于该成品。\r\n未启动游戏验证。源游戏、原 MOD 和已有同名产物不会覆盖。\r\n",report.profile,report.launch_arguments,request.texture_size,request.sprite_scale);
     write(&staging.path.join("README.txt"), readme.as_bytes())?;
     if destination.exists() {
         return Err("输出名称在生成期间被占用，未覆盖；请重试".into());
@@ -362,7 +398,7 @@ pub fn build(
 pub fn cli(args: &[std::ffi::OsString], import: bool) -> Result<(), String> {
     use std::io::Write;
     if args.iter().any(|s| s == "--help" || s == "-h") {
-        println!("轻量资源生成（实验版）\n  lightweight --game <游戏目录> [--profile main|filler|min]\n    [--texture-size 0|1|2|4|8|16|32] 默认4；0=自动4\n    [--sprite-scale 0|1|2|4|8] 默认2=原版按帧缩小2倍；0=原版 lowend 尺寸；1=不覆盖\n    [--output <输出父目录>] [--name <MOD名称>]\n    [--asset-types empty,json,texture,sprite] 默认全部\n    [--recipe <自定义.json.gz>] [--json|--events]\n\n开发用范围导入（仅路径、空覆盖意图和资源类型，不提取内容）：\n  lightweight-import --source <参考.mpq目录> --game <游戏目录> --profile main --output <新配方.json.gz>\n\n运行生成只需要本机游戏与程序内置配方，无需原 lowHD 包。\n未确认的策略阻止生成；不重写粒子内部结构，不修改原游戏或启用 MOD。");
+        println!("轻量资源生成（实验版）\n  lightweight --game <游戏目录> [--profile main|filler|min]\n    [--texture-size 0|1|2|4|8|16|32] 默认4；0=自动4\n    [--sprite-scale 1] 非空 UI sprite 保持原版尺寸\n    [--effects preserve|off] 默认preserve；off关闭范围内粒子及其直接依赖\n    [--output <输出父目录>] [--name <MOD名称>]\n    [--asset-types empty,json,texture,sprite] 默认全部\n    [--recipe <自定义.json.gz>] [--json|--events]\n\n开发用范围导入（仅路径、空覆盖意图和资源类型，不提取内容）：\n  lightweight-import --source <参考.mpq目录> --game <游戏目录> --profile main --output <新配方.json.gz>\n\n运行生成只需要本机游戏与程序内置配方，无需原 lowHD 包。\n未确认的策略阻止生成；不重写粒子内部结构，不修改原游戏或启用 MOD。");
         return Ok(());
     }
     let mut options = BTreeMap::new();
@@ -391,6 +427,7 @@ pub fn cli(args: &[std::ffi::OsString], import: bool) -> Result<(), String> {
                 "--name",
                 "--texture-size",
                 "--sprite-scale",
+                "--effects",
                 "--recipe",
                 "--asset-types",
             ]
@@ -453,8 +490,18 @@ pub fn cli(args: &[std::ffi::OsString], import: bool) -> Result<(), String> {
             .get("--sprite-scale")
             .map(|s| s.to_string_lossy().parse())
             .transpose()
-            .map_err(|_| "sprite 缩小倍数不是整数")?
-            .unwrap_or(2),
+            .map_err(|_| "sprite 参数不是整数")?
+            .unwrap_or(1),
+        disable_scoped_particles: match options
+            .get("--effects")
+            .map(|s| s.to_string_lossy())
+            .as_deref()
+            .unwrap_or("preserve")
+        {
+            "preserve" => false,
+            "off" => true,
+            _ => return Err("--effects 使用 preserve 或 off".into()),
+        },
         recipe_file: options.get("--recipe").map(PathBuf::from),
         asset_types: options
             .get("--asset-types")
@@ -504,6 +551,29 @@ pub fn cli(args: &[std::ffi::OsString], import: bool) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn unsafe_ui_scale_is_rejected_before_any_game_or_output_access() {
+        let request = Request {
+            game: PathBuf::from("nonexistent-game"),
+            output: None,
+            name: None,
+            profile: "main".into(),
+            texture_size: 4,
+            sprite_scale: 2,
+            disable_scoped_particles: false,
+            recipe_file: None,
+            asset_types: vec![
+                "empty".into(),
+                "json".into(),
+                "texture".into(),
+                "sprite".into(),
+            ],
+        };
+        assert!(build(request, |_, _, _| {})
+            .err()
+            .unwrap()
+            .contains("UI 布局未同步缩放"));
+    }
     #[test]
     fn bundled_profiles_have_unique_safe_targets_and_no_asset_payloads() {
         for name in ["min", "filler", "main"] {

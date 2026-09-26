@@ -18,6 +18,35 @@ fn blocked(s: &str, disabled: &HashSet<String>) -> bool {
     disabled.contains(&resource_path(s))
 }
 
+pub fn is_vfx_texture(path: &str) -> bool {
+    let p = resource_path(path);
+    p.starts_with("data/hd/vfx/") && p.ends_with(".texture")
+}
+
+/// Particle suppression follows actual references in already-scoped native JSON.
+/// It does not import a third-party particle list or scan unrelated game assets.
+pub fn particle_references(value: &Value, out: &mut HashSet<String>) {
+    match value {
+        Value::String(s) => {
+            let p = resource_path(s);
+            if p.ends_with(".particles") && super::recipe::safe_path(&p) {
+                out.insert(p);
+            }
+        }
+        Value::Array(a) => {
+            for v in a {
+                particle_references(v, out);
+            }
+        }
+        Value::Object(m) => {
+            for v in m.values() {
+                particle_references(v, out);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Clear only references to resources explicitly disabled in this profile.
 /// Preserve native names, IDs, numbers, transforms and all unrelated components.
 pub fn json(value: &mut Value, disabled: &HashSet<String>) -> usize {
@@ -129,23 +158,18 @@ pub fn json(value: &mut Value, disabled: &HashSet<String>) -> usize {
     count
 }
 
-/// UI artwork remains native. Native lowend selection and per-frame shrinking
-/// never import a reference mask or infer a custom composition.
-pub fn sprite(bytes: &[u8], divisor: usize) -> Result<Vec<u8>, String> {
-    let g = super::geometry::Geometry::read(bytes)?;
-    let active_len = 40 + g.width * g.height * 4;
-    // Discard only bytes outside the native header's declared image rectangle.
-    let bytes = &bytes[..active_len];
-    if divisor == 0 {
-        Ok(bytes.to_vec())
-    } else {
-        super::assets::sprite(bytes, divisor)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn effect_paths_are_bounded_and_do_not_include_audio_or_invalid_paths() {
+        let value = serde_json::json!({"vfx":"DATA\\HD\\VFX\\hit.particles","audio":"data/hd/sound.flac","bad":"data/../escape.particles","other":["data/hd/vfx/hit.particles"]});
+        let mut out = HashSet::new();
+        particle_references(&value, &mut out);
+        assert_eq!(out, HashSet::from(["data/hd/vfx/hit.particles".into()]));
+        assert!(is_vfx_texture("DATA/HD/VFX/textures/a.texture"));
+        assert!(!is_vfx_texture("data/hd/character/a.texture"));
+    }
     #[test]
     fn clears_only_blocked_resources_without_importing_custom_values() {
         let mut v = serde_json::json!({"id":42,"power":35,"name":"native","dependencies":{"models":[{"path":"data/hd/a.model"},{"path":"data/hd/keep.model"}]},"entities":[{"id":7,"components":[{"type":"ModelDefinitionComponent","filename":"DATA\\HD\\A.MODEL"},{"type":"UnitRootComponent","state_machine_filename":"data/hd/a.json"},{"type":"TransformDefinitionComponent","position":{"x":10}}]}]});

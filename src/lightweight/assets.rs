@@ -176,6 +176,7 @@ pub fn texture(bytes: &[u8], max_side: usize) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
+#[cfg(test)]
 pub fn sprite(bytes: &[u8], divisor: usize) -> Result<Vec<u8>, String> {
     if ![1, 2, 4, 8].contains(&divisor) {
         return Err("unsupported sprite divisor".into());

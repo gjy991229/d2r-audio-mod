@@ -1,3 +1,47 @@
+# beta6 UI and VFX correction validation
+
+User-reported inventory misalignment was consistent with replacing a 1162x1507
+native background by a 290x376 sprite while retaining the original UI layout.
+Nonempty UI sprite overrides are now skipped, and unsafe sprite-scale values are
+rejected. VFX-directory textures are not downsampled; standard mode retains the
+existing empty-override policy, not all original effects.
+
+LowHD main reference audit: 586 empty particle files and three nonempty particle
+files. Its VFX textures include 592 at 16x16 and gradient textures at 256x16,
+128x16 and other sizes. Beta5 instead reduced 654 processed VFX textures to a
+maximum side of 4. This is a strong candidate for the reported colored quads;
+there was no in-game renderer capture establishing every affected effect.
+
+The --effects off option collects direct particle references from native JSON in
+the existing scope, adds zero-byte overrides for existing particles, and clears
+those references through the existing JSON pruning rule. It does not change
+missiles.txt, damage, collision or audio definitions, or recursively traverse
+unrelated JSON. Shared particle paths can affect other consumers. This is NOT
+a guarantee of removing all game effects.
+
+46 tests passed, four opt-in tests ignored, and the same three known room-tool
+fixture failures excluded. Independent artifact checks confirmed no nonempty
+sprite overrides, no downsampled VFX-directory texture overrides, parseable JSON,
+and no remaining direct JSON references to the particles disabled by off mode.
+Every extra output path is a documented, zero-byte derived particle override.
+
+| Output | Parsed JSON | Extra particle paths | Total particle paths disabled by off mode |
+|---|---:|---:|---:|
+| main | 2322 | 0 | 0 |
+| filler | 150 | 0 | 0 |
+| min | 10 | 0 | 0 |
+| main-off | 2644 | 634 | 1223 |
+
+Test MODs are D2RLight-main-b6, D2RLight-filler-b6, D2RLight-min-b6 and
+D2RLight-main-b6-off under the installed game's mods directory. The GUI default
+uses preserve mode; CLI --effects off selects the particle suppression variant.
+No game was launched. Memory savings and visual corrections remain runtime
+unverified. Package size is especially misleading when UI/VFX fall back to
+original game resources. Beta5 still retains terrain/biome and unblocked
+animation dependencies that differ from lowHD, so memory parity is not claimed.
+
+---
+
 # beta5 independent-rule validation
 
 See [independent rules](lightweight-independent-rules.md) for the exact processing boundary. Reference JSON deltas, parameters, image masks and per-file geometry have been removed from built-ins and their legacy reconstruction code retired. Historical target selection/blocking intent remains explicitly attributed, not claimed as independently discovered.

@@ -114,10 +114,8 @@ pub fn build(
     if ![0, 1, 2, 4, 8, 16, 32].contains(&request.texture_size) {
         return Err("纹理尺寸使用 0（参考尺寸），或显式指定 1、2、4、8、16、32".into());
     }
-    if ![0, 1].contains(&request.sprite_scale) {
-        return Err(
-            "统一 sprite 缩放已撤销；使用 0（逐资源参考策略）或 1（用户明确选择原版）".into(),
-        );
+    if ![0, 1, 2, 4, 8].contains(&request.sprite_scale) {
+        return Err("sprite 使用 0（参考尺寸）、1（原版）或 2、4、8（参考处理后缩小）".into());
     }
     if request.asset_types.is_empty()
         || request
@@ -300,9 +298,18 @@ pub fn build(
                 reference::texture(&original, plan, request.texture_size)
             }
             Action::ReferenceSprite(plan) => {
-                let result = reference::sprite(&original, plan);
+                let result = reference::sprite_scaled(&original, plan, request.sprite_scale);
                 if result.is_ok() {
-                    report.details.push(Outcome{path:target.path.clone(),action:plan.policy.clone(),reason:format!("源 {}；{}×{}、{} 帧；擦除矩形 {}，黑色填充矩形 {}；去除参考文件无效尾部 {} 字节；颜色采用原版：{}",plan.source,plan.output.width,plan.output.height,plan.output.frames,plan.clear_rects.len(),plan.black_rects.len(),plan.discarded_reference_tail_bytes,plan.native_colors_retained)});
+                    report.details.push(Outcome{path:target.path.clone(),action:plan.policy.clone(),reason:format!("源 {}；参考 {}×{}、{} 帧；擦除矩形 {}，黑色填充矩形 {}；去除参考文件无效尾部 {} 字节；颜色采用原版：{}",plan.source,plan.output.width,plan.output.height,plan.output.frames,plan.clear_rects.len(),plan.black_rects.len(),plan.discarded_reference_tail_bytes,plan.native_colors_retained)});
+                    report.details.push(Outcome {
+                        path: target.path.clone(),
+                        action: "sprite_output".into(),
+                        reason: format!(
+                            "参考处理后缩小 {} 倍；输出 {} 字节",
+                            request.sprite_scale.max(1),
+                            result.as_ref().unwrap().len()
+                        ),
+                    });
                 }
                 result
             }
@@ -342,7 +349,7 @@ pub fn build(
         &staging.path.join("lightweight-manifest.json"),
         &serde_json::to_vec_pretty(&report).map_err(|e| e.to_string())?,
     )?;
-    let readme=format!("D2R 轻量资源测试版 {}\r\n启动参数：{}\r\n\r\n只从本机游戏生成，不包含 lowHD 成品素材。清单和结构选择参考 lowHD；不是完全相同的复制版。\r\n纹理尺寸选项 {}（0=参考），sprite 策略 {}（0=参考，1=用户选择原版）。\r\n逐资源策略、颜色差异、缺失及无需覆盖的资源见 lightweight-manifest.json。未确认策略会阻止生成。\r\n本版不重写非空粒子、不修改 missiles.txt、不新增房间工具或声纹。\r\n正常音频加工功能仍可单独用于该成品。\r\n未启动游戏验证。源游戏、原 MOD 和已有同名产物不会覆盖。\r\n",report.profile,report.launch_arguments,request.texture_size,request.sprite_scale);
+    let readme=format!("D2R 轻量资源测试版 {}\r\n启动参数：{}\r\n\r\n只从本机游戏生成，不包含 lowHD 成品素材。清单和结构选择参考 lowHD；不是完全相同的复制版。\r\n纹理尺寸选项 {}（0=参考），sprite 策略 {}（0=参考，1=用户选择原版，2/4/8=参考处理后缩小）。\r\n逐资源策略、颜色差异、缺失及无需覆盖的资源见 lightweight-manifest.json。未确认策略会阻止生成。\r\n本版不重写非空粒子、不修改 missiles.txt、不新增房间工具或声纹。\r\n正常音频加工功能仍可单独用于该成品。\r\n未启动游戏验证。源游戏、原 MOD 和已有同名产物不会覆盖。\r\n",report.profile,report.launch_arguments,request.texture_size,request.sprite_scale);
     write(&staging.path.join("README.txt"), readme.as_bytes())?;
     if destination.exists() {
         return Err("输出名称在生成期间被占用，未覆盖；请重试".into());
@@ -356,7 +363,7 @@ pub fn build(
 pub fn cli(args: &[std::ffi::OsString], import: bool) -> Result<(), String> {
     use std::io::Write;
     if args.iter().any(|s| s == "--help" || s == "-h") {
-        println!("轻量资源生成（实验版）\n  lightweight --game <游戏目录> [--profile main|filler|min]\n    [--texture-size 0|1|2|4|8|16|32] 默认0=参考尺寸\n    [--sprite-scale 0|1] 默认0=逐资源参考策略；1为用户选择原版\n    [--output <输出父目录>] [--name <MOD名称>]\n    [--asset-types empty,json,texture,sprite] 默认全部\n    [--recipe <自定义.json.gz>] [--json|--events]\n\n开发用清单导入（不复制成品素材）：\n  lightweight-import --source <参考.mpq目录> --game <游戏目录> --profile main --output <新配方.json.gz>\n\n运行生成只需要本机游戏与程序内置配方，无需原 lowHD 包。\n未确认的策略阻止生成；不重写粒子内部结构，不修改原游戏或启用 MOD。");
+        println!("轻量资源生成（实验版）\n  lightweight --game <游戏目录> [--profile main|filler|min]\n    [--texture-size 0|1|2|4|8|16|32] 默认4；0=参考尺寸\n    [--sprite-scale 0|1|2|4|8] 默认2=参考处理后缩小2倍；0=参考尺寸；1=原版\n    [--output <输出父目录>] [--name <MOD名称>]\n    [--asset-types empty,json,texture,sprite] 默认全部\n    [--recipe <自定义.json.gz>] [--json|--events]\n\n开发用清单导入（不复制成品素材）：\n  lightweight-import --source <参考.mpq目录> --game <游戏目录> --profile main --output <新配方.json.gz>\n\n运行生成只需要本机游戏与程序内置配方，无需原 lowHD 包。\n未确认的策略阻止生成；不重写粒子内部结构，不修改原游戏或启用 MOD。");
         return Ok(());
     }
     let mut options = BTreeMap::new();
@@ -442,13 +449,13 @@ pub fn cli(args: &[std::ffi::OsString], import: bool) -> Result<(), String> {
             .map(|s| s.to_string_lossy().parse())
             .transpose()
             .map_err(|_| "纹理尺寸不是整数")?
-            .unwrap_or(0),
+            .unwrap_or(4),
         sprite_scale: options
             .get("--sprite-scale")
             .map(|s| s.to_string_lossy().parse())
             .transpose()
             .map_err(|_| "sprite 缩小倍数不是整数")?
-            .unwrap_or(0),
+            .unwrap_or(2),
         recipe_file: options.get("--recipe").map(PathBuf::from),
         asset_types: options
             .get("--asset-types")

@@ -176,12 +176,14 @@ pub fn texture(bytes: &[u8], max_side: usize) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
-#[cfg(test)]
 pub fn sprite(bytes: &[u8], divisor: usize) -> Result<Vec<u8>, String> {
     if ![1, 2, 4, 8].contains(&divisor) {
         return Err("unsupported sprite divisor".into());
     }
-    if bytes.len() < 40 || bytes.get(..4) != Some(b"SpA1") || u16_at(bytes, 4)? != 31 {
+    if bytes.len() < 40
+        || (bytes.get(..4) != Some(b"SpA1") && bytes.get(..4) != Some(b"SPa1"))
+        || u16_at(bytes, 4)? != 31
+    {
         return Err("unsupported sprite format (expected SpA1 RGBA31)".into());
     }
     let w = u32_at(bytes, 8)? as usize;

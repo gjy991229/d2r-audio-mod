@@ -15,20 +15,22 @@ For observed 2D textures, the 36-byte header is followed by eight-byte mip
 records. Each mip offset is relative to the offset field itself, not the
 file start. The byte at offset 7 mirrors the mip count at offset 28.
 Formats 31 (RGBA), 57/58 (BC1), 61/62 (BC3), and 63 (BC4) are validated by
-expected payload sizes. Default dimensions, format and mip count follow each
-reference target. Matching native mip payloads are retained directly; otherwise
+expected payload sizes. With texture-size=0, dimensions, format and mip count follow each
+reference target. The beta.3 default is maximum side 4, using native mips. Matching native mip payloads are retained directly; otherwise
 small native mips are decoded, resized independently by channel, and encoded
 with an independently implemented BC codec. Explicit texture-size overrides
 remain available. Unknown conversion strategies stop generation.
 
-## Reference sprite operations (beta.2)
+## Reference sprite operations (beta.3)
 
-RGBA `SpA1` and `SPa1` headers are supported. There is no default uniform divisor.
+RGBA `SpA1` and `SPa1` headers are supported. Default divisor is 2, applied AFTER reference operations.
 Each recipe records source fingerprint, geometry, frame selection and rectangular
 transparent/black operations. Original game pixels supply surviving visible areas.
 Where reference geometry matches a native `.lowend.sprite`, the native lowend
 variant is used directly. Other sprites preserve reference dimensions, blank
-regions and selected frames. Unused reference trailing bytes are discarded.
+regions and selected frames. Unused reference trailing bytes are discarded. Each resulting frame is then
+independently reduced with alpha-weighted RGB; no discarded background or frame
+is restored by the resize. sprite-scale=0 retains reference dimensions.
 Arbitrary painted colors are not imported; differences are reported in the manifest.
 This preserves structural operations, not identical artwork or all alpha gradients.
 

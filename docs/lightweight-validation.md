@@ -1,3 +1,31 @@
+# v1.4.0-beta.3 validation
+
+Default texture maximum side is 4. Default sprite divisor is 2, applied after
+reference masks, native lowend selection and frame selection. Explicit scale 0
+retains beta.2 reference dimensions, and scale 1 retains original nonempty sprites.
+
+| Profile | Generated resource MiB |
+| --- | ---: |
+| main | 15.61 |
+| filler | 14.10 |
+| min | 18.98 |
+
+47 regression checks passed, including a combined frame-selection/mask/resize
+case. The same three pre-existing room-tool fixture failures were excluded;
+four opt-in data tests remain ignored. All generated JSON was parsed, all texture
+mip ranges and maximum-side limits checked. All 103 sprites were independently
+checked against beta.2: retained frames, reduced geometry, exact payload length,
+and every output alpha value against the corresponding source area average.
+
+Test directories: `C:\Diablo II Resurrected\mods\D2RLight-{main,filler,min}-b3`.
+Preview: `target/lightweight-preview-b3/d2r-audio-mod.exe`.
+Previous builds and the stable D2RHub sidecar were preserved. Game rendering,
+UI layout and memory usage still require in-game testing. No game was launched.
+Beta.2 exclusions (corrupt reference textures, custom artwork and nonempty
+particle/legacy assets) remain unchanged.
+
+---
+
 # v1.4.0-beta.2 local generation record
 
 Branch: `codex/lightweight-mod-generator`; local game build `93854`.

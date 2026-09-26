@@ -311,6 +311,15 @@ pub fn derive_sprite(
     Ok(plan)
 }
 
+pub fn sprite_scaled(native: &[u8], plan: &SpritePlan, divisor: usize) -> Result<Vec<u8>, String> {
+    let processed = sprite(native, plan)?;
+    if divisor == 0 {
+        Ok(processed)
+    } else {
+        assets::sprite(&processed, divisor)
+    }
+}
+
 pub fn sprite(native: &[u8], plan: &SpritePlan) -> Result<Vec<u8>, String> {
     let mut pixels = render_frames(native, plan)?;
     if plan.policy == "native_lowend_variant"
@@ -404,6 +413,39 @@ mod tests {
         let mut changed = native.clone();
         changed[40] = 0;
         assert!(sprite(&changed, &plan).is_err());
+    }
+    #[test]
+    fn scaled_sprite_applies_reference_mask_and_frame_selection_first() {
+        let mut native = strip(&[[255, 0, 0, 255]; 8]);
+        put32(&mut native, 12, 2).unwrap();
+        native[6] = 4;
+        put32(&mut native, 8, 8).unwrap();
+        put32(&mut native, 20, 2).unwrap();
+        native.extend([255, 0, 0, 255].repeat(8));
+        let mut reference = native[..40].to_vec();
+        put32(&mut reference, 8, 4).unwrap();
+        put32(&mut reference, 20, 1).unwrap();
+        for _ in 0..2 {
+            reference.extend([0u8; 8]);
+            reference.extend([255, 0, 0, 255].repeat(2));
+        }
+        reference.extend([77; 32]);
+        let plan = derive_sprite("data/test.sprite", &native, &reference, None).unwrap();
+        let out = sprite_scaled(&native, &plan, 2).unwrap();
+        assert_eq!(
+            Geometry::read(&out).unwrap(),
+            Geometry {
+                width: 2,
+                height: 1,
+                frames: 1,
+                frame_width: 2
+            }
+        );
+        assert_eq!(&out[40..], &[0, 0, 0, 0, 255, 0, 0, 255]);
+        assert_eq!(
+            sprite_scaled(&native, &plan, 0).unwrap(),
+            sprite(&native, &plan).unwrap()
+        );
     }
     #[test]
     fn native_lowend_is_used_without_uniform_scaling() {

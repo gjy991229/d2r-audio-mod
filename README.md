@@ -1,8 +1,15 @@
 # D2R Audio Mod
 
-当前版本 **v1.3.3**。这是独立、轻量的 D2R 音频遥测 Mod 生成/加工工具。它只读取游戏资源或源 Mod，输出一个新 Mod 与 v7 协议清单；不读取 D2RHub 配置、账号、数据库，也不会启用 Mod。
+当前版本 **v1.3.4**。这是独立、轻量的 D2R 音频遥测 Mod 生成/加工工具。它只读取游戏资源或源 Mod，输出一个新 Mod 与 v7 协议清单；不读取 D2RHub 配置、账号、数据库，也不会启用 Mod。
 
-本项目已按 [MIT License](LICENSE) 开源。Windows 独立工具可从 [Releases](https://github.com/gjy991229/d2r-audio-mod/releases) 下载；[D2RHub v0.9.96](https://github.com/gjy991229/D2RHub/releases) 已内置同版本生成器，无需另行安装。完整音频格式见 [protocol/](protocol/)，共享实现位于 [d2r-audio-protocol](crates/d2r-audio-protocol/)。
+本项目已按 [MIT License](LICENSE) 开源。Windows 独立工具可从 [Releases](https://github.com/gjy991229/d2r-audio-mod/releases) 下载；[D2RHub v0.9.96](https://github.com/gjy991229/D2RHub/releases) 已内置生成器，无需另行安装。完整音频格式见 [protocol/](protocol/)，共享实现位于 [d2r-audio-protocol](crates/d2r-audio-protocol/)。
+
+## v1.3.4 更新
+
+- 兼容 lowHD 等 Mod 用空白、BOM 或纯注释 JSON 屏蔽符文/物品实体、落地状态机和物品映射的情况。需要本机游戏数据作为基线；只为选中的声纹功能构建无模型实体和私有状态机，保留共享屏蔽文件及未选物品的裁剪策略。
+- 必需骨骼或动画也被置空时，将游戏基线复制到声纹专用路径，不恢复共享资源。被屏蔽状态机的原声音与视觉事件不会恢复。
+- 正常 JSON/JSON5 继续保留源定义；精简实体缺少依赖列表时只补状态机引用。非空语法错误、类型错误及不支持的状态转场仍明确失败，不通过恢复整套原版资源掩盖问题。
+- 保持现有 v7 协议、声纹组 r3 和成品复用规则不变。本次覆盖生成和资源结构检查；无模型实体在游戏内的实际声纹触发仍需运行验证。
 
 ## v1.3.3 更新
 

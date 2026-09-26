@@ -1153,7 +1153,11 @@ fn room_submission_layout(create: bool) -> serde_json::Value {
 
 fn room_panel_opener_layout(create: bool) -> serde_json::Value {
     let (name, native_panel, opposite_panel) = if create {
-        ("D2RHubOpenCreateGame", IN_GAME_CREATE_FORM, IN_GAME_JOIN_FORM)
+        (
+            "D2RHubOpenCreateGame",
+            IN_GAME_CREATE_FORM,
+            IN_GAME_JOIN_FORM,
+        )
     } else {
         ("D2RHubOpenJoinGame", IN_GAME_JOIN_FORM, IN_GAME_CREATE_FORM)
     };
@@ -1201,7 +1205,11 @@ fn keyboard_room_opener_layout(create: bool) -> serde_json::Value {
             IN_GAME_JOIN_FORM,
         )
     } else {
-        ("D2RHubKeyboardOpenJoin", IN_GAME_JOIN_FORM, IN_GAME_CREATE_FORM)
+        (
+            "D2RHubKeyboardOpenJoin",
+            IN_GAME_JOIN_FORM,
+            IN_GAME_CREATE_FORM,
+        )
     };
     serde_json::json!({
         "type": "Panel",
@@ -1315,9 +1323,16 @@ fn wrap_pause_actions(
 ) -> Result<(), String> {
     if node.get("type").and_then(serde_json::Value::as_str) == Some("ButtonWidget") {
         let returns = node.get("name").and_then(serde_json::Value::as_str) == Some("ReturnToGame");
-        if let Some(action) = node.pointer("/fields/onClickMessage").and_then(serde_json::Value::as_str).map(str::to_owned) {
-            let panel = if returns { "D2RHubPauseReturnToGame".to_string() }
-                else { format!("D2RHubPause{prefix}Action{index}") };
+        if let Some(action) = node
+            .pointer("/fields/onClickMessage")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned)
+        {
+            let panel = if returns {
+                "D2RHubPauseReturnToGame".to_string()
+            } else {
+                format!("D2RHubPause{prefix}Action{index}")
+            };
             *index += 1;
             let helper = serde_json::json!({
                 "type": "Panel", "name": panel,
@@ -1329,14 +1344,27 @@ fn wrap_pause_actions(
                       "fields": { "time": 0.005, "message": format!("PanelManager:ClosePanel:{panel}") } }
                 ]
             });
-            write_json_layout(mpq_directory, &format!("{UI_LAYOUTS_DIRECTORY}/{panel}hd.json"), &helper)?;
-            write_json_layout(mpq_directory, &format!("{UI_LAYOUTS_DIRECTORY}/{panel}.json"),
-                &serde_json::json!({ "type": "Panel", "name": panel }))?;
-            node["fields"]["onClickMessage"] = serde_json::json!(format!("PanelManager:OpenPanel:{panel}"));
+            write_json_layout(
+                mpq_directory,
+                &format!("{UI_LAYOUTS_DIRECTORY}/{panel}hd.json"),
+                &helper,
+            )?;
+            write_json_layout(
+                mpq_directory,
+                &format!("{UI_LAYOUTS_DIRECTORY}/{panel}.json"),
+                &serde_json::json!({ "type": "Panel", "name": panel }),
+            )?;
+            node["fields"]["onClickMessage"] =
+                serde_json::json!(format!("PanelManager:OpenPanel:{panel}"));
         }
     }
-    if let Some(children) = node.get_mut("children").and_then(serde_json::Value::as_array_mut) {
-        for child in children { wrap_pause_actions(mpq_directory, child, prefix, index)?; }
+    if let Some(children) = node
+        .get_mut("children")
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        for child in children {
+            wrap_pause_actions(mpq_directory, child, prefix, index)?;
+        }
     }
     Ok(())
 }
@@ -1382,8 +1410,16 @@ fn rebuild_pause_keyboard_gateway(
         return Err(format!("{relative_path} 没有可路由的暂停菜单按钮"));
     }
 
-    wrap_pause_actions(mpq_directory, &mut document,
-        if relative_path.contains("garden") { "Garden" } else { "Classic" }, &mut 0)?;
+    wrap_pause_actions(
+        mpq_directory,
+        &mut document,
+        if relative_path.contains("garden") {
+            "Garden"
+        } else {
+            "Classic"
+        },
+        &mut 0,
+    )?;
 
     let children = document
         .get_mut("children")
@@ -1559,11 +1595,7 @@ fn patch_room_form_layout(
     let routed_submit_message = format!("PanelManager:OpenPanel:{commit_panel}");
     // Restore the shared lobby form before cloning a dedicated in-game form.
     // Only the clone may queue exit + submit; the lobby must never open pause.
-    route_room_submission_messages(
-        &mut document,
-        &routed_submit_message,
-        native_submit_message,
-    );
+    route_room_submission_messages(&mut document, &routed_submit_message, native_submit_message);
     if layout_field_value_count(&document, native_submit_message) == 0 {
         return Err(format!(
             "{relative_path} 没有可路由的房间提交消息 {native_submit_message}"
@@ -1713,11 +1745,7 @@ fn patch_room_form_layout(
         IN_GAME_CREATE_FORM
     };
     document["name"] = serde_json::json!(in_game_panel);
-    route_room_submission_messages(
-        &mut document,
-        native_submit_message,
-        &routed_submit_message,
-    );
+    route_room_submission_messages(&mut document, native_submit_message, &routed_submit_message);
     let close = find_layout_node_mut(&mut document, "D2RHubCloseRoomForm")
         .ok_or_else(|| format!("{relative_path} 缺少房间表单关闭按钮"))?;
     close["fields"]["onClickMessage"] =
@@ -1948,7 +1976,9 @@ fn install_lobby_return_hint(
 
     // Keep JCY's existing placement, and replace our own node on repeated processing.
     if let Some(hint) = children.iter_mut().find_map(|child| {
-        if child.pointer("/fields/text").and_then(serde_json::Value::as_str)
+        if child
+            .pointer("/fields/text")
+            .and_then(serde_json::Value::as_str)
             == Some("@JcyPressTheEscKeyToReturn")
         {
             Some(child)
@@ -1960,17 +1990,20 @@ fn install_lobby_return_hint(
     } else {
         // A screen-sized transparent layer keeps the fallback independent of custom lobby
         // anchors. Insert behind the existing backgrounds so the normal lobby stays intact.
-        children.insert(0, serde_json::json!({
-            "type": "RectangleWidget",
-            "name": "D2RHubLobbyReturnHintBackground",
-            "fields": { "fitToScreen": true, "color": [0.0, 0.0, 0.0, 0.0] },
-            "children": [{
-                "type": "Widget",
-                "name": "D2RHubLobbyReturnHintAnchor",
-                "fields": { "anchor": { "x": 0.5, "y": 0.45 } },
-                "children": [lobby_return_hint_widget()]
-            }]
-        }));
+        children.insert(
+            0,
+            serde_json::json!({
+                "type": "RectangleWidget",
+                "name": "D2RHubLobbyReturnHintBackground",
+                "fields": { "fitToScreen": true, "color": [0.0, 0.0, 0.0, 0.0] },
+                "children": [{
+                    "type": "Widget",
+                    "name": "D2RHubLobbyReturnHintAnchor",
+                    "fields": { "anchor": { "x": 0.5, "y": 0.45 } },
+                    "children": [lobby_return_hint_widget()]
+                }]
+            }),
+        );
     }
     write_json_layout(mpq_directory, LOBBY_BACKGROUND_LAYOUT, &lobby)
 }
@@ -1990,18 +2023,32 @@ fn install_esc_next_game(
     room_tools_available: bool,
 ) -> Result<(), String> {
     for (panel, document) in [
-        (QUICK_RECREATE_ESC_ARM_PANEL, quick_recreate_esc_arm_layout()),
+        (
+            QUICK_RECREATE_ESC_ARM_PANEL,
+            quick_recreate_esc_arm_layout(),
+        ),
         (QUICK_RECREATE_ARM_PANEL, quick_recreate_arm_layout()),
         (QUICK_RECREATE_PANEL, quick_recreate_layout()),
     ] {
-        write_json_layout(mpq_directory, &format!("{UI_LAYOUTS_DIRECTORY}/{panel}hd.json"), &document)?;
-        write_json_layout(mpq_directory, &format!("{UI_LAYOUTS_DIRECTORY}/{panel}.json"),
-            &serde_json::json!({ "type": "Panel", "name": panel }))?;
+        write_json_layout(
+            mpq_directory,
+            &format!("{UI_LAYOUTS_DIRECTORY}/{panel}hd.json"),
+            &document,
+        )?;
+        write_json_layout(
+            mpq_directory,
+            &format!("{UI_LAYOUTS_DIRECTORY}/{panel}.json"),
+            &serde_json::json!({ "type": "Panel", "name": panel }),
+        )?;
     }
     let mut hud = read_local_or_casc_json(mpq_directory, storage, HUD_WARNINGS_LAYOUT)?;
-    let children = hud.get_mut("children").and_then(serde_json::Value::as_array_mut)
+    let children = hud
+        .get_mut("children")
+        .and_then(serde_json::Value::as_array_mut)
         .ok_or_else(|| "HUD children 必须是数组".to_string())?;
-    children.retain(|child| child.get("name").and_then(serde_json::Value::as_str) != Some("D2RHubCloseEscArm"));
+    children.retain(|child| {
+        child.get("name").and_then(serde_json::Value::as_str) != Some("D2RHubCloseEscArm")
+    });
     children.push(close_esc_arm_timer());
     write_json_layout(mpq_directory, HUD_WARNINGS_LAYOUT, &hud)?;
     for relative_path in PAUSE_LAYOUTS {
@@ -2009,19 +2056,34 @@ fn install_esc_next_game(
         let mut document = if room_tools_available {
             read_local_or_casc_json(mpq_directory, storage, relative_path)?
         } else {
-            read_casc_json_asset(storage.ok_or_else(|| "双击 Esc 下一局需要可读取的 D2R 游戏目录".to_string())?, relative_path)?
+            read_casc_json_asset(
+                storage.ok_or_else(|| "双击 Esc 下一局需要可读取的 D2R 游戏目录".to_string())?,
+                relative_path,
+            )?
         };
         if !room_tools_available {
             configure_standalone_pause_escape(&mut document);
-            wrap_pause_actions(mpq_directory, &mut document,
-                if relative_path.contains("garden") { "Garden" } else { "Classic" }, &mut 0)?;
+            wrap_pause_actions(
+                mpq_directory,
+                &mut document,
+                if relative_path.contains("garden") {
+                    "Garden"
+                } else {
+                    "Classic"
+                },
+                &mut 0,
+            )?;
         }
-        let children = document.get_mut("children").and_then(serde_json::Value::as_array_mut)
+        let children = document
+            .get_mut("children")
+            .and_then(serde_json::Value::as_array_mut)
             .ok_or_else(|| format!("{relative_path}.children 必须是数组"))?;
-        children.retain(|child| !matches!(
-            child.get("name").and_then(serde_json::Value::as_str),
-            Some("D2RHubEscNextGameLauncher" | "D2RHubEscNextGamePauseTimeout")
-        ));
+        children.retain(|child| {
+            !matches!(
+                child.get("name").and_then(serde_json::Value::as_str),
+                Some("D2RHubEscNextGameLauncher" | "D2RHubEscNextGamePauseTimeout")
+            )
+        });
         children.push(serde_json::json!({
             "type": "TimerWidget",
             "name": "D2RHubEscNextGameLauncher",
@@ -2047,14 +2109,28 @@ fn install_esc_next_game(
 
 fn configure_standalone_pause_escape(node: &mut serde_json::Value) {
     let returns = node.get("name").and_then(serde_json::Value::as_str) == Some("ReturnToGame");
-    if let Some(fields) = node.get_mut("fields").and_then(serde_json::Value::as_object_mut) {
-        fields.insert("acceptsEscKeyEverywhere".to_string(), serde_json::json!(returns));
+    if let Some(fields) = node
+        .get_mut("fields")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        fields.insert(
+            "acceptsEscKeyEverywhere".to_string(),
+            serde_json::json!(returns),
+        );
         if returns {
-            fields.insert("onClickMessage".to_string(), serde_json::json!("PausePanelMessage:Close"));
+            fields.insert(
+                "onClickMessage".to_string(),
+                serde_json::json!("PausePanelMessage:Close"),
+            );
         }
     }
-    if let Some(children) = node.get_mut("children").and_then(serde_json::Value::as_array_mut) {
-        for child in children { configure_standalone_pause_escape(child); }
+    if let Some(children) = node
+        .get_mut("children")
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        for child in children {
+            configure_standalone_pause_escape(child);
+        }
     }
 }
 
@@ -2076,11 +2152,18 @@ fn install_in_game_room_tools(
         .ok_or_else(|| format!("{HUD_WARNINGS_LAYOUT}.children 必须是 JSON 数组"))?;
     children.retain(|child| {
         !matches!(
-            child.pointer("/fields/message").and_then(serde_json::Value::as_str),
-            Some("PanelManager:OpenPanel:D2RHubRoomToolbar" | "PanelManager:ClosePanel:D2RHubRoomToolbar")
+            child
+                .pointer("/fields/message")
+                .and_then(serde_json::Value::as_str),
+            Some(
+                "PanelManager:OpenPanel:D2RHubRoomToolbar"
+                    | "PanelManager:ClosePanel:D2RHubRoomToolbar"
+            )
         )
     });
-    children.retain(|child| child.get("name").and_then(serde_json::Value::as_str) != Some("D2RHubCloseEscArm"));
+    children.retain(|child| {
+        child.get("name").and_then(serde_json::Value::as_str) != Some("D2RHubCloseEscArm")
+    });
     children.push(close_esc_arm_timer());
     children.insert(
         0,
@@ -2098,9 +2181,15 @@ fn install_in_game_room_tools(
     for (file_name, document) in [
         ("D2RHubRoomToolbarhd.json", room_toolbar_layout()),
         ("D2RHubQuickRecreateArmhd.json", quick_recreate_arm_layout()),
-        ("D2RHubQuickRecreateEscArmhd.json", quick_recreate_esc_arm_layout()),
+        (
+            "D2RHubQuickRecreateEscArmhd.json",
+            quick_recreate_esc_arm_layout(),
+        ),
         ("D2RHubQuickRecreatehd.json", quick_recreate_layout()),
-        ("D2RHubCommitCreateGamehd.json", room_submission_layout(true)),
+        (
+            "D2RHubCommitCreateGamehd.json",
+            room_submission_layout(true),
+        ),
         ("D2RHubCommitJoinGamehd.json", room_submission_layout(false)),
         (
             "D2RHubOpenCreateGamehd.json",
@@ -2305,6 +2394,301 @@ fn read_casc_json_asset(
         .map_err(|error| format!("解析 D2R CASC JSON 资源失败 {normalized}: {error}"))
 }
 
+// A disabled override is different from a missing or malformed asset. Only
+// telemetry-owned readers may opt in to rebuilding its required structure.
+fn is_disabled_json(text: &str) -> bool {
+    let mut rest = text.strip_prefix('\u{feff}').unwrap_or(text).trim_start();
+    loop {
+        if let Some(comment) = rest.strip_prefix("//") {
+            rest = comment
+                .find(['\r', '\n'])
+                .map(|end| &comment[end..])
+                .unwrap_or("")
+                .trim_start();
+        } else if let Some(comment) = rest.strip_prefix("/*") {
+            let Some(end) = comment.find("*/") else {
+                return false;
+            };
+            rest = comment[end + 2..].trim_start();
+        } else {
+            return rest.is_empty();
+        }
+    }
+}
+
+fn local_json_is_disabled(mpq_directory: &Path, relative: &str) -> Result<bool, String> {
+    let path = mpq_directory.join(relative.replace('\\', "/"));
+    if !path.is_file() {
+        return Ok(false);
+    }
+    Ok(is_disabled_json(&read_utf8(&path)?))
+}
+
+#[derive(Clone, Copy)]
+enum TelemetryJsonKind {
+    Entity,
+    StateMachine,
+}
+
+fn silence_disabled_state_machine(document: &mut serde_json::Value) {
+    if let Some(dependencies) = document
+        .get_mut("dependencies")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        for (kind, references) in dependencies {
+            if !matches!(kind.as_str(), "animations" | "skeletons") {
+                *references = serde_json::json!([]);
+            }
+        }
+    }
+    if let Some(states) = document
+        .get_mut("states")
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        for state in states {
+            state["audioId"] = serde_json::json!("");
+            state["enableVfxAttributes"] = serde_json::json!(false);
+            state["enterEvents"] = serde_json::json!([]);
+            state["exitEvents"] = serde_json::json!([]);
+        }
+    }
+}
+
+// Motion can be necessary to reach the existing Flippy/Ground transitions even
+// without a mesh. Never unblank a shared motion resource: use a private copy.
+fn restore_disabled_motion_dependencies(
+    value: &mut serde_json::Value,
+    mpq_directory: &Path,
+    storage: Option<&casc_core::Storage>,
+) -> Result<(), String> {
+    match value {
+        serde_json::Value::String(path)
+            if path.ends_with(".skeleton")
+                || path.ends_with(".animation")
+                || path.ends_with(".animations") =>
+        {
+            let normalized = path.replace('\\', "/");
+            if !normalized.starts_with("data/")
+                || normalized.contains(':')
+                || normalized.split('/').any(|part| part == "..")
+            {
+                return Err(format!("必要动作资源路径不安全: {normalized}"));
+            }
+            let local = mpq_directory.join(&normalized);
+            if local.is_file()
+                && std::fs::metadata(&local)
+                    .map_err(|error| format!("读取动作资源元数据失败: {error}"))?
+                    .len()
+                    == 0
+            {
+                let storage = storage.ok_or_else(|| {
+                    format!("必要动作资源 {normalized} 被清空，需要本机 D2R 数据")
+                })?;
+                let target = format!("data/hd/items/audio_telemetry/motion/{}", &normalized[5..]);
+                let destination = mpq_directory.join(&target);
+                if !destination.is_file() {
+                    extract_casc_file(storage, &normalized, &destination)?;
+                }
+                *path = target;
+            }
+        }
+        serde_json::Value::Array(values) => {
+            for value in values {
+                restore_disabled_motion_dependencies(value, mpq_directory, storage)?;
+            }
+        }
+        serde_json::Value::Object(values) => {
+            for value in values.values_mut() {
+                restore_disabled_motion_dependencies(value, mpq_directory, storage)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn disabled_entity_from_baseline(
+    mut document: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let entities = document
+        .get_mut("entities")
+        .and_then(serde_json::Value::as_array_mut)
+        .ok_or("游戏基线实体缺少 entities，无法构建无模型声纹实体")?;
+    // Retain only the root and its skeleton/transform. No models, textures,
+    // attachments, VFX, preloads or secondary entities may be resurrected.
+    entities.retain(|entity| {
+        entity
+            .get("components")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|components| components.iter().any(|c| c["type"] == "UnitRootComponent"))
+    });
+    for entity in entities.iter_mut() {
+        if let Some(components) = entity
+            .get_mut("components")
+            .and_then(serde_json::Value::as_array_mut)
+        {
+            components.retain(|c| {
+                matches!(
+                    c["type"].as_str(),
+                    Some(
+                        "UnitRootComponent"
+                            | "SkeletonDefinitionComponent"
+                            | "TransformDefinitionComponent"
+                    )
+                )
+            });
+            for component in components {
+                if component["type"] == "UnitRootComponent" {
+                    component["onCreateEventName"] = serde_json::json!("");
+                }
+            }
+        }
+    }
+    if entities.is_empty() {
+        return Err("游戏基线实体缺少 UnitRootComponent，无法构建声纹实体".to_string());
+    }
+    // Rebuild preload references from retained components, rather than keeping
+    // references to the removed meshes and materials.
+    let mut skeletons = Vec::new();
+    let mut json = Vec::new();
+    for entity in entities.iter() {
+        for component in entity["components"].as_array().into_iter().flatten() {
+            if component["type"] == "SkeletonDefinitionComponent" {
+                if let Some(path) = component["filename"].as_str() {
+                    skeletons.push(serde_json::json!({"path": path}));
+                }
+            }
+            if component["type"] == "UnitRootComponent" {
+                if let Some(path) = component["state_machine_filename"].as_str() {
+                    json.push(serde_json::json!({"path": path}));
+                }
+            }
+        }
+    }
+    document["dependencies"] = serde_json::json!({
+        "particles": [], "models": [], "skeletons": skeletons, "animations": [],
+        "textures": [], "physics": [], "json": json, "variantdata": [], "objecteffects": [], "other": []
+    });
+    Ok(document)
+}
+
+fn read_telemetry_json_asset(
+    mpq_directory: &Path,
+    storage: Option<&casc_core::Storage>,
+    relative: &str,
+    kind: TelemetryJsonKind,
+) -> Result<(serde_json::Value, String), String> {
+    if !local_json_is_disabled(mpq_directory, relative)? {
+        return read_json_asset(mpq_directory, storage, relative);
+    }
+    let storage = storage.ok_or_else(|| format!(
+        "源 Mod 用空 JSON 屏蔽了 {relative}；声纹适配需要 --game 指定的本机 D2R 数据，无法凭空恢复必要结构"
+    ))?;
+    let baseline = read_casc_json_asset(storage, relative).or_else(|error| {
+        // Some source Mods use the historical plural rune directory, whereas
+        // the game's baseline uses misc/rune. Keep the source output path.
+        let normalized = relative.replace('\\', "/");
+        if matches!(kind, TelemetryJsonKind::Entity)
+            && normalized.contains("/misc/runes/")
+            && is_missing_compatibility_asset_error(&error)
+        {
+            read_casc_json_asset(storage, &normalized.replace("/misc/runes/", "/misc/rune/"))
+        } else {
+            Err(error)
+        }
+    })?;
+    let mut document = match kind {
+        TelemetryJsonKind::Entity => disabled_entity_from_baseline(baseline)?,
+        // This is cloned to a private path by the caller; the shared empty
+        // source state machine remains untouched.
+        TelemetryJsonKind::StateMachine => {
+            let mut state_machine = baseline;
+            silence_disabled_state_machine(&mut state_machine);
+            state_machine
+        }
+    };
+    restore_disabled_motion_dependencies(&mut document, mpq_directory, Some(storage))?;
+    Ok((document, format!("DisabledMod:{relative} → CASC 必要结构")))
+}
+
+fn redirect_state_machine_dependency(
+    document: &mut serde_json::Value,
+    original: &str,
+    replacement: &str,
+) -> Result<(), String> {
+    let object = document.as_object_mut().ok_or("实体必须是 JSON 对象")?;
+    let dependencies = object
+        .entry("dependencies")
+        .or_insert_with(|| serde_json::json!({}));
+    let dependencies = dependencies
+        .as_object_mut()
+        .ok_or("实体 dependencies 必须是对象")?;
+    let references = dependencies
+        .entry("json")
+        .or_insert_with(|| serde_json::json!([]));
+    let references = references
+        .as_array_mut()
+        .ok_or("实体 dependencies.json 必须是数组")?;
+    let mut found = false;
+    for reference in references.iter_mut() {
+        if reference
+            .get("path")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|path| {
+                path.replace('\\', "/")
+                    .eq_ignore_ascii_case(&original.replace('\\', "/"))
+            })
+        {
+            reference["path"] = serde_json::json!(replacement);
+            found = true;
+        }
+    }
+    if !found
+        && !references.iter().any(|reference| {
+            reference.get("path").and_then(serde_json::Value::as_str) == Some(replacement)
+        })
+    {
+        references.push(serde_json::json!({"path": replacement}));
+    }
+    Ok(())
+}
+
+fn read_telemetry_item_mapping(
+    mpq_directory: &Path,
+    storage: Option<&casc_core::Storage>,
+    tracked_codes: &[String],
+    compatibility: &mut Vec<AudioModCompatibility>,
+) -> Result<(serde_json::Value, String), String> {
+    let relative = "data/hd/items/items.json";
+    if !local_json_is_disabled(mpq_directory, relative)? {
+        return read_json_asset(mpq_directory, storage, relative);
+    }
+    let storage =
+        storage.ok_or("源 Mod 屏蔽了 items.json；需要本机 D2R 数据恢复所选物品的声纹映射")?;
+    let mut document = read_casc_json_asset(storage, relative)?;
+    let rows = document
+        .as_array_mut()
+        .ok_or("游戏基线 items.json 必须是数组")?;
+    for row in rows.iter_mut() {
+        let entries = row
+            .as_object_mut()
+            .ok_or("游戏基线 items.json 条目必须是对象")?;
+        entries.retain(|code, _| {
+            tracked_codes
+                .iter()
+                .any(|tracked| tracked.eq_ignore_ascii_case(code))
+        });
+    }
+    rows.retain(|row| row.as_object().is_some_and(|entries| !entries.is_empty()));
+    compatibility.push(AudioModCompatibility {
+        target: relative.to_string(),
+        action: "rebuild_disabled_item_mapping_for_audio".to_string(),
+        detail: "源物品映射为空；仅从本机游戏恢复本次选中的物品映射，不恢复整张原版映射表。"
+            .to_string(),
+    });
+    Ok((document, format!("DisabledMod:{relative} → CASC 所选映射")))
+}
+
 fn state_transition_exists(document: &serde_json::Value, from: i64, to: i64) -> bool {
     document
         .get("transitions")
@@ -2337,13 +2721,32 @@ fn patch_rune_unit_definitions(
             .into_iter()
             .find(|candidate| candidate.is_file())
             .unwrap_or_else(|| mpq_directory.join(&relative));
-        let mut document: serde_json::Value = if path.is_file() {
-            parse_json_value(&read_utf8(&path)?)
-                .map_err(|error| format!("解析 HD 符文实体失败 {}: {error}", path.display()))?
-        } else {
-            let (document, _) = read_json_asset(mpq_directory, storage, &relative)?;
-            document
-        };
+        let entity_relative = path
+            .strip_prefix(mpq_directory)
+            .map_err(|error| format!("符文资源路径异常: {error}"))?
+            .to_string_lossy()
+            .replace('\\', "/");
+        let (mut document, entity_source) = read_telemetry_json_asset(
+            mpq_directory,
+            storage,
+            &entity_relative,
+            TelemetryJsonKind::Entity,
+        )?;
+        let entity_disabled = entity_source.starts_with("DisabledMod:")
+            || local_json_is_disabled(mpq_directory, "data/hd/items/items.json")?;
+        if entity_disabled && !entity_source.starts_with("DisabledMod:") {
+            document = disabled_entity_from_baseline(document)?;
+        }
+        if entity_source.starts_with("DisabledMod:") {
+            compatibility.push(AudioModCompatibility {
+                target: format!("#{rune_number:02} 符文实体"),
+                action: "rebuild_disabled_entity_for_audio".to_string(),
+                detail: format!("{entity_source}；只保留根、骨骼和变换组件供声纹状态机使用，不恢复模型、材质及视觉组件。"),
+            });
+        }
+        if entity_disabled {
+            restore_disabled_motion_dependencies(&mut document, mpq_directory, storage)?;
+        }
         let entities = document
             .get_mut("entities")
             .and_then(serde_json::Value::as_array_mut)
@@ -2387,8 +2790,23 @@ fn patch_rune_unit_definitions(
                 "#{rune_number:02} 已指向旧版 D2RHub 状态机；请选原始 Mod，而不是加工后的输出"
             ));
         }
-        let (mut state_machine, state_machine_source) =
-            read_json_asset(mpq_directory, storage, &normalized_original)?;
+        let (mut state_machine, state_machine_source) = read_telemetry_json_asset(
+            mpq_directory,
+            storage,
+            &normalized_original,
+            TelemetryJsonKind::StateMachine,
+        )?;
+        if entity_disabled {
+            silence_disabled_state_machine(&mut state_machine);
+            restore_disabled_motion_dependencies(&mut state_machine, mpq_directory, storage)?;
+        }
+        if state_machine_source.starts_with("DisabledMod:") {
+            compatibility.push(AudioModCompatibility {
+                target: normalized_original.clone(),
+                action: "clone_disabled_state_machine_for_audio".to_string(),
+                detail: "源状态机为空；仅在独立声纹路径恢复动作和转场，保留共享空文件，不恢复原声音和视觉事件。".to_string(),
+            });
+        }
         let (flippy_index, flippy_id, ground_id, original_audio_id) = {
             let states = state_machine
                 .get("states")
@@ -2446,19 +2864,11 @@ fn patch_rune_unit_definitions(
         unit_root["state_machine_filename"] =
             serde_json::Value::String(telemetry_state_machine.clone());
 
-        let dependencies = document
-            .get_mut("dependencies")
-            .and_then(|value| value.get_mut("json"))
-            .and_then(serde_json::Value::as_array_mut)
-            .ok_or_else(|| format!("HD 符文缺少 dependencies.json: {}", path.display()))?;
-        if let Some(reference) = dependencies.iter_mut().find(|reference| {
-            reference.get("path").and_then(serde_json::Value::as_str)
-                == Some(original_state_machine.as_str())
-        }) {
-            reference["path"] = serde_json::Value::String(telemetry_state_machine.clone());
-        } else {
-            dependencies.push(serde_json::json!({ "path": telemetry_state_machine }));
-        }
+        redirect_state_machine_dependency(
+            &mut document,
+            &original_state_machine,
+            &telemetry_state_machine,
+        )?;
 
         write_file(
             &mpq_directory.join(telemetry_state_machine.replace('/', "\\")),
@@ -2478,7 +2888,12 @@ fn patch_rune_unit_definitions(
                 "attach_in_place".to_string()
             },
             detail: format!(
-                "从 {state_machine_source} 克隆；保留原动画、VFX、依赖和双向转场，仅将 Flippy.audioId 指向独立声纹{}。",
+                "从 {state_machine_source} 克隆；{}，将 Flippy.audioId 指向独立声纹{}。",
+                if entity_disabled || state_machine_source.starts_with("DisabledMod:") {
+                    "保留必要动作和双向转场，不恢复被屏蔽的视觉事件与原声音"
+                } else {
+                    "保留原动画、VFX、依赖和双向转场"
+                },
                 original_audio_id
                     .as_deref()
                     .map(|audio| format!("，原声音 {audio} 将混入新资源"))
@@ -2582,11 +2997,7 @@ fn copy_item_ui_sprites(
     Ok(copied)
 }
 
-fn read_item_entity_asset(
-    mpq_directory: &Path,
-    storage: Option<&casc_core::Storage>,
-    asset: &str,
-) -> Result<(serde_json::Value, String, String), String> {
+fn item_entity_candidates(asset: &str) -> Vec<String> {
     let normalized = asset.replace('\\', "/").trim_matches('/').to_string();
     let mut candidates = Vec::new();
     if normalized.starts_with("misc/") {
@@ -2596,10 +3007,25 @@ fn read_item_entity_asset(
         candidates.push(format!("data/hd/items/misc/{normalized}.json"));
         candidates.push(format!("data/hd/items/{normalized}.json"));
     }
+    candidates
+}
+
+fn read_item_entity_asset(
+    mpq_directory: &Path,
+    storage: Option<&casc_core::Storage>,
+    asset: &str,
+) -> Result<(serde_json::Value, String, String), String> {
     let mut errors = Vec::new();
-    for candidate in candidates {
-        match read_json_asset(mpq_directory, storage, &candidate) {
+    for candidate in item_entity_candidates(asset) {
+        match read_telemetry_json_asset(
+            mpq_directory,
+            storage,
+            &candidate,
+            TelemetryJsonKind::Entity,
+        ) {
             Ok((document, source)) => return Ok((document, source, candidate)),
+            // An explicit override must not be bypassed by another path.
+            Err(error) if mpq_directory.join(&candidate).is_file() => return Err(error),
             Err(error) => errors.push(error),
         }
     }
@@ -2624,6 +3050,12 @@ fn resolve_item_entity_asset(
             preferred_error: None,
         }),
         Err(preferred_error) => {
+            if item_entity_candidates(preferred_asset)
+                .iter()
+                .any(|candidate| mpq_directory.join(candidate).is_file())
+            {
+                return Err(preferred_error);
+            }
             let baseline_asset = baseline_asset
                 .map(str::trim)
                 .filter(|asset| !asset.is_empty())
@@ -2756,7 +3188,24 @@ fn patch_item_unit_definitions(
         let entity_asset = resolved_entity.asset.clone();
         let used_baseline_mapping = resolved_entity.used_baseline_mapping;
         let preferred_error = resolved_entity.preferred_error.clone();
+        if entity_source.starts_with("DisabledMod:") {
+            compatibility.push(AudioModCompatibility {
+                target: format!("{} ({})", definition.fallback_name, definition.code),
+                action: "rebuild_disabled_entity_for_audio".to_string(),
+                detail: format!(
+                    "{entity_source}；只构建无模型声纹实体，原屏蔽文件和其他物品保持不变。"
+                ),
+            });
+        }
         let mut document = resolved_entity.document;
+        let entity_disabled = entity_source.starts_with("DisabledMod:")
+            || local_json_is_disabled(mpq_directory, "data/hd/items/items.json")?;
+        if entity_disabled && !entity_source.starts_with("DisabledMod:") {
+            document = disabled_entity_from_baseline(document)?;
+        }
+        if entity_disabled {
+            restore_disabled_motion_dependencies(&mut document, mpq_directory, storage)?;
+        }
         let entities = document
             .get_mut("entities")
             .and_then(serde_json::Value::as_array_mut)
@@ -2793,21 +3242,36 @@ fn patch_item_unit_definitions(
                 definition.code
             ));
         }
-        let (mut state_machine, state_machine_source) =
-            match read_json_asset(mpq_directory, storage, &normalized_original) {
-                Ok(asset) => asset,
-                Err(error) if is_missing_compatibility_asset_error(&error) => {
-                    compatibility.push(AudioModCompatibility {
+        let (mut state_machine, state_machine_source) = match read_telemetry_json_asset(
+            mpq_directory,
+            storage,
+            &normalized_original,
+            TelemetryJsonKind::StateMachine,
+        ) {
+            Ok(asset) => asset,
+            Err(error) if is_missing_compatibility_asset_error(&error) => {
+                compatibility.push(AudioModCompatibility {
                         target: format!("{} ({})", definition.fallback_name, definition.code),
                         action: "skip_missing_original_state_machine".to_string(),
                         detail: format!(
                             "原始状态机 {normalized_original} 无法从源 Mod 或本机 D2R CASC 读取，已保留该物品原配置并跳过声纹注入；其他物品继续按兼容模式处理。详情：{error}"
                         ),
                     });
-                    continue;
-                }
-                Err(error) => return Err(error),
-            };
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
+        if entity_disabled {
+            silence_disabled_state_machine(&mut state_machine);
+            restore_disabled_motion_dependencies(&mut state_machine, mpq_directory, storage)?;
+        }
+        if state_machine_source.starts_with("DisabledMod:") {
+            compatibility.push(AudioModCompatibility {
+                target: normalized_original.clone(),
+                action: "clone_disabled_state_machine_for_audio".to_string(),
+                detail: "源状态机为空；仅在独立声纹路径恢复动作和转场，保留共享空文件，不恢复原声音和视觉事件。".to_string(),
+            });
+        }
         let (flippy_index, flippy_id, ground_id, original_audio_id) = {
             let states = state_machine
                 .get("states")
@@ -2870,19 +3334,11 @@ fn patch_item_unit_definitions(
         );
         unit_root["state_machine_filename"] =
             serde_json::Value::String(telemetry_state_machine.clone());
-        let dependencies = document
-            .get_mut("dependencies")
-            .and_then(|value| value.get_mut("json"))
-            .and_then(serde_json::Value::as_array_mut)
-            .ok_or_else(|| format!("物品实体缺少 dependencies.json: {entity_source}"))?;
-        if let Some(reference) = dependencies.iter_mut().find(|reference| {
-            reference.get("path").and_then(serde_json::Value::as_str)
-                == Some(original_state_machine.as_str())
-        }) {
-            reference["path"] = serde_json::Value::String(telemetry_state_machine.clone());
-        } else {
-            dependencies.push(serde_json::json!({ "path": telemetry_state_machine }));
-        }
+        redirect_state_machine_dependency(
+            &mut document,
+            &original_state_machine,
+            &telemetry_state_machine,
+        )?;
 
         let cloned_asset = format!(
             "audio_telemetry/items/i{:02}_{}",
@@ -2935,7 +3391,10 @@ fn patch_item_unit_definitions(
                 "clone_and_attach".to_string()
             },
             detail: format!(
-                "从 {entity_source} 克隆为独立实体；保留原模型、VFX、动画、依赖和双向转场，按 [{}] 的优先级复制 {copied_sprites} 个背包/仓库 sprite 资源，仅替换克隆体的 Flippy.audioId{}{}。",
+                "从 {entity_source} 克隆为独立实体；{}，按 [{}] 的优先级复制 {copied_sprites} 个背包/仓库 sprite 资源，替换克隆体的 Flippy.audioId{}{}。",
+                if entity_disabled { "使用无模型声纹实体，保留必要动作和双向转场" }
+                else if state_machine_source.starts_with("DisabledMod:") { "保留源实体，补充必要动作和双向转场，不恢复状态机视觉事件与原声音" }
+                else { "保留原模型、VFX、动画、依赖和双向转场" },
                 sprite_assets.join(", "),
                 original_audio_id
                     .as_deref()
@@ -4097,8 +4556,8 @@ fn source_auto_exit_on_death_enabled(
 fn routed_pause_button_count(node: &serde_json::Value) -> Option<usize> {
     let accepts_esc = node.pointer("/fields/acceptsEscKeyEverywhere");
     let is_button = node.get("type").and_then(serde_json::Value::as_str) == Some("ButtonWidget");
-    let returns_to_game = is_button
-        && node.get("name").and_then(serde_json::Value::as_str) == Some("ReturnToGame");
+    let returns_to_game =
+        is_button && node.get("name").and_then(serde_json::Value::as_str) == Some("ReturnToGame");
     if (is_button || accepts_esc.is_some())
         && accepts_esc.and_then(serde_json::Value::as_bool) != Some(returns_to_game)
     {
@@ -4294,10 +4753,16 @@ fn layout_field_value_count(document: &serde_json::Value, expected: &str) -> usi
 }
 
 fn source_room_tool_layouts_are_current(mpq_directory: &Path) -> Option<()> {
-    let return_helper = read_source_room_tool_layout(mpq_directory,
-        &format!("{UI_LAYOUTS_DIRECTORY}/D2RHubPauseReturnToGamehd.json"))?;
-    if !layout_has_direct_timed_message(&return_helper, "PanelManager:ClosePanel:D2RHubQuickRecreateEscArm", 0.001)
-        || !layout_has_direct_timed_message(&return_helper, "PausePanelMessage:Close", 0.005) {
+    let return_helper = read_source_room_tool_layout(
+        mpq_directory,
+        &format!("{UI_LAYOUTS_DIRECTORY}/D2RHubPauseReturnToGamehd.json"),
+    )?;
+    if !layout_has_direct_timed_message(
+        &return_helper,
+        "PanelManager:ClosePanel:D2RHubQuickRecreateEscArm",
+        0.001,
+    ) || !layout_has_direct_timed_message(&return_helper, "PausePanelMessage:Close", 0.005)
+    {
         return None;
     }
     let lobby = read_source_room_tool_layout(mpq_directory, LOBBY_BACKGROUND_LAYOUT)?;
@@ -4306,10 +4771,14 @@ fn source_room_tool_layouts_are_current(mpq_directory: &Path) -> Option<()> {
     }
     let hud = read_source_room_tool_layout(mpq_directory, HUD_WARNINGS_LAYOUT)?;
     let toolbar_open = layout_has_direct_child_message(
-        &hud, "message", "PanelManager:OpenPanel:D2RHubRoomToolbar",
+        &hud,
+        "message",
+        "PanelManager:OpenPanel:D2RHubRoomToolbar",
     );
     let toolbar_closed = layout_has_direct_child_message(
-        &hud, "message", "PanelManager:ClosePanel:D2RHubRoomToolbar",
+        &hud,
+        "message",
+        "PanelManager:ClosePanel:D2RHubRoomToolbar",
     );
     if toolbar_open || !toolbar_closed {
         return None;
@@ -4326,8 +4795,14 @@ fn source_room_tool_layouts_are_current(mpq_directory: &Path) -> Option<()> {
         mpq_directory,
         &format!("{UI_LAYOUTS_DIRECTORY}/D2RHubRoomToolbarhd.json"),
     )?;
-    if toolbar.pointer("/fields/rect/x").and_then(serde_json::Value::as_i64) != Some(-9999)
-        || toolbar.pointer("/fields/rect/y").and_then(serde_json::Value::as_i64) != Some(-9999)
+    if toolbar
+        .pointer("/fields/rect/x")
+        .and_then(serde_json::Value::as_i64)
+        != Some(-9999)
+        || toolbar
+            .pointer("/fields/rect/y")
+            .and_then(serde_json::Value::as_i64)
+            != Some(-9999)
     {
         return None;
     }
@@ -4646,8 +5121,8 @@ fn source_room_tool_layouts_are_current(mpq_directory: &Path) -> Option<()> {
         let mut expected_in_game_form = form.clone();
         expected_in_game_form["name"] = serde_json::json!(in_game_panel);
         route_room_submission_messages(&mut expected_in_game_form, native_submit, routed_submit);
-        find_layout_node_mut(&mut expected_in_game_form, "D2RHubCloseRoomForm")?
-            ["fields"]["onClickMessage"] =
+        find_layout_node_mut(&mut expected_in_game_form, "D2RHubCloseRoomForm")?["fields"]
+            ["onClickMessage"] =
             serde_json::json!(format!("PanelManager:ClosePanel:{in_game_panel}"));
         let in_game_form = read_source_room_tool_layout(
             mpq_directory,
@@ -4908,8 +5383,13 @@ where
             false
         };
         let room_tools_available = room_tools_installed || source_has_room_tools;
-        let esc_next_game_available = request.include_esc_next_game || source_feature_report.as_ref()
-            .is_some_and(|report| report.feature_groups.iter().any(|group| group.id == ESC_NEXT_GAME_FEATURE_ID));
+        let esc_next_game_available = request.include_esc_next_game
+            || source_feature_report.as_ref().is_some_and(|report| {
+                report
+                    .feature_groups
+                    .iter()
+                    .any(|group| group.id == ESC_NEXT_GAME_FEATURE_ID)
+            });
         if esc_next_game_available {
             install_esc_next_game(&mpq_directory, storage.as_ref(), room_tools_available)?;
         }
@@ -5085,8 +5565,13 @@ where
             false
         };
         let room_tools_available = room_tools_installed || source_has_room_tools;
-        let esc_next_game_available = request.include_esc_next_game || source_feature_report.as_ref()
-            .is_some_and(|report| report.feature_groups.iter().any(|group| group.id == ESC_NEXT_GAME_FEATURE_ID));
+        let esc_next_game_available = request.include_esc_next_game
+            || source_feature_report.as_ref().is_some_and(|report| {
+                report
+                    .feature_groups
+                    .iter()
+                    .any(|group| group.id == ESC_NEXT_GAME_FEATURE_ID)
+            });
         if esc_next_game_available {
             install_esc_next_game(&mpq_directory, storage.as_ref(), room_tools_available)?;
         }
@@ -5399,8 +5884,13 @@ where
         false
     };
     let room_tools_available = room_tools_installed || source_has_room_tools;
-    let esc_next_game_available = request.include_esc_next_game || source_feature_report.as_ref()
-        .is_some_and(|report| report.feature_groups.iter().any(|group| group.id == ESC_NEXT_GAME_FEATURE_ID));
+    let esc_next_game_available = request.include_esc_next_game
+        || source_feature_report.as_ref().is_some_and(|report| {
+            report
+                .feature_groups
+                .iter()
+                .any(|group| group.id == ESC_NEXT_GAME_FEATURE_ID)
+        });
     if esc_next_game_available {
         install_esc_next_game(&mpq_directory, storage.as_ref(), room_tools_available)?;
     }
@@ -5439,10 +5929,24 @@ where
     } else {
         Vec::new()
     };
-    let (mut items_document, items_source) = if selected_items.is_empty() {
+    let disabled_item_mapping = local_json_is_disabled(&mpq_directory, "data/hd/items/items.json")?;
+    let needs_item_mapping = !selected_items.is_empty() || (include_runes && disabled_item_mapping);
+    let (mut items_document, items_source) = if !needs_item_mapping {
         (serde_json::json!([]), "未选择扩展物品".to_string())
     } else {
-        read_json_asset(&mpq_directory, storage.as_ref(), "data/hd/items/items.json")?
+        let mut tracked_codes: Vec<String> = selected_items
+            .iter()
+            .map(|item| item.code.to_string())
+            .collect();
+        if include_runes {
+            tracked_codes.extend((1..=RUNE_COUNT).map(|number| format!("r{number:02}")));
+        }
+        read_telemetry_item_mapping(
+            &mpq_directory,
+            storage.as_ref(),
+            &tracked_codes,
+            &mut compatibility,
+        )?
     };
     let baseline_items_document = if selected_items.is_empty() {
         None
@@ -5481,7 +5985,7 @@ where
     progress(BuildProgress::new(
         "items",
         42,
-        "正在保留物品模型并附加掉落声纹…",
+        "正在准备物品实体并附加掉落声纹…",
     ));
     let item_catalog_entries = item_plans
         .iter()
@@ -5504,7 +6008,7 @@ where
         &excel_output.join("soundenviron.txt"),
         environments.to_text(),
     )?;
-    if !selected_items.is_empty() {
+    if needs_item_mapping {
         write_file(
             &mpq_directory.join("data/hd/items/items.json"),
             serde_json::to_vec_pretty(&items_document)
@@ -5956,6 +6460,7 @@ mod tests {
             gain_db: None,
             include_audio_telemetry: false,
             include_room_tools: true,
+            include_esc_next_game: true,
             include_auto_exit_on_death: false,
         })
         .unwrap();
@@ -6015,6 +6520,7 @@ mod tests {
             gain_db: None,
             include_audio_telemetry: false,
             include_room_tools: false,
+            include_esc_next_game: false,
             include_auto_exit_on_death: true,
         })
         .unwrap();
@@ -6090,6 +6596,7 @@ mod tests {
             gain_db: None,
             include_audio_telemetry: false,
             include_room_tools: false,
+            include_esc_next_game: false,
             include_auto_exit_on_death: true,
         })
         .unwrap();
@@ -6190,6 +6697,7 @@ mod tests {
             gain_db: None,
             include_audio_telemetry: false,
             include_room_tools: true,
+            include_esc_next_game: true,
             include_auto_exit_on_death: false,
         })
         .unwrap();
@@ -6751,6 +7259,181 @@ mod tests {
         );
     }
 
+    #[test]
+    fn disabled_json_is_distinct_from_valid_or_malformed_content() {
+        for text in [
+            "",
+            " \r\n\t",
+            "\u{feff}  ",
+            "// disabled",
+            "/* disabled */\n// intentionally blank",
+        ] {
+            assert!(is_disabled_json(text), "{text:?}");
+        }
+        for text in [
+            "{}",
+            "[]",
+            "null",
+            "// comment\n{}",
+            "/* unfinished",
+            "{bad",
+            "\"//\"",
+        ] {
+            assert!(!is_disabled_json(text), "{text:?}");
+        }
+    }
+
+    #[test]
+    fn disabled_entity_keeps_motion_but_not_visual_dependencies() {
+        let baseline = serde_json::json!({
+            "type": "UnitDefinition", "name": "rune",
+            "dependencies": {"models": [{"path": "old.model"}], "textures": [{"path": "old.texture"}]},
+            "entities": [
+                {"id": 10, "components": [
+                    {"type": "UnitRootComponent", "state_machine_filename": "motion.json", "onCreateEventName": "VFX"},
+                    {"type": "SkeletonDefinitionComponent", "filename": "motion.skeleton"},
+                    {"type": "TransformDefinitionComponent", "position": {"x": 1}},
+                    {"type": "DefinitionPreloadComponent", "filename": "old.json"},
+                    {"type": "ModelDefinitionComponent", "filename": "old.model"}
+                ]},
+                {"id": 11, "components": [{"type": "VfxDefinitionComponent"}]}
+            ]
+        });
+        let entity = disabled_entity_from_baseline(baseline).unwrap();
+        assert_eq!(entity["entities"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            entity["entities"][0]["components"]
+                .as_array()
+                .unwrap()
+                .len(),
+            3
+        );
+        assert_eq!(
+            entity["entities"][0]["components"][0]["onCreateEventName"],
+            ""
+        );
+        assert_eq!(entity["dependencies"]["models"], serde_json::json!([]));
+        assert_eq!(entity["dependencies"]["textures"], serde_json::json!([]));
+        assert_eq!(
+            entity["dependencies"]["skeletons"][0]["path"],
+            "motion.skeleton"
+        );
+        assert_eq!(entity["dependencies"]["json"][0]["path"], "motion.json");
+        assert_eq!(entity["entities"][0]["components"][2]["position"]["x"], 1);
+    }
+
+    #[test]
+    fn state_dependency_patch_preserves_custom_fields_and_supports_reduced_entities() {
+        let mut entity = serde_json::json!({"name": "custom", "dependencies": {
+            "models": [{"path": "custom.model"}],
+            "json": [{"path": "DATA\\old.json", "custom": 7}, {"path": "keep.json"}, {"path": "data/old.json"}]
+        }});
+        redirect_state_machine_dependency(&mut entity, "data/old.json", "private.json").unwrap();
+        assert_eq!(
+            entity["dependencies"]["json"][0],
+            serde_json::json!({"path": "private.json", "custom": 7})
+        );
+        assert_eq!(entity["dependencies"]["json"][1]["path"], "keep.json");
+        assert_eq!(entity["dependencies"]["json"][2]["path"], "private.json");
+        assert_eq!(entity["dependencies"]["models"][0]["path"], "custom.model");
+        let mut reduced = serde_json::json!({"name": "reduced"});
+        redirect_state_machine_dependency(&mut reduced, "old.json", "private.json").unwrap();
+        redirect_state_machine_dependency(&mut reduced, "old.json", "private.json").unwrap();
+        assert_eq!(reduced["name"], "reduced");
+        assert_eq!(reduced["dependencies"]["json"].as_array().unwrap().len(), 1);
+        let mut malformed = serde_json::json!({"dependencies": {"json": "invalid"}});
+        assert!(redirect_state_machine_dependency(&mut malformed, "old", "new").is_err());
+    }
+
+    #[test]
+    fn telemetry_reader_preserves_json5_and_does_not_hide_malformed_overrides() {
+        let root = std::env::temp_dir().join(format!("d2r-disabled-json-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("asset.json");
+        std::fs::write(&path, "{custom: 42, /* preserved */ entities: [],}").unwrap();
+        let (document, source) =
+            read_telemetry_json_asset(&root, None, "asset.json", TelemetryJsonKind::Entity)
+                .unwrap();
+        assert_eq!(document["custom"], 42);
+        assert_eq!(source, "Mod:asset.json");
+        std::fs::write(&path, "{broken").unwrap();
+        assert!(
+            read_telemetry_json_asset(&root, None, "asset.json", TelemetryJsonKind::Entity)
+                .unwrap_err()
+                .contains("解析 JSON 资源失败")
+        );
+        std::fs::write(&path, "\u{feff} /* disabled */").unwrap();
+        assert!(
+            read_telemetry_json_asset(&root, None, "asset.json", TelemetryJsonKind::Entity)
+                .unwrap_err()
+                .contains("空 JSON 屏蔽")
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "\u{feff} /* disabled */"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn disabled_state_machine_keeps_transitions_and_animation_without_original_effects() {
+        let mut state = serde_json::json!({
+            "dependencies": {"animations": [{"path": "motion.animation"}], "particles": [{"path": "vfx.particles"}]},
+            "states": [{"stateId": 1, "audioId": "old", "enterEvents": ["vfx"], "exitEvents": ["vfx"], "animationBindings": {"hth": ["motion"]}}],
+            "transitions": [{"from": 1, "settings": [{"to": 2, "custom": 3}]}]
+        });
+        let transitions = state["transitions"].clone();
+        silence_disabled_state_machine(&mut state);
+        assert_eq!(state["transitions"], transitions);
+        assert_eq!(state["states"][0]["animationBindings"]["hth"][0], "motion");
+        assert_eq!(state["states"][0]["audioId"], "");
+        assert_eq!(state["states"][0]["enterEvents"], serde_json::json!([]));
+        assert_eq!(state["dependencies"]["particles"], serde_json::json!([]));
+        assert_eq!(
+            state["dependencies"]["animations"][0]["path"],
+            "motion.animation"
+        );
+    }
+
+    #[test]
+    fn reduced_rune_definitions_gain_only_the_required_state_reference() {
+        let root = std::env::temp_dir().join(format!("d2r-reduced-rune-{}", uuid::Uuid::new_v4()));
+        write_rune_unit_definitions(&root);
+        let path = root.join("data/hd/items/misc/rune/el_rune.json");
+        let mut original = parse_json_value(&read_utf8(&path).unwrap()).unwrap();
+        original.as_object_mut().unwrap().remove("dependencies");
+        original["custom"] = serde_json::json!({"preserve": 42});
+        write_file(&path, serde_json::to_vec(&original).unwrap()).unwrap();
+        let shared_state =
+            root.join("data/hd/items/dropped_items/dropped_items_helms_flip_ne.json");
+        let before = std::fs::read(&shared_state).unwrap();
+        let plans = patch_rune_unit_definitions(&root, None, &mut Vec::new()).unwrap();
+        assert_eq!(plans.len(), RUNE_COUNT as usize);
+        let output = parse_json_value(&read_utf8(&path).unwrap()).unwrap();
+        assert_eq!(output["custom"], original["custom"]);
+        assert_eq!(output["entities"][0]["id"], original["entities"][0]["id"]);
+        assert_eq!(output["dependencies"]["json"].as_array().unwrap().len(), 1);
+        assert_eq!(std::fs::read(&shared_state).unwrap(), before);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn disabled_motion_is_not_restored_to_a_shared_path() {
+        let root =
+            std::env::temp_dir().join(format!("d2r-disabled-motion-{}", uuid::Uuid::new_v4()));
+        let path = root.join("data/motion.skeleton");
+        write_file(&path, b"").unwrap();
+        let mut document = serde_json::json!({"filename": "data/motion.skeleton"});
+        let error = restore_disabled_motion_dependencies(&mut document, &root, None).unwrap_err();
+        assert!(error.contains("被清空"));
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), 0);
+        write_file(&path, b"custom motion").unwrap();
+        restore_disabled_motion_dependencies(&mut document, &root, None).unwrap();
+        assert_eq!(document["filename"], "data/motion.skeleton");
+        assert_eq!(std::fs::read(&path).unwrap(), b"custom motion");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     fn write_rune_unit_definitions(mpq: &Path) {
         let directory = mpq.join("data/hd/items/misc/rune");
         std::fs::create_dir_all(&directory).unwrap();
@@ -6831,6 +7514,79 @@ mod tests {
             )
             .unwrap();
         }
+    }
+
+    #[test]
+    #[ignore = "requires D2RHUB_AUDIO_GAME_ROOT"]
+    fn adapts_disabled_assets_from_game_storage() {
+        let storage =
+            casc_core::Storage::open(std::env::var("D2RHUB_AUDIO_GAME_ROOT").unwrap()).unwrap();
+        let root = std::env::temp_dir().join(format!("d2r-disabled-real-{}", uuid::Uuid::new_v4()));
+        let relative = "data/hd/items/misc/rune/el_rune.json";
+        let baseline = read_casc_json_asset(&storage, relative).unwrap();
+        let components = baseline["entities"][0]["components"].as_array().unwrap();
+        let skeleton = components
+            .iter()
+            .find(|c| c["type"] == "SkeletonDefinitionComponent")
+            .unwrap()["filename"]
+            .as_str()
+            .unwrap();
+        let state = components
+            .iter()
+            .find(|c| c["type"] == "UnitRootComponent")
+            .unwrap()["state_machine_filename"]
+            .as_str()
+            .unwrap();
+        write_file(&root.join(relative), Vec::new()).unwrap();
+        write_file(&root.join(skeleton), Vec::new()).unwrap();
+        write_file(&root.join(state), Vec::new()).unwrap();
+        let (entity, source) =
+            read_telemetry_json_asset(&root, Some(&storage), relative, TelemetryJsonKind::Entity)
+                .unwrap();
+        assert!(source.starts_with("DisabledMod:"));
+        assert_eq!(entity["dependencies"]["models"], serde_json::json!([]));
+        let private_skeleton = entity["dependencies"]["skeletons"][0]["path"]
+            .as_str()
+            .unwrap();
+        assert!(private_skeleton.starts_with("data/hd/items/audio_telemetry/motion/"));
+        assert!(
+            std::fs::metadata(root.join(private_skeleton))
+                .unwrap()
+                .len()
+                > 0
+        );
+        assert_eq!(std::fs::metadata(root.join(skeleton)).unwrap().len(), 0);
+        let (state_machine, _) = read_telemetry_json_asset(
+            &root,
+            Some(&storage),
+            state,
+            TelemetryJsonKind::StateMachine,
+        )
+        .unwrap();
+        assert!(state_transition_exists(&state_machine, 1, 2));
+        assert!(state_transition_exists(&state_machine, 2, 1));
+        assert_eq!(std::fs::metadata(root.join(state)).unwrap().len(), 0);
+        let plural = "data/hd/items/misc/runes/el_rune.json";
+        write_file(&root.join(plural), b"\xef\xbb\xbf // disabled").unwrap();
+        assert!(read_telemetry_json_asset(
+            &root,
+            Some(&storage),
+            plural,
+            TelemetryJsonKind::Entity
+        )
+        .is_ok());
+        write_file(&root.join("data/hd/items/items.json"), Vec::new()).unwrap();
+        let (mapping, _) = read_telemetry_item_mapping(
+            &root,
+            Some(&storage),
+            &["r01".to_string()],
+            &mut Vec::new(),
+        )
+        .unwrap();
+        assert_eq!(mapping.as_array().unwrap().len(), 1);
+        assert!(item_asset(&mapping, "r01").is_some());
+        assert!(item_asset(&mapping, "r02").is_none());
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -7070,6 +7826,29 @@ mod tests {
     }
 
     #[test]
+    fn explicit_item_overrides_cannot_fall_back_to_visible_baselines() {
+        let root = std::env::temp_dir().join(format!("d2r-item-override-{}", uuid::Uuid::new_v4()));
+        let preferred = root.join("data/hd/items/misc/custom.json");
+        write_file(
+            &root.join("data/hd/items/custom.json"),
+            b"{\"visible\":true}",
+        )
+        .unwrap();
+        write_file(
+            &root.join("data/hd/items/misc/baseline.json"),
+            b"{\"visible\":true}",
+        )
+        .unwrap();
+        for contents in ["{broken", "/* intentionally disabled */"] {
+            write_file(&preferred, contents.as_bytes()).unwrap();
+            assert!(read_item_entity_asset(&root, None, "custom").is_err());
+            assert!(resolve_item_entity_asset(&root, None, "custom", Some("baseline")).is_err());
+            assert_eq!(read_utf8(&preferred).unwrap(), contents);
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn item_entity_resolution_falls_back_by_item_code_mapping() {
         let root = std::env::temp_dir().join(format!(
             "d2rhub-audio-item-entity-fallback-{}",
@@ -7160,6 +7939,7 @@ mod tests {
             gain_db: None,
             include_audio_telemetry: true,
             include_room_tools: false,
+            include_esc_next_game: false,
             include_auto_exit_on_death: false,
         })
         .unwrap_err();
@@ -7253,6 +8033,7 @@ mod tests {
             gain_db: Some(-26.0),
             include_audio_telemetry: true,
             include_room_tools: false,
+            include_esc_next_game: false,
             include_auto_exit_on_death: false,
         })
         .unwrap();
@@ -7371,6 +8152,7 @@ mod tests {
             gain_db: Some(-26.0),
             include_audio_telemetry: true,
             include_room_tools: false,
+            include_esc_next_game: false,
             include_auto_exit_on_death: false,
         })
         .unwrap();
@@ -7411,6 +8193,7 @@ mod tests {
             gain_db: Some(-30.0),
             include_audio_telemetry: true,
             include_room_tools: true,
+            include_esc_next_game: true,
             include_auto_exit_on_death: false,
         })
         .unwrap();
@@ -7455,6 +8238,7 @@ mod tests {
             gain_db: Some(-30.0),
             include_audio_telemetry: true,
             include_room_tools: true,
+            include_esc_next_game: true,
             include_auto_exit_on_death: false,
         })
         .unwrap();

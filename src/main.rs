@@ -164,7 +164,9 @@ fn parse_features(raw: Option<&str>) -> Result<(bool, bool, bool, bool), String>
     let rooms = values
         .iter()
         .any(|value| matches!(*value, "rooms" | "room_tools" | "in_game_room_tools"));
-    let esc_next_game = values.iter().any(|value| matches!(*value, "esc-next-game" | "esc_next_game"));
+    let esc_next_game = values
+        .iter()
+        .any(|value| matches!(*value, "esc-next-game" | "esc_next_game"));
     let auto_exit_on_death = values
         .iter()
         .any(|value| matches!(*value, "death-exit" | "death_exit" | "auto_exit_on_death"));
@@ -186,7 +188,8 @@ fn parse_features(raw: Option<&str>) -> Result<(bool, bool, bool, bool), String>
         })
     {
         return Err(
-            "--features 仅支持 all、audio、rooms、esc-next-game、death-exit，多个功能用逗号分隔".to_string(),
+            "--features 仅支持 all、audio、rooms、esc-next-game、death-exit，多个功能用逗号分隔"
+                .to_string(),
         );
     }
     Ok((audio, rooms, auto_exit_on_death, esc_next_game))
@@ -205,8 +208,12 @@ fn run_build(mode: AudioModBuildMode, options: Options) -> Result<(), String> {
     if options.json && options.events {
         return Err("--json 与 --events 不能同时使用".to_string());
     }
-    let (include_audio_telemetry, include_room_tools, include_auto_exit_on_death, include_esc_next_game) =
-        parse_features(options.features.as_deref())?;
+    let (
+        include_audio_telemetry,
+        include_room_tools,
+        include_auto_exit_on_death,
+        include_esc_next_game,
+    ) = parse_features(options.features.as_deref())?;
     let request = BuildAudioModRequest {
         build_mode: mode,
         source_directory: path_text(options.source),

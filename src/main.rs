@@ -3,6 +3,7 @@ mod casc_path;
 mod generator;
 #[cfg(target_os = "windows")]
 mod gui;
+mod lightweight;
 
 use audio::BatchRequest;
 use d2r_audio_protocol::catalog::AREA_CATALOG_FILE_NAME;
@@ -338,6 +339,8 @@ fn print_help() {
   d2r-audio-mod augment --source <源 Mod/.mpq> [--game <游戏目录>] [选项]
   d2r-audio-mod tag-files --input <FLAC 目录> [--output <目录>] [--gain -30]
   d2r-audio-mod protocol
+  d2r-audio-mod lightweight --game <游戏目录> --profile main [轻量化选项]
+  d2r-audio-mod lightweight --help
 
 Mod 选项：
   --output <目录>             输出父目录；省略时优先使用游戏的 mods 目录
@@ -371,6 +374,8 @@ fn real_main() -> Result<(), String> {
     };
     let rest = args.collect::<Vec<_>>();
     match command.to_string_lossy().to_ascii_lowercase().as_str() {
+        "lightweight" => lightweight::cli(&rest, false),
+        "lightweight-import" => lightweight::cli(&rest, true),
         "gui" => {
             if !rest.is_empty() {
                 return Err("gui 命令不接受其他参数".to_string());

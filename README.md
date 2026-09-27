@@ -156,6 +156,12 @@ Windows 构建需要 Rust stable 的 MSVC 工具链、Visual Studio C++ Build To
 
 Windows 下游戏安装目录、源 Mod 与输出目录均支持中文、空格及 Windows 允许的特殊字符。新 Mod 名称仍仅允许 ASCII 字母、数字、`-` 和 `_`，以兼容 D2R 的启动参数与 Mod 目录约定。
 
+## 开发验证
+
+提交前运行 `cargo fmt -- --check`、`cargo clippy --all-targets --all-features -- -D warnings` 和 `cargo test`。
+
+房间工具集成测试需要本机原版 CASC。设置 `D2RHUB_AUDIO_GAME_ROOT` 为游戏安装目录后，运行 `cargo test room_tools -- --ignored`，验证独立房间工具、声纹保留、原版暂停菜单和重复加工。测试仅向临时目录输出，不修改已安装 Mod 或启动游戏。缺少原版资源时拒绝加工的回归测试包含在默认测试中。
+
 ## English
 
 D2R Audio Mod **v1.3.3** is an independent, MIT-licensed Mod generator for Diablo II: Resurrected. Download the Windows executable from [Releases](https://github.com/gjy991229/d2r-audio-mod/releases), or use the same generator bundled with [D2RHub](https://github.com/gjy991229/D2RHub).

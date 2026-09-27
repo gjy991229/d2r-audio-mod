@@ -31,7 +31,7 @@ d2r-audio-mod lightweight --game "C:\Diablo II Resurrected" --profile min
 
 规则维护说明见 [内置规则](resources/lightweight/b13/README.md)。
 
-本项目已按 [MIT License](LICENSE) 开源。Windows 独立工具可从 [Releases](https://github.com/gjy991229/d2r-audio-mod/releases) 下载；[D2RHub v0.9.96](https://github.com/gjy991229/D2RHub/releases) 已内置生成器，无需另行安装。完整音频格式见 [protocol/](protocol/)，共享实现位于 [d2r-audio-protocol](crates/d2r-audio-protocol/)。
+本项目已按 [MIT License](LICENSE) 开源。Windows 独立工具可从 [Releases](https://github.com/gjy991229/d2r-audio-mod/releases) 下载；D2RHub 当前 main 已改为独立下载加工器，不再随安装包捆绑。加工器 EXE 与 LiteHub / BoHub / NullHub 成品统一在 [D2RHub 资源 Releases](https://github.com/gjy991229/D2rHub/releases/tag/mod-resources-20260927.1) 分发；Hub 会校验、自动安装并提示旧版更新，源码继续在本仓库维护。完整音频格式见 [protocol/](protocol/)，共享实现位于 [d2r-audio-protocol](crates/d2r-audio-protocol/)。
 
 ## v1.3.4 更新
 
@@ -164,7 +164,7 @@ Windows 下游戏安装目录、源 Mod 与输出目录均支持中文、空格�
 
 ## English
 
-D2R Audio Mod **v1.3.3** is an independent, MIT-licensed Mod generator for Diablo II: Resurrected. Download the Windows executable from [Releases](https://github.com/gjy991229/d2r-audio-mod/releases), or use the same generator bundled with [D2RHub](https://github.com/gjy991229/D2RHub).
+D2R Audio Mod **v1.3.3** is an independent, MIT-licensed Mod generator for Diablo II: Resurrected. Download the Windows executable from [Releases](https://github.com/gjy991229/d2r-audio-mod/releases), or install it through the resource download page in the current [D2RHub](https://github.com/gjy991229/D2RHub) main build. The processor is no longer bundled with the Hub installer.
 
 Double-click the executable for its standalone UI, or use `minimal` / `augment` with `--features audio`, `rooms`, `death-exit`, or a comma-separated selection. Death-triggered exit is an explicit opt-in and is excluded from the default feature set. The generator creates a new output Mod, preserves the source, and never reads D2RHub accounts or settings. Enable the generated Mod using the launch arguments shown in its result.
 

@@ -98,11 +98,11 @@ impl Sprite {
             return None;
         }
         let extra = self.w - self.n * self.fw;
-        if extra % self.n == 0 && extra / self.n <= 2 {
+        if extra.is_multiple_of(self.n) && extra / self.n <= 2 {
             let stride = self.fw + extra / self.n;
             return Some((i * stride, stride));
         }
-        if self.n > 1 && extra % (self.n - 1) == 0 && extra / (self.n - 1) <= 2 {
+        if self.n > 1 && extra.is_multiple_of(self.n - 1) && extra / (self.n - 1) <= 2 {
             let gap = extra / (self.n - 1);
             return Some((
                 i * (self.fw + gap),
@@ -153,7 +153,7 @@ fn sprite_geometry_inner(native: &[u8], [w, h, n, fw]: [usize; 4]) -> Option<Vec
             out[offset..offset + 4].copy_from_slice(&(value as u32).to_le_bytes());
         }
         out.extend_from_slice(&pixels);
-        return Some(out);
+        Some(out)
     }
 }
 fn missing_target_can_be_omitted(path: &str) -> bool {

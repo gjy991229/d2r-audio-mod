@@ -53,8 +53,8 @@ const WM_BUILD_FINISHED: u32 = WM_APP + 17;
 const WM_BUILD_PROGRESS: u32 = WM_APP + 18;
 
 enum BuildOutput {
-    Audio(generator::BuildAudioModReport),
-    Lightweight(lightweight::Report),
+    Audio(Box<generator::BuildAudioModReport>),
+    Lightweight(Box<lightweight::Report>),
 }
 type BuildResult = Result<BuildOutput, String>;
 
@@ -316,7 +316,9 @@ unsafe fn start_build(window: HWND, state: &mut AppState) {
 
     let window_value = window as isize;
     std::thread::spawn(move || {
-        let result: BuildResult = generator::build(request).map(BuildOutput::Audio);
+        let result: BuildResult = generator::build(request)
+            .map(Box::new)
+            .map(BuildOutput::Audio);
         let pointer = Box::into_raw(Box::new(result));
         let posted = unsafe {
             PostMessageW(
@@ -431,6 +433,7 @@ unsafe fn start_lightweight_build(window: HWND, state: &mut AppState) {
                 }
             }
         })
+        .map(Box::new)
         .map(BuildOutput::Lightweight);
         let pointer = Box::into_raw(Box::new(result));
         if unsafe {
@@ -664,8 +667,8 @@ unsafe fn create_app_window() -> Result<HWND, String> {
         ID_TEXTURE,
         instance,
     )?;
-    for text in ["纹理：原版 mip"] {
-        let text = wide(text);
+    {
+        let text = wide("纹理：原版 mip");
         SendMessageW(texture, CB_ADDSTRING, 0, text.as_ptr() as isize);
     }
     SendMessageW(texture, CB_SETCURSEL, 0, 0);
@@ -683,8 +686,8 @@ unsafe fn create_app_window() -> Result<HWND, String> {
         ID_SPRITE,
         instance,
     )?;
-    for text in ["UI：保持参考几何"] {
-        let text = wide(text);
+    {
+        let text = wide("UI：保持参考几何");
         SendMessageW(sprite, CB_ADDSTRING, 0, text.as_ptr() as isize);
     }
     SendMessageW(sprite, CB_SETCURSEL, 0, 0);

@@ -64,10 +64,8 @@ pub(super) fn shrink_rgba(
             } else {
                 ((x1 - x0) * (y1 - y0)) as u64
             };
-            if weight != 0 {
-                for c in 0..3 {
-                    out[p + c] = ((rgba[c] + weight / 2) / weight) as u8;
-                }
+            for c in 0..3 {
+                out[p + c] = (rgba[c] + weight / 2).checked_div(weight).unwrap_or(0) as u8;
             }
             out[p + 3] = ((rgba[3] + ((x1 - x0) * (y1 - y0)) as u64 / 2)
                 / ((x1 - x0) * (y1 - y0)) as u64) as u8;
@@ -195,11 +193,11 @@ pub fn sprite(bytes: &[u8], divisor: usize) -> Result<Vec<u8>, String> {
         return Err("unsupported sprite frame table or payload length".into());
     }
     let (padding, trailing) =
-        if w % frames == 0 && w / frames >= frame_w && w / frames - frame_w <= 2 {
+        if w.is_multiple_of(frames) && w / frames >= frame_w && w / frames - frame_w <= 2 {
             (w / frames - frame_w, true)
         } else if frames > 1
             && w >= frames * frame_w
-            && (w - frames * frame_w) % (frames - 1) == 0
+            && (w - frames * frame_w).is_multiple_of(frames - 1)
             && (w - frames * frame_w) / (frames - 1) <= 2
         {
             ((w - frames * frame_w) / (frames - 1), false)

@@ -1,4 +1,7 @@
-//! Exact local lowHD template generation. No asset reconstruction.
+//! Compatibility reconstruction with a byte-exact template mode for comparison.
+mod assets;
+mod bundled;
+mod compatible;
 use serde::Serialize;
 use serde_json::Value;
 use std::{
@@ -13,6 +16,15 @@ pub struct Request {
     pub output: Option<PathBuf>,
     pub name: Option<String>,
     pub profile: String,
+    pub rebuild: bool,
+}
+pub fn default_name(profile: &str) -> &'static str {
+    match profile {
+        "main" => "LiteHub",
+        "filler" => "BoHub",
+        "min" => "NullHub",
+        _ => "D2RNative",
+    }
 }
 #[derive(Serialize)]
 pub struct Report {
@@ -25,9 +37,14 @@ pub struct Report {
     pub mod_directory: String,
     pub launch_arguments: String,
     pub counts: BTreeMap<String, usize>,
-    pub copied_bytes: u64,
+    pub generated_bytes: u64,
+    pub verified_compatible: bool,
+    pub verified_output_integrity: bool,
+    pub origins: Vec<compatible::Origin>,
     pub verified_identical_except_modinfo: bool,
     pub runtime_verified: bool,
+    pub game_data_version: Option<String>,
+    pub verified_b12_except_name_and_data_version: bool,
 }
 fn linked(m: &fs::Metadata) -> bool {
     #[cfg(windows)]
@@ -122,7 +139,7 @@ impl Drop for Stage {
             if let Ok(p) = self.path.canonicalize() {
                 if p.parent() == Some(self.parent.as_path())
                     && p.file_name()
-                        .is_some_and(|s| s.to_string_lossy().starts_with(".lowhd-copy-"))
+                        .is_some_and(|s| s.to_string_lossy().starts_with(".hub-building-"))
                 {
                     let _ = fs::remove_dir_all(p);
                 }
@@ -133,6 +150,13 @@ impl Drop for Stage {
 fn write(p: &Path, b: &[u8]) -> Result<(), String> {
     fs::create_dir_all(p.parent().ok_or("无父目录")?).map_err(|e| e.to_string())?;
     fs::write(p, b).map_err(|e| format!("写入 {}：{e}", p.display()))
+}
+// In-process write/read integrity check, not a security or provenance hash.
+fn fingerprint(bytes: &[u8]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    bytes.hash(&mut h);
+    h.finish()
 }
 fn template(r: &Request) -> Result<PathBuf, String> {
     if let Some(p) = &r.source {
@@ -154,9 +178,27 @@ pub fn build(r: Request, mut progress: impl FnMut(usize, usize, &str)) -> Result
     if !["main", "filler", "min"].contains(&r.profile.as_str()) {
         return Err("profile 使用 main、filler 或 min".into());
     }
+    if r.rebuild {
+        return bundled::build(r, progress);
+    }
     let source = template(&r)?.canonicalize().map_err(|e| e.to_string())?;
+    let game_alias = if r.rebuild {
+        Some(crate::casc_path::CascStoragePath::prepare(&r.game)?)
+    } else {
+        None
+    };
+    let storage = game_alias
+        .as_ref()
+        .map(|a| casc_core::Storage::open(a.as_path()).map_err(|e| e.to_string()))
+        .transpose()?;
     let info = fs::read(source.join("modinfo.json")).map_err(|e| e.to_string())?;
-    let base = r.name.unwrap_or_else(|| format!("D2RLowHD-{}", r.profile));
+    let base = r.name.unwrap_or_else(|| {
+        format!(
+            "{}-{}",
+            if r.rebuild { "D2RNative" } else { "D2RLowHD" },
+            r.profile
+        )
+    });
     if !valid_name(&base) {
         return Err("MOD 名称必须是安全的 ASCII 字母、数字、- 或 _".into());
     }
@@ -197,22 +239,70 @@ pub fn build(r: Request, mut progress: impl FnMut(usize, usize, &str)) -> Result
     let total = paths.len();
     let destination = parent.join(&name);
     let mut stage = Stage {
-        path: parent.join(format!(".lowhd-copy-{}", uuid::Uuid::new_v4())),
+        path: parent.join(format!(".hub-building-{}", uuid::Uuid::new_v4())),
         parent: parent.clone(),
         committed: false,
     };
     fs::create_dir(&stage.path).map_err(|e| e.to_string())?;
     let mpq = stage.path.join(format!("{name}.mpq"));
     let (mut counts, mut copied_bytes) = (BTreeMap::new(), 0);
+    let mut semantic_paths = std::collections::HashSet::new();
+    let mut origins = Vec::new();
+    let mut alternatives = BTreeMap::new();
+    let mut omitted = BTreeMap::new();
     for (i, rel) in paths.iter().enumerate() {
         if i % 200 == 0 {
-            progress(i, total * 2, "复制原模板");
+            progress(
+                i,
+                total * 2,
+                if r.rebuild {
+                    "游戏重建及兼容资源处理"
+                } else {
+                    "复制原模板"
+                },
+            );
         }
-        let bytes = if rel == Path::new("modinfo.json") {
+        let mut bytes = if rel == Path::new("modinfo.json") {
             renamed.clone()
         } else {
             fs::read(source.join(rel)).map_err(|e| format!("读取 {}：{e}", rel.display()))?
         };
+        if rel != Path::new("modinfo.json") {
+            let path = rel.to_string_lossy().replace('\\', "/");
+            if let Some(storage) = &storage {
+                let generated = compatible::generate(storage, &path, &bytes)?;
+                if generated.semantic_json {
+                    semantic_paths.insert(rel.clone());
+                }
+                if generated.native_alternative {
+                    alternatives.insert(
+                        rel.clone(),
+                        (fingerprint(&bytes), fingerprint(&generated.bytes)),
+                    );
+                }
+                *counts.entry(generated.method.to_string()).or_default() += 1;
+                origins.push(compatible::Origin {
+                    path,
+                    method: generated.method.into(),
+                    game_source: generated.game_source,
+                    equality: if generated.omit_file {
+                        "not_emitted_missing_in_native_game"
+                    } else if generated.semantic_json {
+                        "parsed_json_equal_except_removed_auto_exit"
+                    } else if generated.native_alternative {
+                        "native_alternative_not_reference_equal"
+                    } else {
+                        "byte_equal"
+                    }
+                    .into(),
+                });
+                if generated.omit_file {
+                    omitted.insert(rel.clone(), fingerprint(&bytes));
+                    continue;
+                }
+                bytes = generated.bytes;
+            }
+        }
         write(&mpq.join(rel), &bytes)?;
         copied_bytes += bytes.len() as u64;
         *counts
@@ -232,9 +322,10 @@ pub fn build(r: Request, mut progress: impl FnMut(usize, usize, &str)) -> Result
     if current != paths {
         return Err("模板清单在复制期间变化".into());
     }
+    let mut all_bytes_equal = true;
     for (i, rel) in paths.iter().enumerate() {
         if i % 200 == 0 {
-            progress(total + i, total * 2, "逐文件验证字节一致");
+            progress(total + i, total * 2, "逐文件验证配置和资源一致性");
         }
         let expected = if rel == Path::new("modinfo.json") {
             if fs::read(source.join(rel)).map_err(|e| e.to_string())? != info {
@@ -244,37 +335,82 @@ pub fn build(r: Request, mut progress: impl FnMut(usize, usize, &str)) -> Result
         } else {
             fs::read(source.join(rel)).map_err(|e| e.to_string())?
         };
-        if fs::read(mpq.join(rel)).map_err(|e| e.to_string())? != expected {
-            return Err(format!("文件字节不一致：{}", rel.display()));
+        if let Some(source_hash) = omitted.get(rel) {
+            if fingerprint(&expected) != *source_hash || mpq.join(rel).exists() {
+                return Err(format!("遗漏项校验失败：{}", rel.display()));
+            }
+            all_bytes_equal = false;
+            continue;
+        }
+        let actual = fs::read(mpq.join(rel)).map_err(|e| e.to_string())?;
+        if let Some((source_hash, generated_hash)) = alternatives.get(rel) {
+            if fingerprint(&expected) != *source_hash || fingerprint(&actual) != *generated_hash {
+                return Err(format!("生成期间输入变化或输出损坏：{}", rel.display()));
+            }
+            all_bytes_equal &= actual == expected;
+            continue;
+        }
+        if actual != expected {
+            all_bytes_equal = false;
+            if !semantic_paths.contains(rel)
+                || !compatible::equal_json(
+                    &rel.to_string_lossy().replace('\\', "/"),
+                    &actual,
+                    &expected,
+                )
+            {
+                return Err(format!("配置/资源验证不一致：{}", rel.display()));
+            }
         }
     }
     let mut actual = Vec::new();
     list(&mpq, &mpq, &mut actual)?;
     actual.sort();
-    if actual != paths {
+    let output_paths: Vec<_> = paths
+        .iter()
+        .filter(|p| !omitted.contains_key(*p))
+        .cloned()
+        .collect();
+    if actual != output_paths {
         return Err("输出文件集不一致".into());
     }
-    counts.insert("verified_files".into(), total);
+    counts.insert("verified_files".into(), output_paths.len());
+    counts.insert("omitted_missing_native_assets".into(), omitted.len());
     let txt = source.join("data/global/excel/missiles.txt").is_file();
     let report = Report {
-        producer: "d2r-lowhd-template-generator".into(),
+        producer: "d2r-lowhd-compatible-generator".into(),
         producer_version: env!("CARGO_PKG_VERSION").into(),
-        mode: "exact_local_template".into(),
+        mode: if r.rebuild {
+            "compatible_rebuild"
+        } else {
+            "exact_local_template"
+        }
+        .into(),
         profile: r.profile,
         source_directory: source.to_string_lossy().into_owned(),
         mod_name: name.clone(),
         mod_directory: destination.to_string_lossy().into_owned(),
         launch_arguments: format!("-mod {name}{}", if txt { " -txt" } else { "" }),
         counts,
-        copied_bytes,
-        verified_identical_except_modinfo: true,
+        generated_bytes: copied_bytes,
+        verified_compatible: !r.rebuild,
+        verified_output_integrity: true,
+        origins,
+        verified_identical_except_modinfo: all_bytes_equal,
         runtime_verified: false,
+        game_data_version: None,
+        verified_b12_except_name_and_data_version: false,
     };
     write(
         &stage.path.join("generation-manifest.json"),
         &serde_json::to_vec_pretty(&report).map_err(|e| e.to_string())?,
     )?;
-    write(&stage.path.join("README.txt"),format!("本机 lowHD 模板生成版 {}\r\n启动：{}\r\n模板：{}\r\n全部文件直接复制，仅修改 modinfo.json 的 name，保留原作者注释、savepath 和原数据版本标记。\r\n已逐文件验证字节一致，不套用独立精简、缩图或粒子关闭规则。\r\n本模式需要本机 lowHD 原包，不是从游戏 CASC 独立重建。原内容不宣称为本工具原创，模板许可不因复制改变。\r\nmain 的 -txt 用于原包 missiles.txt 表格编译。未启动游戏验证。\r\n",report.profile,report.launch_arguments,report.source_directory).as_bytes())?;
+    let notes = if r.rebuild {
+        "sprite 恢复 b10 的低清资源选取与帧处理，撤回 b11 强制换回高清图集的规则。光标和小地图的显示比例尚未单独修复。非空图片及其他二进制仅来自游戏；不读取参考图片的像素遮罩，不复制参考成品。\r\nJSON/frontend 按参考配置重建并核验，四份暂停布局移除自动退出计时器，保留手动退出按钮；其他文本配置注明来源。不能简化的二进制保留原版并在清单标注 game_original_unsimplified；原版缺失的纹理及实验 DDS 不输出并逐项记录；其他未知资源缺失则停止生成。\r\n当前仍需本机 lowHD 提供目标清单、配置与尺寸，不等于生成器已完全脱离参考包。\r\n已核验文件集与写入完整性；原版替代图片可能不同于参考，不能以此宣称游戏效果和内存一致。"
+    } else {
+        "本模式直接复制本机参考包用于对照，除 modinfo 名称外逐字节一致。"
+    };
+    write(&stage.path.join("README.txt"), format!("lowHD 策略参考生成版 {}\r\n启动：{}\r\n参考：{}\r\n优化策略及配置参考 lowHD（celloboy126 / evilbelgian）。生成器实现为本项目代码，不将参考配置宣称为原创。\r\n模式：{}。各文件来源见 generation-manifest.json 的 origins。\r\n{}\r\n未启动游戏，实际画面及内存待实测。main 的 -txt 用于参考导弹表。\r\n", report.profile, report.launch_arguments, report.source_directory, report.mode, notes).as_bytes())?;
     if destination.exists() {
         return Err("输出名称被占用".into());
     }
@@ -285,10 +421,10 @@ pub fn build(r: Request, mut progress: impl FnMut(usize, usize, &str)) -> Result
 }
 pub fn cli(args: &[std::ffi::OsString], import: bool) -> Result<(), String> {
     if import {
-        return Err("旧规则导入已停用；请用 lightweight --game <目录> --profile main|filler|min，或 --source 指定原包模板".into());
+        return Err("无需导入规则；请用 lightweight --game <目录> --profile main|filler|min。仅历史对照 --mode template 接受 --source".into());
     }
     if args.iter().any(|s| s == "--help" || s == "-h") {
-        println!("按本机 lowHD 原包生成（不从 CASC 复刻）\nlightweight --game <游戏目录> --profile main|filler|min\n [--source <含 modinfo.json 的原包目录>] [--output <父目录>] [--name <名称>]\n [--json|--events]\n自动查找游戏 mods 中对应 lowHD 原包，仅改 MOD 名称。旧缩图、粒子、配方参数停用。");
+        println!("独立生成（游戏数据版本跟随原版，其余行为保持 b12）\nlightweight --game <游戏目录> --profile main|filler|min\n [--output <父目录>] [--name <名称>] [--json|--events]\n默认名称：main=LiteHub，filler=BoHub，min=NullHub。\n默认 --mode rebuild：读取内置规则和 CASC，逐文件核验 b12 校验值；不接受 --source。\n历史原包复制对照：--mode template [--source <模板目录>]，仅此模式需要外部原包。");
         return Ok(());
     }
     let (mut opts, mut json, mut events, mut i) = (BTreeMap::new(), false, false, 0);
@@ -304,8 +440,19 @@ pub fn cli(args: &[std::ffi::OsString], import: bool) -> Result<(), String> {
             i += 1;
             continue;
         }
-        if !["--game", "--source", "--profile", "--output", "--name"].contains(&k) {
-            return Err(format!("未知或停用选项 {k}；模板模式不改资源"));
+        if ![
+            "--game",
+            "--source",
+            "--profile",
+            "--output",
+            "--name",
+            "--mode",
+        ]
+        .contains(&k)
+        {
+            return Err(format!(
+                "未知或停用选项 {k}；兼容模式不接受未经验证的缩图参数"
+            ));
         }
         let v = args
             .get(i + 1)
@@ -324,6 +471,16 @@ pub fn cli(args: &[std::ffi::OsString], import: bool) -> Result<(), String> {
         source: opts.get("--source").map(PathBuf::from),
         output: opts.get("--output").map(PathBuf::from),
         name: opts.get("--name").map(|s| s.to_string_lossy().into_owned()),
+        rebuild: match opts
+            .get("--mode")
+            .map(|s| s.to_string_lossy())
+            .as_deref()
+            .unwrap_or("rebuild")
+        {
+            "rebuild" => true,
+            "template" => false,
+            _ => return Err("--mode 使用 rebuild 或 template".into()),
+        },
         profile: opts
             .get("--profile")
             .map(|s| s.to_string_lossy().into_owned())
@@ -333,7 +490,7 @@ pub fn cli(args: &[std::ffi::OsString], import: bool) -> Result<(), String> {
         if events {
             println!(
                 "{}",
-                serde_json::json!({"type":"progress","phase":"template","percent":n*100/t.max(1),"message":msg})
+                serde_json::json!({"type":"progress","phase":"lightweight","percent":n*100/t.max(1),"message":msg})
             );
             let _ = std::io::stdout().flush();
         } else if !json {
@@ -354,7 +511,7 @@ pub fn cli(args: &[std::ffi::OsString], import: bool) -> Result<(), String> {
                 );
             } else {
                 println!(
-                    "完成：{}\n启动：{}\n除 modinfo 名称外全部与原包一致。",
+                    "完成：{}\n启动：{}\n已验证输出完整性；原版算法替代资源的显示与内存效果待游戏实测。",
                     report.mod_directory, report.launch_arguments
                 );
             }
@@ -406,6 +563,7 @@ mod tests {
                 output: Some(root.join("out")),
                 name: Some("test-mod".into()),
                 profile: "min".into(),
+                rebuild: false,
             },
             |_, _, _| {},
         )
@@ -429,7 +587,8 @@ mod tests {
                 source: Some(src.clone()),
                 output: Some(src.join("bad")),
                 name: None,
-                profile: "min".into()
+                profile: "min".into(),
+                rebuild: false,
             },
             |_, _, _| {}
         )

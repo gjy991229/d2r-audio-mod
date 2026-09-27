@@ -349,13 +349,14 @@ unsafe fn update_mode(state: &mut AppState) {
     EnableWindow(state.sprite, 0);
     let current = control_text(state.name_edit);
     if current == DEFAULT_MOD_NAME
-        || (current.starts_with("D2RLight-") || current.starts_with("D2RLowHD-"))
+        || matches!(current.as_str(), "LiteHub" | "BoHub" | "NullHub")
+        || (current.starts_with("D2RLight-")
+            || current.starts_with("D2RLowHD-")
+            || current.starts_with("D2RCompat-")
+            || current.starts_with("D2RNative-"))
     {
-        let name = if light {
-            format!(
-                "D2RLowHD-{}",
-                ["main", "filler", "min"][(index - 1) as usize]
-            )
+        let name: String = if light {
+            lightweight::default_name(["main", "filler", "min"][(index - 1) as usize]).into()
         } else {
             DEFAULT_MOD_NAME.into()
         };
@@ -369,7 +370,7 @@ unsafe fn update_mode(state: &mut AppState) {
         ) {
             set_text(state.source_edit, &game.to_string_lossy());
         }
-        set_text(state.status,"从游戏 mods 目录的 lowHDmain / lowHDfiller / lowHDmin 原包复制生成，仅改名称并逐文件核验。需要本机原包，不再精简或缩图。");
+        set_text(state.status,"只需本生成器与游戏原版资源，按内置规则生成并校验。保留当前低清素材与显示比例，Esc 不自动退出。");
     } else {
         if is_game_root(Path::new(&source)) {
             set_text(state.source_edit, "");
@@ -406,10 +407,11 @@ unsafe fn start_lightweight_build(window: HWND, state: &mut AppState) {
         name: Some(name),
         profile: ["main", "filler", "min"][(mode - 1) as usize].into(),
         source: None,
+        rebuild: true,
     };
     state.last_output = None;
     set_busy(state, true);
-    set_text(state.status, "正在按本机 lowHD 原包生成并验证…");
+    set_text(state.status, "正在按内置规则从原版生成，并核验 b12 基线…");
     let window_value = window as isize;
     std::thread::spawn(move || {
         let result = lightweight::build(request, |current, total, path| {
@@ -455,7 +457,7 @@ unsafe fn finish_build(state: &mut AppState, result: BuildResult) {
                 BuildOutput::Audio(report) => (report.mod_directory, report.launch_arguments,
                     "已包含：全区域、全部支持物品、主界面识别。源 MOD 没有被修改。".to_string()),
                 BuildOutput::Lightweight(report) => (report.mod_directory, report.launch_arguments,
-                    format!("轻量资源已生成：{:?}。\r\n除 modinfo 名称外全部与原包一致，原作者注释保留。尚未验证游戏内效果。", report.counts)),
+                    format!("轻量资源已生成：{:?}。\r\n内置规则输出已核验，数据版本取自当前原版；详细来源见生成清单。", report.counts)),
             };
             state.last_output = Some(PathBuf::from(&directory));
             EnableWindow(state.open_button, 1);
@@ -641,9 +643,9 @@ unsafe fn create_app_window() -> Result<HWND, String> {
     )?;
     for text in [
         "音频加工（原功能）",
-        "lowHD 原包：main",
-        "lowHD 原包：filler",
-        "lowHD 原包：min",
+        "LiteHub（main）",
+        "BoHub（filler）",
+        "NullHub（min）",
     ] {
         let text = wide(text);
         SendMessageW(mode, CB_ADDSTRING, 0, text.as_ptr() as isize);
@@ -662,7 +664,7 @@ unsafe fn create_app_window() -> Result<HWND, String> {
         ID_TEXTURE,
         instance,
     )?;
-    for text in ["纹理：原包不改"] {
+    for text in ["纹理：原版 mip"] {
         let text = wide(text);
         SendMessageW(texture, CB_ADDSTRING, 0, text.as_ptr() as isize);
     }
@@ -681,7 +683,7 @@ unsafe fn create_app_window() -> Result<HWND, String> {
         ID_SPRITE,
         instance,
     )?;
-    for text in ["UI：原包不改"] {
+    for text in ["UI：保持参考几何"] {
         let text = wide(text);
         SendMessageW(sprite, CB_ADDSTRING, 0, text.as_ptr() as isize);
     }

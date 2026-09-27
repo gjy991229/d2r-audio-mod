@@ -1,118 +1,25 @@
-# Retired independent rules
+# Lightweight generation rules
 
-As of beta9 these rules are not applied. Current mode copies local lowHD templates
-with name-only modinfo changes. This document is historical context only.
+The active generator uses embedded recipes and native game CASC. Recipe entries
+specify empty overrides, native file selection, texture mip limits, sprite frame
+geometry, JSON edits, text edits and product metadata.
 
----
+The profiles are main (LiteHub), filler (BoHub) and min (NullHub). Their target sets
+are fixed. Only explicitly listed files are emitted. Runtime does not scan an
+existing mod to decide new targets.
 
-# beta8 定向精简
+Current behavior:
+- Low-resolution sprite selection and frame processing are retained.
+- Cursor, map and icon sizes follow the current recipe; there is no separate
+  display-size correction or automatic high-resolution substitution.
+- Pause layouts retain manual Save and Exit without automatic exit timers.
+- Required skeleton components and their configured references are preserved.
+- Data version bytes come directly from the game used for generation.
+- Output names default to LiteHub, BoHub and NullHub; collisions receive suffixes.
 
-针对同场景内存反馈，补充此前遗漏的 JSON 层模型裁剪；不新增名单外对象。
+JSON edits are verified against output digests. Native input changes fail clearly;
+new game versions may require updated rules. An updated data version alone does
+not establish compatibility of changed game assets.
 
-- min：仅对范围内 UnitDefinition 执行无模型规则。保留原版名称、根实体
-  ID/变换；保留根组件并清空状态机/动画/onCreate事件；移除不再需要的骨骼组件；
-  当前游戏不存在 lowHD 使用的 null.skeleton，不生成该悬空引用。移除其他实体与全部模型、材质、动作预加载。该模式会
-  隐藏对应 HD 角色，并有意停止其 HD 动作链，不能宣称与正常角色模式相同。
-- main/filler：按原版 UnitPartComponent 的 part/variant 查找 lit 模型，
-  med/hvy 同部位复用它。保留动作、部件选择、可见性和变换，清理重复模型
-  预加载。未擅自把 visibleLayers 置零，也未清理未经确认的隐式材质依赖。
-- min 地图：仅 automap 目录的范围内 sprite 可替换成游戏现成 lowend；
-  帧数必须一致、尺寸不得增大。不再额外缩放，不改背包、装备槽或任务面板。
-- filler 血球：提取原版第0帧，保留帧宽、单帧高度及间距，帧数改为1。
-  这会停止血球循环动画，需要验证血量显示/裁切仍正常。
-- VFX：选用游戏自带 mip；普通轮廓最大边64，短边<=16或长宽比>=8的
-  渐变/长条最大边512。小于该上限的原版不放大。无合适 mip 的 RGBA
-  走既有缩小逻辑，不把所有特效压成4×4。画面仍需实测。
-- 保留 beta7 的共享简化 biome，以及 --effects off 的范围内粒子关闭。
-
-这些是自行实现的类别规则，素材来自游戏 CASC，没有导入作者像素或具体
-JSON 差量。目标范围仍有明确的历史 lowHD 来源，不宣称它独立发现。
-
-下面是历史规则，冲突处以 beta8 为准。
-
----
-
-# beta7 加载链精简
-
-以 lowHD 的共享环境与依赖截断思路为参考，规则由原版 schema 决定，
-不导入作者的数值、实体 ID、自定义颜色或完整 JSON。
-
-- 范围内 Preset：移除 terrain，清空 perTileBiomeOverrides / specialTiles，
-  去掉这些内容的依赖。main/filler 场景统一引用既有目标 default.json。
-- 共享及范围内 biome：从原版 act1_outdoors 模板/对应原版定义生成，保留
-  原生地形层结构，移除地形外附的 foliage/tile mask 等加载项；四种材质
-  改指向原版生成的 1×1 Albedo/Normal/ORM/Noise。默认环境使用游戏自带
-  1_default_day.json 的光照定义，不复制 lowHD 的光照参数。
-- 必要支持文件：data/hd/env/texture/d2rlight/terrain_*.texture，共四张、
-  当前版本总计 232 字节。它们是新引用必需的材质，不是新内容或特效；
-  manifest 逐条记录原版来源，生成前校验模板和默认环境存在。
-- UnitDefinition/OverlayDefinition：移除正文没有引用的模型、骨骼预加载。
-  存在状态机/动画绑定时保留动画依赖；否则仅去掉没有正文引用的动画预加载。
-  不直接清空角色状态机，不修改状态机内容或单位 entities 图。
-- min 没有扩展到新场景范围；本次改善较小，不宣称它已达到 lowHDmin 的
-  激进程度。main/filler 也保留原版默认光照和 cubemap，未把环境全部置空。
-
-保留 beta6 的 UI 原尺寸、VFX 原纹理以及可选粒子关闭。实际内存收益、
-空地形效果和交互稳定性需游戏验证。下面为历史规则记录。
-
----
-
-# beta6 correction
-
-实测反馈确认旧版直接缩小 UI sprite 会使背景与槽位错位。beta6 默认并强制
-非空 UI sprite 保持原版尺寸；不再使用低清替换或改变画布。原有空覆盖保留。
-VFX 纹理不再缩为 4×4；极小纹理可能破坏渐变、透明轮廓和粒子形状。
-
-`--effects preserve`（默认）保留既有屏蔽范围，剩余特效使用原版纹理。
-`--effects off` 关闭既有范围内的粒子，并从范围内原版 JSON 提取直接引用
-的 .particles，为确实存在的粒子生成额外空覆盖，再清理 JSON 对应引用。
-新增覆盖仅限这些可追溯的粒子依赖，逐条记入 manifest；不扫描全游戏、
-不递归扩展不相关 JSON、不改 missiles.txt/伤害/声音。不能宣称全游戏无特效。
-
-这些修改修正视觉回归，并未证明内存优于 lowHD。原版 biome、地形和部分
-动画依赖仍保留，原版 UI 也仍会占用内存，需要游戏内对照测量。
-
-下面是 beta5 历史规则；sprite/VFX 项以上述 beta6 修正为准。
-
----
-
-# beta5 独立处理规则与范围
-
-目标：学习资源屏蔽、引用裁剪、降采样的方法，不再复现作者的逐文件配置。
-这不是与 lowHD 相同的成品，也不是版权免责结论。
-
-## 范围边界
-
-沿用现有 min / filler / main 的目标路径和空覆盖意图作为上限；不增加
-名单外文件（modinfo/build marker/生成报告除外）。此范围来自历史 lowHD
-参考，明确保留来源，不宣称目标清单独立发现。历史排除项继续排除。
-
-## 独立规则
-
-| 类别 | 处理 | 保留 |
-|---|---|---|
-| 空覆盖 | 生成零字节占位；BOM 占位归一为空 | 既有目标路径 |
-| HD Preset | 清空场景实体；从依赖表去掉剩余定义中不再引用的项 | 原版地形、biome、名字和其他字段 |
-| 其他非空 JSON/frontend | 移除已屏蔽文件的依赖条目；清空对应路径；移除直接指向屏蔽文件的 Model/Vfx/Skeleton/Decal 渲染组件 | 原版 ID、非零参数、其他组件和未知结构 |
-| UI JSON | 不输出自定义覆盖 | 游戏原版布局 |
-| 非空 texture | 优先使用原版 mip，默认最大边 4；RGBA 必要时按通道缩小 | 原版素材和压缩格式 |
-| 非空 sprite | 原版 lowend 存在且帧数相同、尺寸不大于高清时使用 lowend；默认每帧缩小 2 倍 | 原版构图、颜色、帧数与帧间距 |
-| 缺失源或未定义类型 | 记录原因并省略，不猜测资源 | 游戏原版回退行为 |
-
-不生成 fake.texture、不复制 null.skeleton 重定向、不合成作者 default biome，
-不导入作者的光照参数、实体 ID、自定义 UI、遮罩和动画帧选择。
-默认 biome 在游戏中不存在时跳过；也不创建指向它的新引用。
-因此部分界面背景和动画与 beta4 不同，不能宣称保留作者的全部裁切效果。
-
-## 明确的格式处理
-
-校验原版 sprite 头、帧布局和像素长度；仅丢弃头部定义的图像范围外尾部。
-逐帧、按 alpha 加权缩小，避免跨帧混色。无效二进制转换会阻止生成，
-不会把未知格式当空图或套用作者损坏的头部。
-
-## 验收
-
-检查输出路径属于范围；JSON 仅删除内容或清空被禁用的引用，不产生新的
-非空字符串、ID、数值或原版之外的定义；图像头和帧边界有效；没有内置
-参考 JSON 差量、像素遮罩和逐文件几何参数。运行游戏确认视觉和内存效果。
-旧测试版留存供对比，不覆盖稳定 D2RHub sidecar。
+See [recipe format](../resources/lightweight/b13/README.md) and
+[validation](lightweight-validation.md).

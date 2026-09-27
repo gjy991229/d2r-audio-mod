@@ -1,36 +1,41 @@
 # D2R Audio Mod
 
-当前分支预览版 **v1.4.0-beta.9**（稳定版仍为 v1.3.4）。这是独立、轻量的 D2R Mod 生成/加工工具，包含原有音频遥测加工和实验性轻量资源生成。它只读取游戏资源或源 Mod，输出一个新 Mod；不读取 D2RHub 配置、账号、数据库，也不会启用 Mod。
+当前分支预览版 **v1.4.0-beta.17**（稳定版仍为 v1.3.4）。这是独立、轻量的 D2R Mod 生成/加工工具，包含原有音频遥测加工和实验性轻量资源生成。它只读取游戏资源或源 Mod，输出一个新 Mod；不读取 D2RHub 配置、账号、数据库，也不会启用 Mod。
 
-## lowHD 原包模板生成
+## 原版资源独立生成（b17）
 
-本分支现按用户指定的本机 lowHD 原包复制生成，不再套用之前的独立精简、
-缩图、无模型或粒子关闭规则。GUI 可选 main / filler / min，游戏目录的
-mods 下必须有对应 lowHDmain / lowHDfiller / lowHDmin 原包。
+三个方案的默认 rebuild 模式只需要本生成器 EXE 和游戏原版 CASC。
+目标清单、配置差量、纹理 mip 与 sprite 帧几何规则已编译进 EXE，运行时仅需程序与游戏原版资源。
 
 ```powershell
-d2r-audio-mod lightweight --game "C:\Diablo II Resurrected" --profile main
-d2r-audio-mod lightweight --game "C:\Diablo II Resurrected" --profile filler
 d2r-audio-mod lightweight --game "C:\Diablo II Resurrected" --profile min
-# 也可显式选择包含 modinfo.json 的模板目录：
-d2r-audio-mod lightweight --game "C:\Diablo II Resurrected" --profile min --source "C:\templates\lowHDmin.mpq"
+# 同样支持 --profile filler 或 --profile main
 ```
 
-- 默认生成 D2RLowHD-main / D2RLowHD-filler / D2RLowHD-min；同名目录不覆盖。
-- 文件集和内容逐字节核验；唯一改动是 modinfo.json 的 name。原作者注释、
-  savepath、数据版本标记以及原包中不规范/空白的资源都保留。
-- main 原包包含 missiles.txt，启动参数带 -txt 以启用原表格编译；不启动游戏。
-- **这依赖本机 lowHD 原包，不是只靠游戏 CASC 独立重建。** 原包素材和许可
-  不因复制而变成本项目原创或受本项目 MIT 许可重新授权。
-- 旧的 --texture-size、--sprite-scale、--effects、--recipe、--asset-types 和
-  lightweight-import 参数停用，避免生成内容再偏离模板。
-- 原有音频加工独立保留，稳定 D2RHub sidecar 不自动替换。
+- 默认名称：main → LiteHub，filler → BoHub，min → NullHub；可用 --name 自定义。
+- 游戏资源按已验证的规则生成：保留低清素材、当前光标及小地图大小，
+  暂停菜单保留手动退出，移除自动退出计时器。
+- 内置规则只保存路径、配置修改、帧几何与校验值，不保存图片、纹理、粒子等二进制素材。
+  非空二进制由本机原版生成；JSON 从原版施加差量，必要的文本配置直接内置。
+- 游戏数据版本 data/global/dataversionbuild.txt 直接读取生成时的原版 CASC，
+  原样写入并记录 game_data_version，不使用参考包旧版本或固定值。
+- 其他原版输入与规则输出均校验 SHA-256；modinfo 使用产品名称和存档路径。
+  原版资源变化导致规则不匹配时明确报错，不发布不一致的产物。未来游戏更新
+  可能需要更新内置规则。
+- generation-manifest.json 记录来源和校验状态；source_directory 是 embedded:hub/<方案>，
+  不再是原包目录。b16 的 modinfo 和附带说明采用本项目的中性文字；旧基线一致性标志不再标为 true，
+  以 verified_output_integrity 和逐文件内置校验结果为准。
+- main 使用 -txt；min/filler 不需要。生成器不启动游戏，不更改游戏设置，同名输出不覆盖。
+- 为保留历史对照，显式 --mode template 仍能复制本机模板，该独立对照功能需要原包；
+  默认生成及 GUI 的三个轻量方案不走此路径。rebuild 不接受 --source。
+
+规则维护说明见 [内置规则](resources/lightweight/b13/README.md)。
 
 本项目已按 [MIT License](LICENSE) 开源。Windows 独立工具可从 [Releases](https://github.com/gjy991229/d2r-audio-mod/releases) 下载；[D2RHub v0.9.96](https://github.com/gjy991229/D2RHub/releases) 已内置生成器，无需另行安装。完整音频格式见 [protocol/](protocol/)，共享实现位于 [d2r-audio-protocol](crates/d2r-audio-protocol/)。
 
 ## v1.3.4 更新
 
-- 兼容 lowHD 等 Mod 用空白、BOM 或纯注释 JSON 屏蔽符文/物品实体、落地状态机和物品映射的情况。需要本机游戏数据作为基线；只为选中的声纹功能构建无模型实体和私有状态机，保留共享屏蔽文件及未选物品的裁剪策略。
+- 兼容源 Mod 用空白、BOM 或纯注释 JSON 屏蔽符文/物品实体、落地状态机和物品映射的情况。需要本机游戏数据作为基线；只为选中的声纹功能构建无模型实体和私有状态机，保留共享屏蔽文件及未选物品的裁剪策略。
 - 必需骨骼或动画也被置空时，将游戏基线复制到声纹专用路径，不恢复共享资源。被屏蔽状态机的原声音与视觉事件不会恢复。
 - 正常 JSON/JSON5 继续保留源定义；精简实体缺少依赖列表时只补状态机引用。非空语法错误、类型错误及不支持的状态转场仍明确失败，不通过恢复整套原版资源掩盖问题。
 - 保持现有 v7 协议、声纹组 r3 和成品复用规则不变。本次覆盖生成和资源结构检查；无模型实体在游戏内的实际声纹触发仍需运行验证。

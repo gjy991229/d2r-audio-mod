@@ -1,21 +1,5 @@
-# Retired beta5–beta8 scope data
+# Lightweight generation data
 
-These historical gzip scopes are not compiled into or read by beta9. Current
-lightweight mode copies local lowHD templates and verifies bytes. See README.md.
-
----
-
-# Independent native-data processing scopes (beta.5)
-
-The compressed files contain only target paths, abstract actions and exclusion
-reasons. Historical target boundaries and empty-override intent originate from
-the local lowHD reference packages, retained to avoid scope expansion. These
-boundaries are NOT claimed as independently discovered.
-
-No reference JSON values, IDs, scalar deltas, sprite masks, dimensions or frame
-matches remain. Processing is defined in src/lightweight/native_policy.rs and
-assets.rs using installed game assets only. The legacy reference-reconstruction
-recipe formats are rejected. Scope import reads file metadata and BOM markers;
-it no longer imports JSON or image contents.
-
-See docs/lightweight-independent-rules.md for exact rules and limitations.
+Active embedded recipes and maintenance instructions are in [b13](b13/README.md).
+The gzip scope files directly in this directory belong to inactive implementations
+and are not read by the current default generator.

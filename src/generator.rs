@@ -33,7 +33,7 @@ pub const AUDIO_TELEMETRY_FEATURE_ID: &str = "audio_telemetry";
 pub const IN_GAME_ROOM_TOOLS_FEATURE_ID: &str = "in_game_room_tools";
 pub const AUTO_EXIT_ON_DEATH_FEATURE_ID: &str = "auto_exit_on_death";
 const AUDIO_TELEMETRY_FEATURE_RECIPE_VERSION: u32 = 3;
-const IN_GAME_ROOM_TOOLS_FEATURE_RECIPE_VERSION: u32 = 28;
+const IN_GAME_ROOM_TOOLS_FEATURE_RECIPE_VERSION: u32 = 30;
 pub const ESC_NEXT_GAME_FEATURE_ID: &str = "esc_next_game";
 const ESC_NEXT_GAME_CAPABILITY: &str = "esc_next_game_v1";
 const AUTO_EXIT_ON_DEATH_FEATURE_RECIPE_VERSION: u32 = 1;
@@ -73,8 +73,8 @@ const IN_GAME_JOIN_FORM: &str = "D2RHubInGameJoinGame";
 const QUICK_RECREATE_DOUBLE_CLICK_WINDOW_SECONDS: f64 = 0.5;
 const ROOM_TRANSITION_OPEN_PAUSE_DELAY_SECONDS: f64 = 0.01;
 const ROOM_TRANSITION_EXIT_DELAY_SECONDS: f64 = 0.05;
-// JCY queues exit and the next action in the same timer tick, in child order.
-// Delaying submission after exit loses the in-game form/controller context.
+// Quick recreate retains the JCY same-tick transition. Room forms use separate
+// delays below; preservation of native form context across exit needs in-game QA.
 const ROOM_TRANSITION_COMMIT_DELAY_SECONDS: f64 = ROOM_TRANSITION_EXIT_DELAY_SECONDS;
 const ROOM_TRANSITION_CLOSE_DELAY_SECONDS: f64 = ROOM_TRANSITION_EXIT_DELAY_SECONDS;
 const YOU_DIED_LAYOUT: &str = "data/global/ui/layouts/youdiedmodalhd.json";
@@ -1098,7 +1098,17 @@ fn quick_recreate_layout() -> serde_json::Value {
     })
 }
 
+// Absolute times from confirmation, including the 50ms exit timer.
+fn room_submission_times(create: bool) -> (f64, f64) {
+    if create {
+        (0.10, 0.15)
+    } else {
+        (0.55, 0.60)
+    }
+}
+
 fn room_submission_layout(create: bool) -> serde_json::Value {
+    let (commit_delay, close_delay) = room_submission_times(create);
     let (panel_name, native_message) = if create {
         (COMMIT_CREATE_GAME_PANEL, "CreateGame:CreateGame")
     } else {
@@ -1135,7 +1145,7 @@ fn room_submission_layout(create: bool) -> serde_json::Value {
                 "type": "TimerWidget",
                 "name": "D2RHubRoomSubmissionCommit",
                 "fields": {
-                    "time": ROOM_TRANSITION_COMMIT_DELAY_SECONDS,
+                    "time": commit_delay,
                     "message": native_message
                 }
             },
@@ -1143,7 +1153,7 @@ fn room_submission_layout(create: bool) -> serde_json::Value {
                 "type": "TimerWidget",
                 "name": "D2RHubRoomSubmissionClose",
                 "fields": {
-                    "time": ROOM_TRANSITION_CLOSE_DELAY_SECONDS,
+                    "time": close_delay,
                     "message": format!("PanelManager:ClosePanel:{panel_name}")
                 }
             }
@@ -1580,6 +1590,17 @@ fn route_room_submission_messages(
     routed
 }
 
+fn default_hell_timer_layout() -> serde_json::Value {
+    serde_json::json!({
+        "type": "TimerWidget",
+        "name": "D2RHubDefaultHell",
+        "fields": {
+            "time": 0.05,
+            "message": "CreateGame:SetDifficulty:2"
+        }
+    })
+}
+
 fn patch_room_form_layout(
     mpq_directory: &Path,
     storage: Option<&casc_core::Storage>,
@@ -1709,7 +1730,11 @@ fn patch_room_form_layout(
         child
             .get("name")
             .and_then(serde_json::Value::as_str)
-            .is_none_or(|name| name != "D2RHubCloseRoomForm" && name != ROOM_FORM_FOCUS_SINK)
+            .is_none_or(|name| {
+                name != "D2RHubCloseRoomForm"
+                    && name != ROOM_FORM_FOCUS_SINK
+                    && name != "D2RHubDefaultHell"
+            })
     });
     children.push(serde_json::json!({
         "type": "ButtonWidget",
@@ -1750,6 +1775,14 @@ fn patch_room_form_layout(
         .ok_or_else(|| format!("{relative_path} 缺少房间表单关闭按钮"))?;
     close["fields"]["onClickMessage"] =
         serde_json::json!(format!("PanelManager:ClosePanel:{in_game_panel}"));
+    if in_game_panel == IN_GAME_CREATE_FORM {
+        // Run once after native initialization on each open. Keep focus in the
+        // name field, and allow subsequent manual difficulty changes.
+        document["children"]
+            .as_array_mut()
+            .unwrap()
+            .push(default_hell_timer_layout());
+    }
     write_json_layout(
         mpq_directory,
         &format!("{UI_LAYOUTS_DIRECTORY}/{in_game_panel}hd.json"),
@@ -2270,7 +2303,7 @@ fn install_in_game_room_tools(
     compatibility.push(AudioModCompatibility {
         target: "局内房间工具".to_string(),
         action: "add_in_game_create_join_and_recreate".to_string(),
-        detail: "双击 Esc 下一局地狱已拆分为独立可选模块。大厅与局内创建/加入使用独立表单：大厅保留原生提交，局内表单进入退出提交控制器。下一局、局内创建和加入参照 JCY 快速重开：10ms 打开暂停菜单，50ms 按子节点顺序依次提交退出、下一步动作及关闭控制器，退出和提交不再相隔 150ms。两套高清暂停布局均从当前 D2R 游戏原版重建后注入房间入口，覆盖源 Mod 在这两份文件中的自定义外观、按钮、定时器和消息链；单击 Esc 打开暂停菜单，再次 Esc 返回游戏。下一局、创建和加入三个工具栏按钮始终隐藏，暂停菜单保留隐藏安全焦点，所有原版按钮的左右导航汇入创建/加入入口。自动填写使用 Esc+左/右两次+确认打开原生表单，再以备份过的 F13 次键调用 CfgChat 文本态。".to_string(),
+        detail: "双击 Esc 下一局地狱已拆分为独立可选模块。大厅与局内创建/加入使用独立表单：大厅保留原生提交，局内表单进入退出提交控制器。局内创建和加入在确认后 10ms 打开暂停菜单、50ms 发送退出；创建在 100ms 提交、150ms 关闭控制器，加入在 550ms 提交、600ms 关闭控制器。下一局保留原有同帧退出与提交时序。两套高清暂停布局均从当前 D2R 游戏原版重建后注入房间入口，覆盖源 Mod 在这两份文件中的自定义外观、按钮、定时器和消息链；单击 Esc 打开暂停菜单，再次 Esc 返回游戏。下一局、创建和加入三个工具栏按钮始终隐藏，暂停菜单保留隐藏安全焦点，所有原版按钮的左右导航汇入创建/加入入口。自动填写使用 Esc+左/右两次+确认打开原生表单，再以备份过的 F13 次键调用 CfgChat 文本态。".to_string(),
     });
     Ok(true)
 }
@@ -4933,6 +4966,8 @@ fn source_room_tool_layouts_are_current(mpq_directory: &Path) -> Option<()> {
         ("D2RHubCommitCreateGamehd.json", "CreateGame:CreateGame"),
         ("D2RHubCommitJoinGamehd.json", "JoinGame:JoinGame"),
     ] {
+        let (commit_delay, close_delay) =
+            room_submission_times(native_message == "CreateGame:CreateGame");
         let commit = read_source_room_tool_layout(
             mpq_directory,
             &format!("{UI_LAYOUTS_DIRECTORY}/{file_name}"),
@@ -4945,18 +4980,16 @@ fn source_room_tool_layouts_are_current(mpq_directory: &Path) -> Option<()> {
             &commit,
             "PausePanelMessage:ExitGame",
             ROOM_TRANSITION_EXIT_DELAY_SECONDS,
-        ) || !layout_has_direct_timed_message(
-            &commit,
-            native_message,
-            ROOM_TRANSITION_COMMIT_DELAY_SECONDS,
-        ) || !layout_has_direct_timed_message(
-            &commit,
-            &format!(
-                "PanelManager:ClosePanel:{}",
-                file_name.trim_end_matches("hd.json")
-            ),
-            ROOM_TRANSITION_CLOSE_DELAY_SECONDS,
-        ) {
+        ) || !layout_has_direct_timed_message(&commit, native_message, commit_delay)
+            || !layout_has_direct_timed_message(
+                &commit,
+                &format!(
+                    "PanelManager:ClosePanel:{}",
+                    file_name.trim_end_matches("hd.json")
+                ),
+                close_delay,
+            )
+        {
             return None;
         }
         let messages = commit.get("children")?.as_array()?;
@@ -5124,6 +5157,11 @@ fn source_room_tool_layouts_are_current(mpq_directory: &Path) -> Option<()> {
         find_layout_node_mut(&mut expected_in_game_form, "D2RHubCloseRoomForm")?["fields"]
             ["onClickMessage"] =
             serde_json::json!(format!("PanelManager:ClosePanel:{in_game_panel}"));
+        if in_game_panel == IN_GAME_CREATE_FORM {
+            expected_in_game_form["children"]
+                .as_array_mut()?
+                .push(default_hell_timer_layout());
+        }
         let in_game_form = read_source_room_tool_layout(
             mpq_directory,
             &format!("{UI_LAYOUTS_DIRECTORY}/{in_game_panel}hd.json"),
@@ -6390,6 +6428,32 @@ where
 mod tests {
     use super::*;
 
+    #[test]
+    fn room_submission_delays_preserve_exit_and_quick_recreate_timing() {
+        for (create, message, commit, close) in [
+            (true, "CreateGame:CreateGame", 0.10, 0.15),
+            (false, "JoinGame:JoinGame", 0.55, 0.60),
+        ] {
+            let layout = room_submission_layout(create);
+            assert!(layout_has_direct_timed_message(
+                &layout,
+                "PausePanelMessage:ExitGame",
+                0.05
+            ));
+            assert!(layout_has_direct_timed_message(&layout, message, commit));
+            assert_eq!(
+                find_layout_node(&layout, "D2RHubRoomSubmissionClose").unwrap()["fields"]["time"],
+                close
+            );
+        }
+        let quick = quick_recreate_layout();
+        assert!(layout_has_direct_timed_message(
+            &quick,
+            "CharacterSelect:LoadCharacter:2",
+            0.05
+        ));
+    }
+
     fn write_room_tool_baseline(mpq: &Path) {
         let layouts = mpq.join(UI_LAYOUTS_DIRECTORY);
         write_file(
@@ -6438,6 +6502,66 @@ mod tests {
             }"#,
         )
         .unwrap();
+    }
+
+    #[test]
+    fn default_hell_is_only_added_once_to_in_game_create_form() {
+        let root =
+            std::env::temp_dir().join(format!("d2rhub-default-hell-{}", uuid::Uuid::new_v4()));
+        write_room_tool_baseline(&root);
+        for _ in 0..2 {
+            for (file, input) in [
+                ("creategamepanelhd.json", "GameNameInput"),
+                ("joingamepanelhd.json", "NameInput"),
+            ] {
+                patch_room_form_layout(
+                    &root,
+                    None,
+                    &format!("{UI_LAYOUTS_DIRECTORY}/{file}"),
+                    input,
+                )
+                .unwrap();
+            }
+            for file in [
+                "creategamepanelhd.json",
+                "joingamepanelhd.json",
+                "D2RHubInGameJoinGamehd.json",
+            ] {
+                let form =
+                    read_local_or_casc_json(&root, None, &format!("{UI_LAYOUTS_DIRECTORY}/{file}"))
+                        .unwrap();
+                assert!(find_layout_node(&form, "D2RHubDefaultHell").is_none());
+            }
+            let form = read_local_or_casc_json(
+                &root,
+                None,
+                &format!("{UI_LAYOUTS_DIRECTORY}/D2RHubInGameCreateGamehd.json"),
+            )
+            .unwrap();
+            assert_eq!(form["fields"]["defaultWidget"], "GameNameInput");
+            assert_eq!(
+                form["children"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .filter(|child| child["name"] == "D2RHubDefaultHell")
+                    .count(),
+                1
+            );
+            assert_eq!(
+                find_layout_node(&form, "D2RHubDefaultHell").unwrap(),
+                &serde_json::json!({
+                    "type": "TimerWidget", "name": "D2RHubDefaultHell",
+                    "fields": {"time": 0.05, "message": "CreateGame:SetDifficulty:2"}
+                })
+            );
+            assert!(
+                layout_field_value_count(&form, "PanelManager:OpenPanel:D2RHubCommitCreateGame")
+                    > 0
+            );
+            assert_eq!(layout_field_value_count(&form, "CreateGame:CreateGame"), 0);
+        }
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

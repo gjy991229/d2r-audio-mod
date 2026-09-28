@@ -160,14 +160,14 @@ dependencies = [
 
 [[package]]
 name = "d2r-audio-mod"
-version = "1.4.0-beta.17"
+version = "1.4.0-beta.18"
 dependencies = [
  "casc-core",
  "claxon",
  "d2r-audio-protocol",
+ "d2r-stormlib-sys",
  "encoding_rs",
  "flacenc",
- "flate2",
  "json5",
  "junction",
  "serde",
@@ -183,6 +183,13 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "d2r-stormlib-sys"
+version = "0.1.0"
+dependencies = [
+ "cc",
 ]
 
 [[package]]

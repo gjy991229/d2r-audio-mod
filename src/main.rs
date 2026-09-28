@@ -3,7 +3,7 @@ mod casc_path;
 mod generator;
 #[cfg(target_os = "windows")]
 mod gui;
-mod lightweight;
+mod mpq;
 
 use audio::BatchRequest;
 use d2r_audio_protocol::catalog::AREA_CATALOG_FILE_NAME;
@@ -333,14 +333,15 @@ fn print_help() {
         r#"D2R 音频遥测 Mod 工具（独立于任何接收软件）
 
 用法：
-  d2r-audio-mod                 打开轻量生成界面（Windows）
-  d2r-audio-mod gui             打开轻量生成界面（Windows）
+  d2r-audio-mod                 打开 Mod 加工界面（Windows）
+  d2r-audio-mod gui             打开 Mod 加工界面（Windows）
   d2r-audio-mod minimal --game <游戏目录> [选项]
   d2r-audio-mod augment --source <源 Mod/.mpq> [--game <游戏目录>] [选项]
   d2r-audio-mod tag-files --input <FLAC 目录> [--output <目录>] [--gain -30]
   d2r-audio-mod protocol
-  d2r-audio-mod lightweight --game <游戏目录> --profile main [轻量化选项]
-  d2r-audio-mod lightweight --help
+  d2r-audio-mod capabilities --json
+  d2r-audio-mod unpack-mpq --source <absolute/name/name.mpq> [--events|--json]
+  d2r-audio-mod recover-mpq --mod-directory <absolute/name> [--events|--json]
 
 Mod 选项：
   --output <目录>             输出父目录；省略时优先使用游戏的 mods 目录
@@ -356,7 +357,7 @@ Mod 选项：
 
 类别：runes,gems,charms,jewels,keys,organs,essences
 
-本工具只生成文件，不读取 D2RHub 配置/数据库，不切换 Mod，不修改启动参数。"#
+生成与加工另建输出；unpack-mpq 会备份并转换源 MPQ。本工具不读取 D2RHub 配置/数据库，不切换 Mod，不修改启动参数。"#
     );
 }
 
@@ -374,8 +375,9 @@ fn real_main() -> Result<(), String> {
     };
     let rest = args.collect::<Vec<_>>();
     match command.to_string_lossy().to_ascii_lowercase().as_str() {
-        "lightweight" => lightweight::cli(&rest, false),
-        "lightweight-import" => lightweight::cli(&rest, true),
+        "capabilities" => mpq::capabilities(&rest),
+        "unpack-mpq" => mpq::cli(&rest, false),
+        "recover-mpq" => mpq::cli(&rest, true),
         "gui" => {
             if !rest.is_empty() {
                 return Err("gui 命令不接受其他参数".to_string());

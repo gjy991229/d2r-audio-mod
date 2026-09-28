@@ -1,0 +1,9 @@
+[package]
+name = "d2r-stormlib-sys"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+links = "storm"
+
+[build-dependencies]
+cc = "1"

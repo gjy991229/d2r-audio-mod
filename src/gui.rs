@@ -1,5 +1,4 @@
 use crate::generator::{self, AudioAreaCoverage, AudioModBuildMode, BuildAudioModRequest};
-use crate::lightweight;
 use d2r_audio_protocol::item_catalog::default_tracked_categories;
 use std::ffi::{c_void, OsStr};
 use std::iter;
@@ -26,12 +25,11 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW,
     GetWindowLongPtrW, GetWindowTextLengthW, GetWindowTextW, IsDialogMessageW, LoadCursorW,
     PostMessageW, PostQuitMessage, RegisterClassW, SendMessageW, SetWindowLongPtrW, SetWindowTextW,
-    ShowWindow, TranslateMessage, BS_DEFPUSHBUTTON, CBS_DROPDOWNLIST, CB_ADDSTRING, CB_GETCURSEL,
-    CB_SETCURSEL, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, ES_AUTOHSCROLL, ES_AUTOVSCROLL,
-    ES_MULTILINE, ES_READONLY, GWLP_USERDATA, IDC_ARROW, MSG, SW_SHOW, WM_APP, WM_CLOSE,
-    WM_COMMAND, WM_DESTROY, WM_SETFONT, WNDCLASSW, WS_BORDER, WS_CAPTION, WS_CHILD,
-    WS_EX_CLIENTEDGE, WS_EX_CONTROLPARENT, WS_MINIMIZEBOX, WS_SYSMENU, WS_TABSTOP, WS_VISIBLE,
-    WS_VSCROLL,
+    ShowWindow, TranslateMessage, BS_DEFPUSHBUTTON, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT,
+    ES_AUTOHSCROLL, ES_AUTOVSCROLL, ES_MULTILINE, ES_READONLY, GWLP_USERDATA, IDC_ARROW, MSG,
+    SW_SHOW, WM_APP, WM_CLOSE, WM_COMMAND, WM_DESTROY, WM_SETFONT, WNDCLASSW, WS_BORDER,
+    WS_CAPTION, WS_CHILD, WS_EX_CLIENTEDGE, WS_EX_CONTROLPARENT, WS_MINIMIZEBOX, WS_SYSMENU,
+    WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
 };
 
 const WINDOW_CLASS: &str = "D2RAudioModGeneratorWindow";
@@ -46,23 +44,11 @@ const ID_OUTPUT_BROWSE: usize = 302;
 const ID_GENERATE: usize = 401;
 const ID_OPEN_RESULT: usize = 402;
 const ID_STATUS: usize = 501;
-const ID_MODE: usize = 601;
-const ID_TEXTURE: usize = 602;
-const ID_SPRITE: usize = 603;
 const WM_BUILD_FINISHED: u32 = WM_APP + 17;
-const WM_BUILD_PROGRESS: u32 = WM_APP + 18;
 
-enum BuildOutput {
-    Audio(Box<generator::BuildAudioModReport>),
-    Lightweight(Box<lightweight::Report>),
-}
-type BuildResult = Result<BuildOutput, String>;
+type BuildResult = Result<Box<generator::BuildAudioModReport>, String>;
 
 struct AppState {
-    mode: HWND,
-    texture: HWND,
-    sprite: HWND,
-    source_label: HWND,
     source_edit: HWND,
     source_browse: HWND,
     name_edit: HWND,
@@ -121,7 +107,7 @@ unsafe fn create_control(
         text.as_ptr(),
         style,
         x,
-        if y >= 70 { y + 50 } else { y },
+        y,
         width,
         height,
         parent,
@@ -245,7 +231,6 @@ unsafe fn state_from_window(window: HWND) -> Option<&'static mut AppState> {
 unsafe fn set_busy(state: &AppState, busy: bool) {
     let enabled = if busy { 0 } else { 1 };
     for control in [
-        state.mode,
         state.source_edit,
         state.source_browse,
         state.name_edit,
@@ -255,18 +240,12 @@ unsafe fn set_busy(state: &AppState, busy: bool) {
     ] {
         EnableWindow(control, enabled);
     }
-    EnableWindow(state.texture, 0);
-    EnableWindow(state.sprite, 0);
     if busy {
         EnableWindow(state.open_button, 0);
     }
 }
 
 unsafe fn start_build(window: HWND, state: &mut AppState) {
-    if SendMessageW(state.mode, CB_GETCURSEL, 0, 0) > 0 {
-        start_lightweight_build(window, state);
-        return;
-    }
     let source = control_text(state.source_edit).trim().to_string();
     let mod_name = control_text(state.name_edit).trim().to_string();
     let output = control_text(state.output_edit).trim().to_string();
@@ -316,9 +295,7 @@ unsafe fn start_build(window: HWND, state: &mut AppState) {
 
     let window_value = window as isize;
     std::thread::spawn(move || {
-        let result: BuildResult = generator::build(request)
-            .map(Box::new)
-            .map(BuildOutput::Audio);
+        let result: BuildResult = generator::build(request).map(Box::new);
         let pointer = Box::into_raw(Box::new(result));
         let posted = unsafe {
             PostMessageW(
@@ -336,132 +313,13 @@ unsafe fn start_build(window: HWND, state: &mut AppState) {
     });
 }
 
-unsafe fn update_mode(state: &mut AppState) {
-    let index = SendMessageW(state.mode, CB_GETCURSEL, 0, 0);
-    let light = index > 0;
-    set_text(
-        state.source_label,
-        if light {
-            "D2R 游戏目录（必填）"
-        } else {
-            "源 MOD（可不选）"
-        },
-    );
-    EnableWindow(state.texture, 0);
-    EnableWindow(state.sprite, 0);
-    let current = control_text(state.name_edit);
-    if current == DEFAULT_MOD_NAME
-        || matches!(current.as_str(), "LiteHub" | "BoHub" | "NullHub")
-        || (current.starts_with("D2RLight-")
-            || current.starts_with("D2RLowHD-")
-            || current.starts_with("D2RCompat-")
-            || current.starts_with("D2RNative-"))
-    {
-        let name: String = if light {
-            lightweight::default_name(["main", "filler", "min"][(index - 1) as usize]).into()
-        } else {
-            DEFAULT_MOD_NAME.into()
-        };
-        set_text(state.name_edit, &name);
-    }
-    let source = control_text(state.source_edit);
-    if light {
-        if let Some(game) = discover_game_root(
-            Some(Path::new(&source)),
-            Some(Path::new(&control_text(state.output_edit))),
-        ) {
-            set_text(state.source_edit, &game.to_string_lossy());
-        }
-        set_text(state.status,"只需本生成器与游戏原版资源，按内置规则生成并校验。保留当前低清素材与显示比例，Esc 不自动退出。");
-    } else {
-        if is_game_root(Path::new(&source)) {
-            set_text(state.source_edit, "");
-        }
-        set_text(
-            state.status,
-            "不选择源 MOD：创建独立最小声纹 MOD。选择源 MOD：保留原内容并附加声纹。",
-        );
-    }
-}
-
-unsafe fn start_lightweight_build(window: HWND, state: &mut AppState) {
-    let game = PathBuf::from(control_text(state.source_edit).trim());
-    if !is_game_root(&game) {
-        set_text(
-            state.status,
-            "请选择含 Data 和 .build.info 的 D2R 游戏安装目录。",
-        );
-        return;
-    }
-    let name = control_text(state.name_edit).trim().to_string();
-    let output = control_text(state.output_edit).trim().to_string();
-    if name.is_empty() || output.is_empty() {
-        set_text(state.status, "请填写 MOD 名称和输出父目录。");
-        return;
-    }
-    let mode = SendMessageW(state.mode, CB_GETCURSEL, 0, 0);
-    if !(1..=3).contains(&mode) {
-        return;
-    }
-    let request = lightweight::Request {
-        game,
-        output: Some(PathBuf::from(output)),
-        name: Some(name),
-        profile: ["main", "filler", "min"][(mode - 1) as usize].into(),
-        source: None,
-        rebuild: true,
-    };
-    state.last_output = None;
-    set_busy(state, true);
-    set_text(state.status, "正在按内置规则从原版生成，并核验 b12 基线…");
-    let window_value = window as isize;
-    std::thread::spawn(move || {
-        let result = lightweight::build(request, |current, total, path| {
-            let text = Box::new(format!("正在生成轻量资源：{current}/{total}\r\n{path}"));
-            let pointer = Box::into_raw(text);
-            if unsafe {
-                PostMessageW(
-                    window_value as HWND,
-                    WM_BUILD_PROGRESS,
-                    0,
-                    pointer as LPARAM,
-                )
-            } == 0
-            {
-                unsafe {
-                    drop(Box::from_raw(pointer));
-                }
-            }
-        })
-        .map(Box::new)
-        .map(BuildOutput::Lightweight);
-        let pointer = Box::into_raw(Box::new(result));
-        if unsafe {
-            PostMessageW(
-                window_value as HWND,
-                WM_BUILD_FINISHED,
-                0,
-                pointer as LPARAM,
-            )
-        } == 0
-        {
-            unsafe {
-                drop(Box::from_raw(pointer));
-            }
-        }
-    });
-}
-
 unsafe fn finish_build(state: &mut AppState, result: BuildResult) {
     set_busy(state, false);
     match result {
         Ok(output) => {
-            let (directory, arguments, summary) = match output {
-                BuildOutput::Audio(report) => (report.mod_directory, report.launch_arguments,
-                    "已包含：全区域、全部支持物品、主界面识别。源 MOD 没有被修改。".to_string()),
-                BuildOutput::Lightweight(report) => (report.mod_directory, report.launch_arguments,
-                    format!("轻量资源已生成：{:?}。\r\n内置规则输出已核验，数据版本取自当前原版；详细来源见生成清单。", report.counts)),
-            };
+            let directory = output.mod_directory;
+            let arguments = output.launch_arguments;
+            let summary = "已包含：全区域、全部支持物品、主界面识别。源 MOD 没有被修改。";
             state.last_output = Some(PathBuf::from(&directory));
             EnableWindow(state.open_button, 1);
             set_text(
@@ -496,20 +354,10 @@ unsafe extern "system" fn window_proc(
                 return DefWindowProcW(window, message, wparam, lparam);
             };
             match id {
-                ID_MODE => {
-                    if (wparam >> 16) == 1 {
-                        update_mode(state);
-                    }
-                    0
-                }
                 ID_SOURCE_BROWSE => {
                     if let Some(path) = browse_for_folder(
                         window,
-                        if SendMessageW(state.mode, CB_GETCURSEL, 0, 0) > 0 {
-                            "选择 D2R 游戏安装目录（含 Data 和 .build.info）"
-                        } else {
-                            "选择源 MOD 文件夹（可选择外层 MOD 文件夹或 .mpq 文件夹）"
-                        },
+                        "选择源 MOD 文件夹（可选择外层 MOD 文件夹或 .mpq 文件夹）",
                     ) {
                         set_text(state.source_edit, &path.to_string_lossy());
                     }
@@ -539,16 +387,6 @@ unsafe extern "system" fn window_proc(
                 }
                 _ => DefWindowProcW(window, message, wparam, lparam),
             }
-        }
-        WM_BUILD_PROGRESS => {
-            let pointer = lparam as *mut String;
-            if !pointer.is_null() {
-                let text = *Box::from_raw(pointer);
-                if let Some(state) = state_from_window(window) {
-                    set_text(state.status, &text);
-                }
-            }
-            0
         }
         WM_BUILD_FINISHED => {
             let pointer = lparam as *mut BuildResult;
@@ -607,7 +445,7 @@ unsafe fn create_app_window() -> Result<HWND, String> {
         CW_USEDEFAULT,
         CW_USEDEFAULT,
         680,
-        490,
+        440,
         null_mut(),
         null_mut(),
         instance,
@@ -620,7 +458,7 @@ unsafe fn create_app_window() -> Result<HWND, String> {
     let static_style = WS_CHILD | WS_VISIBLE;
     create_control(
         "STATIC",
-        "音频加工保留原功能；轻量资源只需要本机游戏，不需要下载其他 MOD 素材。",
+        "为现有 MOD 附加声纹与房间工具，或创建独立最小声纹 MOD。",
         static_style,
         0,
         24,
@@ -631,68 +469,7 @@ unsafe fn create_app_window() -> Result<HWND, String> {
         0,
         instance,
     )?;
-    let mode = create_control(
-        "COMBOBOX",
-        "",
-        WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST as u32,
-        0,
-        24,
-        60,
-        240,
-        180,
-        window,
-        ID_MODE,
-        instance,
-    )?;
-    for text in [
-        "音频加工（原功能）",
-        "LiteHub（main）",
-        "BoHub（filler）",
-        "NullHub（min）",
-    ] {
-        let text = wide(text);
-        SendMessageW(mode, CB_ADDSTRING, 0, text.as_ptr() as isize);
-    }
-    SendMessageW(mode, CB_SETCURSEL, 0, 0);
-    let texture = create_control(
-        "COMBOBOX",
-        "",
-        WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST as u32,
-        0,
-        280,
-        60,
-        170,
-        180,
-        window,
-        ID_TEXTURE,
-        instance,
-    )?;
-    {
-        let text = wide("纹理：原版 mip");
-        SendMessageW(texture, CB_ADDSTRING, 0, text.as_ptr() as isize);
-    }
-    SendMessageW(texture, CB_SETCURSEL, 0, 0);
-    EnableWindow(texture, 0);
-    let sprite = create_control(
-        "COMBOBOX",
-        "",
-        WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST as u32,
-        0,
-        466,
-        60,
-        180,
-        180,
-        window,
-        ID_SPRITE,
-        instance,
-    )?;
-    {
-        let text = wide("UI：保持参考几何");
-        SendMessageW(sprite, CB_ADDSTRING, 0, text.as_ptr() as isize);
-    }
-    SendMessageW(sprite, CB_SETCURSEL, 0, 0);
-    EnableWindow(sprite, 0);
-    let source_label = create_control(
+    create_control(
         "STATIC",
         "源 MOD（可不选）",
         static_style,
@@ -844,10 +621,6 @@ unsafe fn create_app_window() -> Result<HWND, String> {
     )?;
 
     let state = Box::new(AppState {
-        mode,
-        texture,
-        sprite,
-        source_label,
         source_edit,
         source_browse,
         name_edit,

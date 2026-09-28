@@ -1,37 +1,17 @@
 # D2R Audio Mod
 
-当前分支预览版 **v1.4.0-beta.17**（稳定版仍为 v1.3.4）。这是独立、轻量的 D2R Mod 生成/加工工具，包含原有音频遥测加工和实验性轻量资源生成。它只读取游戏资源或源 Mod，输出一个新 Mod；不读取 D2RHub 配置、账号、数据库，也不会启用 Mod。
+当前分支开发版 **v1.4.0-beta.18**（稳定版仍为 v1.3.4）。这是独立、轻量的 D2R Mod 生成/加工工具，提供音频遥测与游戏功能加工。生成和加工只读取游戏资源或源 Mod，输出一个新 Mod；显式调用 [MPQ 解压命令](docs/mpq-cli.md) 会备份原包并原位转换为目录。工具不读取 D2RHub 配置、账号、数据库，也不会启用 Mod。
 
-## 原版资源独立生成（b17）
-
-三个方案的默认 rebuild 模式只需要本生成器 EXE 和游戏原版 CASC。
-目标清单、配置差量、纹理 mip 与 sprite 帧几何规则已编译进 EXE，运行时仅需程序与游戏原版资源。
-
-```powershell
-d2r-audio-mod lightweight --game "C:\Diablo II Resurrected" --profile min
-# 同样支持 --profile filler 或 --profile main
-```
-
-- 默认名称：main → LiteHub，filler → BoHub，min → NullHub；可用 --name 自定义。
-- 游戏资源按已验证的规则生成：保留低清素材、当前光标及小地图大小，
-  暂停菜单保留手动退出，移除自动退出计时器。
-- 内置规则只保存路径、配置修改、帧几何与校验值，不保存图片、纹理、粒子等二进制素材。
-  非空二进制由本机原版生成；JSON 从原版施加差量，必要的文本配置直接内置。
-- 游戏数据版本 data/global/dataversionbuild.txt 直接读取生成时的原版 CASC，
-  原样写入并记录 game_data_version，不使用参考包旧版本或固定值。
-- 其他原版输入与规则输出均校验 SHA-256；modinfo 使用产品名称和存档路径。
-  原版资源变化导致规则不匹配时明确报错，不发布不一致的产物。未来游戏更新
-  可能需要更新内置规则。
-- generation-manifest.json 记录来源和校验状态；source_directory 是 embedded:hub/<方案>，
-  不再是原包目录。b16 的 modinfo 和附带说明采用本项目的中性文字；旧基线一致性标志不再标为 true，
-  以 verified_output_integrity 和逐文件内置校验结果为准。
-- main 使用 -txt；min/filler 不需要。生成器不启动游戏，不更改游戏设置，同名输出不覆盖。
-- 为保留历史对照，显式 --mode template 仍能复制本机模板，该独立对照功能需要原包；
-  默认生成及 GUI 的三个轻量方案不走此路径。rebuild 不接受 --source。
-
-规则维护说明见 [内置规则](resources/lightweight/b13/README.md)。
+LiteHub、BoHub、NullHub 由 D2RHub 直接提供成品下载；加工器不再生成这三个 Mod，也不再提供 `lightweight` / `lightweight-import` 命令。已有成品仍可作为 `augment` 的来源。
 
 本项目已按 [MIT License](LICENSE) 开源。Windows 独立工具可从 [Releases](https://github.com/gjy991229/d2r-audio-mod/releases) 下载；D2RHub 当前 main 已改为独立下载加工器，不再随安装包捆绑。加工器 EXE 与 LiteHub / BoHub / NullHub 成品统一在 [D2RHub 资源 Releases](https://github.com/gjy991229/D2rHub/releases/tag/mod-resources-20260927.1) 分发；Hub 会校验、自动安装并提示旧版更新，源码继续在本仓库维护。完整音频格式见 [protocol/](protocol/)，共享实现位于 [d2r-audio-protocol](crates/d2r-audio-protocol/)。
+
+## v1.4.0-beta.18 开发中：局内创建默认地狱
+
+- 局内创建表单打开后 50ms 发送一次 `CreateGame:SetDifficulty:2`，保留房名输入焦点及之后手动切换难度的能力。该初始化从房间工具 r29 引入，当前 r30 同时包含创建／加入的延迟提交调整。
+- 默认难度节点只加入 `D2RHubInGameCreateGamehd.json`；大厅与加入表单不注入该节点。重复加工保持单个节点，旧成品需重新加工并重启游戏。
+- 生成、结构校验不能代替实机验收：需验证首次及重复打开、手动改难度、未解锁地狱的角色，以及实际房间难度。
+- 发布时应使用此版本重新构建加工器和配套成品，再由 D2RHub 发布流程生成真实的下载地址、大小及 SHA-256。当前已发布资源目录仍对应旧版，不能只改版本标签冒充新产物。
 
 ## v1.3.4 更新
 

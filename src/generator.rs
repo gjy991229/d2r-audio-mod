@@ -33,7 +33,7 @@ pub const AUDIO_TELEMETRY_FEATURE_ID: &str = "audio_telemetry";
 pub const IN_GAME_ROOM_TOOLS_FEATURE_ID: &str = "in_game_room_tools";
 pub const AUTO_EXIT_ON_DEATH_FEATURE_ID: &str = "auto_exit_on_death";
 const AUDIO_TELEMETRY_FEATURE_RECIPE_VERSION: u32 = 3;
-const IN_GAME_ROOM_TOOLS_FEATURE_RECIPE_VERSION: u32 = 31;
+const IN_GAME_ROOM_TOOLS_FEATURE_RECIPE_VERSION: u32 = 32;
 pub const ESC_NEXT_GAME_FEATURE_ID: &str = "esc_next_game";
 const ESC_NEXT_GAME_CAPABILITY: &str = "esc_next_game_v1";
 const AUTO_EXIT_ON_DEATH_FEATURE_RECIPE_VERSION: u32 = 1;
@@ -73,8 +73,8 @@ const IN_GAME_JOIN_FORM: &str = "D2RHubInGameJoinGame";
 const QUICK_RECREATE_DOUBLE_CLICK_WINDOW_SECONDS: f64 = 0.5;
 const ROOM_TRANSITION_OPEN_PAUSE_DELAY_SECONDS: f64 = 0.01;
 const ROOM_TRANSITION_EXIT_DELAY_SECONDS: f64 = 0.05;
-// Quick recreate retains the JCY same-tick transition. Room forms use separate
-// delays below; preservation of native form context across exit needs in-game QA.
+// Quick recreate and room forms queue exit, action and cleanup at the same
+// deadline in child order; this is not a server exit acknowledgement.
 const ROOM_TRANSITION_COMMIT_DELAY_SECONDS: f64 = ROOM_TRANSITION_EXIT_DELAY_SECONDS;
 const ROOM_TRANSITION_CLOSE_DELAY_SECONDS: f64 = ROOM_TRANSITION_EXIT_DELAY_SECONDS;
 const YOU_DIED_LAYOUT: &str = "data/global/ui/layouts/youdiedmodalhd.json";
@@ -1098,10 +1098,8 @@ fn quick_recreate_layout() -> serde_json::Value {
     })
 }
 
-// Experimental 10ms gap after the exit request, not a server acknowledgement.
-// Do not self-close the controller during this transition experiment. Repeated
-// operations and controller lifetime still require in-game verification.
-const ROOM_SUBMISSION_DELAY_SECONDS: f64 = 0.06;
+// Queue exit, submit and cleanup at the same deadline, in child order.
+const ROOM_SUBMISSION_DELAY_SECONDS: f64 = ROOM_TRANSITION_EXIT_DELAY_SECONDS;
 
 fn room_submission_layout(create: bool) -> serde_json::Value {
     let (panel_name, native_message) = if create {
@@ -1142,6 +1140,14 @@ fn room_submission_layout(create: bool) -> serde_json::Value {
                 "fields": {
                     "time": ROOM_SUBMISSION_DELAY_SECONDS,
                     "message": native_message
+                }
+            },
+            {
+                "type": "TimerWidget",
+                "name": "D2RHubRoomSubmissionClose",
+                "fields": {
+                    "time": ROOM_SUBMISSION_DELAY_SECONDS,
+                    "message": format!("PanelManager:ClosePanel:{panel_name}")
                 }
             }
         ]
@@ -2291,7 +2297,7 @@ fn install_in_game_room_tools(
     compatibility.push(AudioModCompatibility {
         target: "局内房间工具".to_string(),
         action: "add_in_game_create_join_and_recreate".to_string(),
-        detail: "双击 Esc 下一局地狱已拆分为独立可选模块。大厅与局内创建/加入使用独立表单：大厅保留原生提交，局内表单进入退出提交控制器。局内创建和加入在确认后 10ms 打开暂停菜单、50ms 发送退出；创建和加入统一在 60ms 提交，不主动关闭提交控制器；这是退出请求后间隔 10ms 的试验时序，不代表服务器已完成退出。下一局保留原有同帧退出与提交时序。两套高清暂停布局均从当前 D2R 游戏原版重建后注入房间入口，覆盖源 Mod 在这两份文件中的自定义外观、按钮、定时器和消息链；单击 Esc 打开暂停菜单，再次 Esc 返回游戏。下一局、创建和加入三个工具栏按钮始终隐藏，暂停菜单保留隐藏安全焦点，所有原版按钮的左右导航汇入创建/加入入口。自动填写使用 Esc+左/右两次+确认打开原生表单，再以备份过的 F13 次键调用 CfgChat 文本态。".to_string(),
+        detail: "双击 Esc 下一局地狱已拆分为独立可选模块。大厅与局内创建/加入使用独立表单：大厅保留原生提交，局内表单进入退出提交控制器。局内创建和加入在确认后 10ms 打开暂停菜单、50ms 发送退出；创建和加入恢复在 50ms 按子节点顺序依次发出退出、提交、关闭控制器；此顺序不代表服务器已确认退出。下一局保留原有同帧退出与提交时序。两套高清暂停布局均从当前 D2R 游戏原版重建后注入房间入口，覆盖源 Mod 在这两份文件中的自定义外观、按钮、定时器和消息链；单击 Esc 打开暂停菜单，再次 Esc 返回游戏。下一局、创建和加入三个工具栏按钮始终隐藏，暂停菜单保留隐藏安全焦点，所有原版按钮的左右导航汇入创建/加入入口。自动填写使用 Esc+左/右两次+确认打开原生表单，再以备份过的 F13 次键调用 CfgChat 文本态。".to_string(),
     });
     Ok(true)
 }
@@ -4973,14 +4979,14 @@ fn source_room_tool_layouts_are_current(mpq_directory: &Path) -> Option<()> {
             &commit,
             native_message,
             ROOM_SUBMISSION_DELAY_SECONDS,
-        ) || layout_field_value_count(
+        ) || !layout_has_direct_timed_message(
             &commit,
             &format!(
                 "PanelManager:ClosePanel:{}",
                 file_name.trim_end_matches("hd.json")
             ),
-        ) != 0
-        {
+            ROOM_SUBMISSION_DELAY_SECONDS,
+        ) {
             return None;
         }
         let messages = commit.get("children")?.as_array()?;
@@ -4997,6 +5003,21 @@ fn source_room_tool_layouts_are_current(mpq_directory: &Path) -> Option<()> {
                 == Some(native_message)
         })?;
         if exit_index >= submit_index {
+            return None;
+        }
+        let close_index = messages.iter().position(|child| {
+            child
+                .pointer("/fields/message")
+                .and_then(serde_json::Value::as_str)
+                == Some(
+                    format!(
+                        "PanelManager:ClosePanel:{}",
+                        file_name.trim_end_matches("hd.json")
+                    )
+                    .as_str(),
+                )
+        })?;
+        if submit_index >= close_index {
             return None;
         }
     }
@@ -6431,7 +6452,36 @@ mod tests {
                 "PausePanelMessage:ExitGame",
                 0.05
             ));
-            assert!(layout_has_direct_timed_message(&layout, message, 0.06));
+            assert!(layout_has_direct_timed_message(&layout, message, 0.05));
+            let steps: Vec<_> = layout["children"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|child| {
+                    matches!(
+                        child["name"].as_str(),
+                        Some(
+                            "D2RHubRoomSubmissionExitGame"
+                                | "D2RHubRoomSubmissionCommit"
+                                | "D2RHubRoomSubmissionClose"
+                        )
+                    )
+                })
+                .map(|child| {
+                    (
+                        child["name"].as_str().unwrap(),
+                        child["fields"]["time"].as_f64().unwrap(),
+                    )
+                })
+                .collect();
+            assert_eq!(
+                steps,
+                vec![
+                    ("D2RHubRoomSubmissionExitGame", 0.05),
+                    ("D2RHubRoomSubmissionCommit", 0.05),
+                    ("D2RHubRoomSubmissionClose", 0.05)
+                ]
+            );
             assert_eq!(
                 layout_field_value_count(
                     &layout,
@@ -6440,7 +6490,7 @@ mod tests {
                         layout["name"].as_str().unwrap()
                     )
                 ),
-                0
+                1
             );
         }
         let quick = quick_recreate_layout();

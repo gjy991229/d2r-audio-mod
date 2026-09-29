@@ -160,7 +160,7 @@ dependencies = [
 
 [[package]]
 name = "d2r-audio-mod"
-version = "1.4.0-beta.18"
+version = "1.4.0-beta.19"
 dependencies = [
  "casc-core",
  "claxon",

@@ -33,7 +33,7 @@ pub const AUDIO_TELEMETRY_FEATURE_ID: &str = "audio_telemetry";
 pub const IN_GAME_ROOM_TOOLS_FEATURE_ID: &str = "in_game_room_tools";
 pub const AUTO_EXIT_ON_DEATH_FEATURE_ID: &str = "auto_exit_on_death";
 const AUDIO_TELEMETRY_FEATURE_RECIPE_VERSION: u32 = 3;
-const IN_GAME_ROOM_TOOLS_FEATURE_RECIPE_VERSION: u32 = 30;
+const IN_GAME_ROOM_TOOLS_FEATURE_RECIPE_VERSION: u32 = 31;
 pub const ESC_NEXT_GAME_FEATURE_ID: &str = "esc_next_game";
 const ESC_NEXT_GAME_CAPABILITY: &str = "esc_next_game_v1";
 const AUTO_EXIT_ON_DEATH_FEATURE_RECIPE_VERSION: u32 = 1;
@@ -1098,17 +1098,12 @@ fn quick_recreate_layout() -> serde_json::Value {
     })
 }
 
-// Absolute times from confirmation, including the 50ms exit timer.
-fn room_submission_times(create: bool) -> (f64, f64) {
-    if create {
-        (0.10, 0.15)
-    } else {
-        (0.55, 0.60)
-    }
-}
+// Experimental 10ms gap after the exit request, not a server acknowledgement.
+// Do not self-close the controller during this transition experiment. Repeated
+// operations and controller lifetime still require in-game verification.
+const ROOM_SUBMISSION_DELAY_SECONDS: f64 = 0.06;
 
 fn room_submission_layout(create: bool) -> serde_json::Value {
-    let (commit_delay, close_delay) = room_submission_times(create);
     let (panel_name, native_message) = if create {
         (COMMIT_CREATE_GAME_PANEL, "CreateGame:CreateGame")
     } else {
@@ -1145,16 +1140,8 @@ fn room_submission_layout(create: bool) -> serde_json::Value {
                 "type": "TimerWidget",
                 "name": "D2RHubRoomSubmissionCommit",
                 "fields": {
-                    "time": commit_delay,
+                    "time": ROOM_SUBMISSION_DELAY_SECONDS,
                     "message": native_message
-                }
-            },
-            {
-                "type": "TimerWidget",
-                "name": "D2RHubRoomSubmissionClose",
-                "fields": {
-                    "time": close_delay,
-                    "message": format!("PanelManager:ClosePanel:{panel_name}")
                 }
             }
         ]
@@ -2044,8 +2031,8 @@ fn install_lobby_return_hint(
 fn esc_next_game_feature_group() -> ModFeatureGroup {
     ModFeatureGroup {
         id: ESC_NEXT_GAME_FEATURE_ID.to_string(),
-        recipe_version: 2,
-        fingerprint: "esc-next-game-v2;window_ms=500;pause_timeout=1".to_string(),
+        recipe_version: 3,
+        fingerprint: "esc-next-game-v3;window_ms=500;pause_timeout=1;hud_cleanup=0".to_string(),
         reused_from_source: false,
     }
 }
@@ -2082,7 +2069,8 @@ fn install_esc_next_game(
     children.retain(|child| {
         child.get("name").and_then(serde_json::Value::as_str) != Some("D2RHubCloseEscArm")
     });
-    children.push(close_esc_arm_timer());
+    // A persistent HUD can cancel the receiver while the pause menu arms it.
+    // Keep cleanup on pause actions, transitions and the receiver's timeout.
     write_json_layout(mpq_directory, HUD_WARNINGS_LAYOUT, &hud)?;
     for relative_path in PAUSE_LAYOUTS {
         // Preserve the room module's navigation; standalone mode starts from native pause.
@@ -2197,7 +2185,7 @@ fn install_in_game_room_tools(
     children.retain(|child| {
         child.get("name").and_then(serde_json::Value::as_str) != Some("D2RHubCloseEscArm")
     });
-    children.push(close_esc_arm_timer());
+    // Remove the legacy HUD cleanup even when only room tools are installed.
     children.insert(
         0,
         serde_json::json!({
@@ -2303,7 +2291,7 @@ fn install_in_game_room_tools(
     compatibility.push(AudioModCompatibility {
         target: "局内房间工具".to_string(),
         action: "add_in_game_create_join_and_recreate".to_string(),
-        detail: "双击 Esc 下一局地狱已拆分为独立可选模块。大厅与局内创建/加入使用独立表单：大厅保留原生提交，局内表单进入退出提交控制器。局内创建和加入在确认后 10ms 打开暂停菜单、50ms 发送退出；创建在 100ms 提交、150ms 关闭控制器，加入在 550ms 提交、600ms 关闭控制器。下一局保留原有同帧退出与提交时序。两套高清暂停布局均从当前 D2R 游戏原版重建后注入房间入口，覆盖源 Mod 在这两份文件中的自定义外观、按钮、定时器和消息链；单击 Esc 打开暂停菜单，再次 Esc 返回游戏。下一局、创建和加入三个工具栏按钮始终隐藏，暂停菜单保留隐藏安全焦点，所有原版按钮的左右导航汇入创建/加入入口。自动填写使用 Esc+左/右两次+确认打开原生表单，再以备份过的 F13 次键调用 CfgChat 文本态。".to_string(),
+        detail: "双击 Esc 下一局地狱已拆分为独立可选模块。大厅与局内创建/加入使用独立表单：大厅保留原生提交，局内表单进入退出提交控制器。局内创建和加入在确认后 10ms 打开暂停菜单、50ms 发送退出；创建和加入统一在 60ms 提交，不主动关闭提交控制器；这是退出请求后间隔 10ms 的试验时序，不代表服务器已完成退出。下一局保留原有同帧退出与提交时序。两套高清暂停布局均从当前 D2R 游戏原版重建后注入房间入口，覆盖源 Mod 在这两份文件中的自定义外观、按钮、定时器和消息链；单击 Esc 打开暂停菜单，再次 Esc 返回游戏。下一局、创建和加入三个工具栏按钮始终隐藏，暂停菜单保留隐藏安全焦点，所有原版按钮的左右导航汇入创建/加入入口。自动填写使用 Esc+左/右两次+确认打开原生表单，再以备份过的 F13 次键调用 CfgChat 文本态。".to_string(),
     });
     Ok(true)
 }
@@ -4803,6 +4791,9 @@ fn source_room_tool_layouts_are_current(mpq_directory: &Path) -> Option<()> {
         return None;
     }
     let hud = read_source_room_tool_layout(mpq_directory, HUD_WARNINGS_LAYOUT)?;
+    if layout_field_value_count(&hud, "PanelManager:ClosePanel:D2RHubQuickRecreateEscArm") != 0 {
+        return None;
+    }
     let toolbar_open = layout_has_direct_child_message(
         &hud,
         "message",
@@ -4966,8 +4957,6 @@ fn source_room_tool_layouts_are_current(mpq_directory: &Path) -> Option<()> {
         ("D2RHubCommitCreateGamehd.json", "CreateGame:CreateGame"),
         ("D2RHubCommitJoinGamehd.json", "JoinGame:JoinGame"),
     ] {
-        let (commit_delay, close_delay) =
-            room_submission_times(native_message == "CreateGame:CreateGame");
         let commit = read_source_room_tool_layout(
             mpq_directory,
             &format!("{UI_LAYOUTS_DIRECTORY}/{file_name}"),
@@ -4980,15 +4969,17 @@ fn source_room_tool_layouts_are_current(mpq_directory: &Path) -> Option<()> {
             &commit,
             "PausePanelMessage:ExitGame",
             ROOM_TRANSITION_EXIT_DELAY_SECONDS,
-        ) || !layout_has_direct_timed_message(&commit, native_message, commit_delay)
-            || !layout_has_direct_timed_message(
-                &commit,
-                &format!(
-                    "PanelManager:ClosePanel:{}",
-                    file_name.trim_end_matches("hd.json")
-                ),
-                close_delay,
-            )
+        ) || !layout_has_direct_timed_message(
+            &commit,
+            native_message,
+            ROOM_SUBMISSION_DELAY_SECONDS,
+        ) || layout_field_value_count(
+            &commit,
+            &format!(
+                "PanelManager:ClosePanel:{}",
+                file_name.trim_end_matches("hd.json")
+            ),
+        ) != 0
         {
             return None;
         }
@@ -6430,9 +6421,9 @@ mod tests {
 
     #[test]
     fn room_submission_delays_preserve_exit_and_quick_recreate_timing() {
-        for (create, message, commit, close) in [
-            (true, "CreateGame:CreateGame", 0.10, 0.15),
-            (false, "JoinGame:JoinGame", 0.55, 0.60),
+        for (create, message) in [
+            (true, "CreateGame:CreateGame"),
+            (false, "JoinGame:JoinGame"),
         ] {
             let layout = room_submission_layout(create);
             assert!(layout_has_direct_timed_message(
@@ -6440,10 +6431,16 @@ mod tests {
                 "PausePanelMessage:ExitGame",
                 0.05
             ));
-            assert!(layout_has_direct_timed_message(&layout, message, commit));
+            assert!(layout_has_direct_timed_message(&layout, message, 0.06));
             assert_eq!(
-                find_layout_node(&layout, "D2RHubRoomSubmissionClose").unwrap()["fields"]["time"],
-                close
+                layout_field_value_count(
+                    &layout,
+                    &format!(
+                        "PanelManager:ClosePanel:{}",
+                        layout["name"].as_str().unwrap()
+                    )
+                ),
+                0
             );
         }
         let quick = quick_recreate_layout();
@@ -6502,6 +6499,37 @@ mod tests {
             }"#,
         )
         .unwrap();
+    }
+
+    #[test]
+    fn esc_upgrade_removes_hud_cleanup_and_keeps_pause_timeout() {
+        let root = std::env::temp_dir().join(format!("d2rhub-esc-hud-{}", uuid::Uuid::new_v4()));
+        write_room_tool_baseline(&root);
+        let custom = serde_json::json!({"type":"TimerWidget","name":"ExistingLauncher","fields":{"time":0.1,"message":"PanelManager:OpenPanel:ExistingPanel"}});
+        let mut hud = read_local_or_casc_json(&root, None, HUD_WARNINGS_LAYOUT).unwrap();
+        hud["children"] = serde_json::json!([custom, close_esc_arm_timer()]);
+        write_json_layout(&root, HUD_WARNINGS_LAYOUT, &hud).unwrap();
+        for _ in 0..2 {
+            install_esc_next_game(&root, None, true).unwrap();
+            let hud = read_local_or_casc_json(&root, None, HUD_WARNINGS_LAYOUT).unwrap();
+            assert_eq!(hud["children"], serde_json::json!([custom]));
+            for path in PAUSE_LAYOUTS {
+                let pause = read_local_or_casc_json(&root, None, path).unwrap();
+                assert_eq!(
+                    layout_field_value_count(
+                        &pause,
+                        "PanelManager:OpenPanel:D2RHubQuickRecreateEscArm"
+                    ),
+                    1
+                );
+                assert!(layout_has_direct_timed_message(
+                    &pause,
+                    "PanelManager:ClosePanel:D2RHubQuickRecreateEscArm",
+                    0.5
+                ));
+            }
+        }
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -6888,6 +6916,10 @@ mod tests {
         let mut hud = read_local_or_casc_json(&root, None, HUD_WARNINGS_LAYOUT).unwrap();
         let custom = serde_json::json!({"type":"TimerWidget","name":"ExistingLauncher","fields":{"time":0.1,"message":"PanelManager:OpenPanel:ExistingPanel"}});
         hud["children"].as_array_mut().unwrap().push(custom.clone());
+        hud["children"]
+            .as_array_mut()
+            .unwrap()
+            .push(close_esc_arm_timer());
         write_json_layout(&root, HUD_WARNINGS_LAYOUT, &hud).unwrap();
         let mut compatibility = Vec::new();
         for _ in 0..2 {
@@ -6895,6 +6927,10 @@ mod tests {
             let hud = read_local_or_casc_json(&root, None, HUD_WARNINGS_LAYOUT).unwrap();
             let children = hud["children"].as_array().unwrap();
             assert!(children.contains(&custom));
+            assert_eq!(
+                layout_field_value_count(&hud, "PanelManager:ClosePanel:D2RHubQuickRecreateEscArm"),
+                0
+            );
             assert_eq!(
                 children
                     .iter()

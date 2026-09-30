@@ -3,7 +3,6 @@ mod casc_path;
 mod generator;
 #[cfg(target_os = "windows")]
 mod gui;
-mod hub_pairing;
 mod mpq;
 
 use audio::BatchRequest;
@@ -354,8 +353,7 @@ Mod 选项：
   --gain <dBFS>              普通声纹增益，范围 -42 到 -12，默认 -30；TZ 为可靠性固定 -18
   --sound-environment <文件> 显式指定 soundenviron.txt
   --json                     将完整结果写到标准输出
-  --events                   Hub 调用：逐行输出 JSON 事件，必须通过配套身份校验
-                              需匹配 D2RHUB_VERSION 和 D2RHUB_PROCESSING_CONTRACT
+  --events                   逐行输出进度、完成和错误 JSON 事件
 
 类别：runes,gems,charms,jewels,keys,organs,essences
 
@@ -376,15 +374,7 @@ fn real_main() -> Result<(), String> {
         }
     };
     let rest = args.collect::<Vec<_>>();
-    // Older Hubs use --events without an identity: refuse before touching files.
-    if rest.iter().any(|arg| arg == "--events")
-        || std::env::var_os("D2RHUB_VERSION").is_some()
-        || std::env::var_os("D2RHUB_PROCESSING_CONTRACT").is_some()
-    {
-        hub_pairing::require()?;
-    }
     match command.to_string_lossy().to_ascii_lowercase().as_str() {
-        "hub-compatibility" => hub_pairing::handshake(),
         "capabilities" => mpq::capabilities(&rest),
         "unpack-mpq" => mpq::cli(&rest, false),
         "recover-mpq" => mpq::cli(&rest, true),

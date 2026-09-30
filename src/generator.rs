@@ -33,7 +33,7 @@ pub const AUDIO_TELEMETRY_FEATURE_ID: &str = "audio_telemetry";
 pub const IN_GAME_ROOM_TOOLS_FEATURE_ID: &str = "in_game_room_tools";
 pub const AUTO_EXIT_ON_DEATH_FEATURE_ID: &str = "auto_exit_on_death";
 const AUDIO_TELEMETRY_FEATURE_RECIPE_VERSION: u32 = 3;
-const IN_GAME_ROOM_TOOLS_FEATURE_RECIPE_VERSION: u32 = 32;
+const IN_GAME_ROOM_TOOLS_FEATURE_RECIPE_VERSION: u32 = 33;
 pub const ESC_NEXT_GAME_FEATURE_ID: &str = "esc_next_game";
 const ESC_NEXT_GAME_CAPABILITY: &str = "esc_next_game_v1";
 const AUTO_EXIT_ON_DEATH_FEATURE_RECIPE_VERSION: u32 = 1;
@@ -1763,7 +1763,13 @@ fn patch_room_form_layout(
         IN_GAME_CREATE_FORM
     };
     document["name"] = serde_json::json!(in_game_panel);
-    route_room_submission_messages(&mut document, native_submit_message, &routed_submit_message);
+    if in_game_panel == IN_GAME_CREATE_FORM {
+        route_room_submission_messages(
+            &mut document,
+            native_submit_message,
+            &routed_submit_message,
+        );
+    } // Joining uses the native message directly, like MDK (button and Return).
     let close = find_layout_node_mut(&mut document, "D2RHubCloseRoomForm")
         .ok_or_else(|| format!("{relative_path} 缺少房间表单关闭按钮"))?;
     close["fields"]["onClickMessage"] =
@@ -2037,8 +2043,8 @@ fn install_lobby_return_hint(
 fn esc_next_game_feature_group() -> ModFeatureGroup {
     ModFeatureGroup {
         id: ESC_NEXT_GAME_FEATURE_ID.to_string(),
-        recipe_version: 3,
-        fingerprint: "esc-next-game-v3;window_ms=500;pause_timeout=1;hud_cleanup=0".to_string(),
+        recipe_version: 4,
+        fingerprint: "esc-next-game-v4;window_ms=500;pause_timeout=1;hud_cleanup=0".to_string(),
         reused_from_source: false,
     }
 }
@@ -2075,8 +2081,7 @@ fn install_esc_next_game(
     children.retain(|child| {
         child.get("name").and_then(serde_json::Value::as_str) != Some("D2RHubCloseEscArm")
     });
-    // A persistent HUD can cancel the receiver while the pause menu arms it.
-    // Keep cleanup on pause actions, transitions and the receiver's timeout.
+    // Persistent HUDs must not close the double-Esc receiver.
     write_json_layout(mpq_directory, HUD_WARNINGS_LAYOUT, &hud)?;
     for relative_path in PAUSE_LAYOUTS {
         // Preserve the room module's navigation; standalone mode starts from native pause.
@@ -2191,7 +2196,6 @@ fn install_in_game_room_tools(
     children.retain(|child| {
         child.get("name").and_then(serde_json::Value::as_str) != Some("D2RHubCloseEscArm")
     });
-    // Remove the legacy HUD cleanup even when only room tools are installed.
     children.insert(
         0,
         serde_json::json!({
@@ -2217,7 +2221,6 @@ fn install_in_game_room_tools(
             "D2RHubCommitCreateGamehd.json",
             room_submission_layout(true),
         ),
-        ("D2RHubCommitJoinGamehd.json", room_submission_layout(false)),
         (
             "D2RHubOpenCreateGamehd.json",
             room_panel_opener_layout(true),
@@ -2244,7 +2247,6 @@ fn install_in_game_room_tools(
         "D2RHubQuickRecreateArm.json",
         "D2RHubQuickRecreate.json",
         "D2RHubCommitCreateGame.json",
-        "D2RHubCommitJoinGame.json",
         "D2RHubInGameCreateGame.json",
         "D2RHubInGameJoinGame.json",
         "D2RHubOpenCreateGame.json",
@@ -2262,6 +2264,8 @@ fn install_in_game_room_tools(
         )?;
     }
     for obsolete_name in [
+        "D2RHubCommitJoinGamehd.json",
+        "D2RHubCommitJoinGame.json",
         "D2RHubQuickRecreateConfirmhd.json",
         "D2RHubQuickRecreateConfirm.json",
     ] {
@@ -2297,7 +2301,7 @@ fn install_in_game_room_tools(
     compatibility.push(AudioModCompatibility {
         target: "局内房间工具".to_string(),
         action: "add_in_game_create_join_and_recreate".to_string(),
-        detail: "双击 Esc 下一局地狱已拆分为独立可选模块。大厅与局内创建/加入使用独立表单：大厅保留原生提交，局内表单进入退出提交控制器。局内创建和加入在确认后 10ms 打开暂停菜单、50ms 发送退出；创建和加入恢复在 50ms 按子节点顺序依次发出退出、提交、关闭控制器；此顺序不代表服务器已确认退出。下一局保留原有同帧退出与提交时序。两套高清暂停布局均从当前 D2R 游戏原版重建后注入房间入口，覆盖源 Mod 在这两份文件中的自定义外观、按钮、定时器和消息链；单击 Esc 打开暂停菜单，再次 Esc 返回游戏。下一局、创建和加入三个工具栏按钮始终隐藏，暂停菜单保留隐藏安全焦点，所有原版按钮的左右导航汇入创建/加入入口。自动填写使用 Esc+左/右两次+确认打开原生表单，再以备份过的 F13 次键调用 CfgChat 文本态。".to_string(),
+        detail: "双击 Esc 下一局地狱已拆分为独立可选模块。大厅与局内创建/加入使用独立表单：大厅保留原生提交，局内表单进入退出提交控制器。局内创建保持基准时序：确认后 10ms 打开暂停菜单，50ms 依次发送退出、创建、关闭控制器；此顺序不代表服务器已确认退出。加入按钮与输入框回车直接发送 JoinGame:JoinGame，不发送退出消息。创建表单默认地狱。下一局保留原有同帧退出与提交时序。两套高清暂停布局均从当前 D2R 游戏原版重建后注入房间入口，覆盖源 Mod 在这两份文件中的自定义外观、按钮、定时器和消息链；单击 Esc 打开暂停菜单，再次 Esc 返回游戏。下一局、创建和加入三个工具栏按钮始终隐藏，暂停菜单保留隐藏安全焦点，所有原版按钮的左右导航汇入创建/加入入口。自动填写使用 Esc+左/右两次+确认打开原生表单，再以备份过的 F13 次键调用 CfgChat 文本态。".to_string(),
     });
     Ok(true)
 }
@@ -3746,7 +3750,11 @@ fn patch_sounds(
         let sound = table.rows[row_index][sound_column].trim().to_string();
         let source_filename = table.rows[row_index][filename_column].trim().to_string();
         if source_filename.is_empty() {
-            return Err(format!("恐怖区域入场声音 {sound} 没有可保留的 FileName"));
+            for column in ["Volume Min", "Volume Max"] {
+                if let Ok(index) = table.column(column) {
+                    table.rows[row_index][index] = "255".into();
+                }
+            }
         }
         let relative_path = format!("audio_telemetry\\terror\\{sound}.flac");
         table.rows[row_index][filename_column] = relative_path.clone();
@@ -3804,7 +3812,14 @@ fn patch_sounds(
         if original_filename.is_empty() {
             continue;
         }
-        let source_filename = if sound.eq_ignore_ascii_case("music_options") {
+        let source_filename = if table.rows[row_index][filename_column].trim().is_empty() {
+            for column in ["Volume Min", "Volume Max"] {
+                if let Ok(index) = table.column(column) {
+                    table.rows[row_index][index] = "255".into();
+                }
+            }
+            String::new()
+        } else if sound.eq_ignore_ascii_case("music_options") {
             original_filename
                 .strip_suffix(".flac")
                 .map(|stem| format!("{stem}_hd.flac"))
@@ -4177,6 +4192,12 @@ fn resolve_audio_source(
     cache_directory: &Path,
     cache_key: &str,
 ) -> Result<ResolvedAudioSource, String> {
+    if filename.trim().is_empty() {
+        return Ok(ResolvedAudioSource {
+            path: None,
+            label: "Mod:空声音引用（静音）".into(),
+        });
+    }
     let normalized = filename.replace('\\', "/");
     let mut candidates = vec![normalized.clone()];
     if let Some(stem) = normalized.strip_suffix("_hd.flac") {
@@ -4959,10 +4980,9 @@ fn source_room_tool_layouts_are_current(mpq_directory: &Path) -> Option<()> {
         return None;
     }
 
-    for (file_name, native_message) in [
-        ("D2RHubCommitCreateGamehd.json", "CreateGame:CreateGame"),
-        ("D2RHubCommitJoinGamehd.json", "JoinGame:JoinGame"),
-    ] {
+    {
+        let (file_name, native_message) =
+            ("D2RHubCommitCreateGamehd.json", "CreateGame:CreateGame");
         let commit = read_source_room_tool_layout(
             mpq_directory,
             &format!("{UI_LAYOUTS_DIRECTORY}/{file_name}"),
@@ -5165,7 +5185,13 @@ fn source_room_tool_layouts_are_current(mpq_directory: &Path) -> Option<()> {
         };
         let mut expected_in_game_form = form.clone();
         expected_in_game_form["name"] = serde_json::json!(in_game_panel);
-        route_room_submission_messages(&mut expected_in_game_form, native_submit, routed_submit);
+        if primary_input != "NameInput" {
+            route_room_submission_messages(
+                &mut expected_in_game_form,
+                native_submit,
+                routed_submit,
+            );
+        }
         find_layout_node_mut(&mut expected_in_game_form, "D2RHubCloseRoomForm")?["fields"]
             ["onClickMessage"] =
             serde_json::json!(format!("PanelManager:ClosePanel:{in_game_panel}"));
@@ -6552,7 +6578,7 @@ mod tests {
     }
 
     #[test]
-    fn esc_upgrade_removes_hud_cleanup_and_keeps_pause_timeout() {
+    fn esc_removes_legacy_hud_cleanup_and_keeps_pause_timeout() {
         let root = std::env::temp_dir().join(format!("d2rhub-esc-hud-{}", uuid::Uuid::new_v4()));
         write_room_tool_baseline(&root);
         let custom = serde_json::json!({"type":"TimerWidget","name":"ExistingLauncher","fields":{"time":0.1,"message":"PanelManager:OpenPanel:ExistingPanel"}});
@@ -6579,6 +6605,50 @@ mod tests {
                 ));
             }
         }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn empty_sound_reference_is_silence_without_game_fallback() {
+        let source = resolve_audio_source(
+            Path::new("not-used"),
+            None,
+            "",
+            Path::new("not-used"),
+            "silent",
+        )
+        .unwrap();
+        assert!(source.path.is_none());
+    }
+
+    #[test]
+    fn joining_submits_native_message_without_exit_or_commit_controller() {
+        let root =
+            std::env::temp_dir().join(format!("d2rhub-direct-join-{}", uuid::Uuid::new_v4()));
+        write_room_tool_baseline(&root);
+        let path = "data/global/ui/layouts/joingamepanelhd.json";
+        let mut form = read_local_or_casc_json(&root, None, path).unwrap();
+        for name in ["NameInput", "PasswordInput"] {
+            find_layout_node_mut(&mut form, name).unwrap()["fields"]["onReturnInputMessage"] =
+                serde_json::json!("JoinGame:JoinGame");
+        }
+        write_json_layout(&root, path, &form).unwrap();
+        patch_room_form_layout(&root, None, path, "NameInput").unwrap();
+        let joined = read_local_or_casc_json(
+            &root,
+            None,
+            "data/global/ui/layouts/D2RHubInGameJoinGamehd.json",
+        )
+        .unwrap();
+        assert_eq!(layout_field_value_count(&joined, "JoinGame:JoinGame"), 3);
+        assert_eq!(
+            layout_field_value_count(&joined, "PausePanelMessage:ExitGame"),
+            0
+        );
+        assert_eq!(
+            layout_field_value_count(&joined, "PanelManager:OpenPanel:D2RHubCommitJoinGame"),
+            0
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 

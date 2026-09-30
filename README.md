@@ -1,17 +1,16 @@
 # D2R Audio Mod
 
-当前预发布版 **v1.4.0-beta.20**，配套 **D2RHub v0.9.111**。这是独立、轻量的 D2R Mod 生成/加工工具，提供音频遥测与游戏功能加工。生成和加工只读取游戏资源或源 Mod，输出一个新 Mod；显式调用 [MPQ 解压命令](docs/mpq-cli.md) 会备份原包并原位转换为目录。工具不读取 D2RHub 配置、账号、数据库，也不会启用 Mod。
+本项目是 D2RHub 内置的 Mod 加工器源码。生成和加工读取源 Mod 与游戏资源，输出独立结果；MPQ 解压会备份原包并进行可恢复转换。加工器不读取 Hub 账号或数据库。
 
-LiteHub、BoHub、NullHub 由 D2RHub 直接提供成品下载；加工器不再生成这三个 Mod，也不再提供 `lightweight` / `lightweight-import` 命令。已有成品仍可作为 `augment` 的来源。
+加工器随 D2RHub 安装包发布，不再独立发布 EXE，也不做 Hub 软件版本互认。功能兼容性按模块协议校验。LiteHub、BoHub、NullHub 的内置生成仍已移除，已有成品可作为源 Mod。
 
-本项目已按 [MIT License](LICENSE) 开源。Windows 独立工具可从 [Releases](https://github.com/gjy991229/d2r-audio-mod/releases) 下载；D2RHub 当前 main 已改为独立下载加工器，不再随安装包捆绑。加工器 EXE 与 LiteHub / BoHub / NullHub 成品统一在 [D2RHub 资源 Releases](https://github.com/gjy991229/D2rHub/releases/tag/mod-resources-20260927.1) 分发；Hub 会校验、自动安装并提示配套更新，互认失败时禁止加工，源码继续在本仓库维护。完整音频格式见 [protocol/](protocol/)，共享实现位于 [d2r-audio-protocol](crates/d2r-audio-protocol/)。
+## 当前开发变更
 
-## v1.4.0-beta.20：配套互认与房间工具 r32
-
-- Hub 调用加工器前必须互认。加工器要求 D2RHub 0.9.111 和协议 `d2rhub-processing-v1-r32`，缺失或不匹配时在命令执行前拒绝；旧 Hub 的无身份 `--events` 调用也会被拒绝。
-- 房间工具 r32 在确认后 10ms 打开暂停菜单，50ms 按顺序退出、提交、关闭控制器；替代 r31 的 60ms 提交且不关闭控制器行为。双击 Esc 保持 r3，音频保持 v7。
-- 先更新 Hub，再安装 beta.20、重新加工 Mod 并重启游戏。固定消息顺序不表示服务端已确认退出或入房。
-- 独立 GUI 和普通非事件 CLI 仍可单独使用；Hub 管理的事件调用必须携带匹配身份。详见 [发行说明](docs/releases/v1.4.0-beta.20.md)。
+- MPQ 解压、恢复与验证工具保留。
+- 创建保留原 10ms 打开暂停、50ms 退出/提交/关闭，并默认地狱。
+- 房间模块 r33：加入按钮和回车直接发送 `JoinGame:JoinGame`，没有退出中转。
+- 双 Esc r4：恢复基准 HUD 清理行为。
+- 事件 CLI 无需调用方身份；模块结构与版本由使用方检查。
 
 ## 历史：v1.4.0-beta.18 局内创建默认地狱
 
@@ -34,7 +33,7 @@ LiteHub、BoHub、NullHub 由 D2RHub 直接提供成品下载；加工器不再�
 - 从本机游戏重建两份高清暂停菜单，三个局内按钮始终隐藏，双击 Esc 下一局地狱改为独立可选模块；旧房间工具升级时更新局内表单，未变化且验证完整的声纹组可复用。
 - 本次发布保持声纹 v7 协议、整体产物 r25 和声纹组配方版本不变，房间工具组升级为 r28；生成器软件版本不等于产物或功能组版本。
 
-生成器也可作为独立 sidecar 被接收软件调用。调用方必须显式传入游戏目录、源 Mod 与输出名称；生成器仍不会自行读取或修改调用方配置。使用 `--events` 前必须通过配套校验；标准输出会逐行返回 `progress`、`completed` 或 `error` JSON 事件，便于显示真实进度。
+生成器也可作为独立 sidecar 被接收软件调用。调用方必须显式传入游戏目录、源 Mod 与输出名称；生成器仍不会自行读取或修改调用方配置。标准输出会逐行返回 `progress`、`completed` 或 `error` JSON 事件，便于显示真实进度。
 
 ## 简单界面
 
@@ -151,10 +150,10 @@ Windows 下游戏安装目录、源 Mod 与输出目录均支持中文、空格�
 
 ## English
 
-D2R Audio Mod **v1.4.0-beta.20** is an independent, MIT-licensed Mod generator for Diablo II: Resurrected. Download the Windows executable from [Releases](https://github.com/gjy991229/d2r-audio-mod/releases), or install it through the resource download page in the current [D2RHub](https://github.com/gjy991229/D2RHub) main build. The processor is no longer bundled with the Hub installer.
+D2R Audio Mod is the MIT-licensed processor bundled with the D2RHub installer. Source remains in this repository. Compatibility uses module protocols rather than paired application versions.
 
 Double-click the executable for its standalone UI, or use `minimal` / `augment` with `--features audio`, `rooms`, `death-exit`, or a comma-separated selection. Death-triggered exit is an explicit opt-in and is excluded from the default feature set. The generator creates a new output Mod, preserves the source, and never reads D2RHub accounts or settings. Enable the generated Mod using the launch arguments shown in its result.
 
-This release pairs with D2RHub 0.9.111 and refuses incompatible Hub calls before processing. Room-tools r32 queues exit, submission and controller close at 50ms; double-Esc remains r3. Existing Mods must be regenerated and the game restarted. Audio protocol v7 and the overall r25 output format are unchanged. Build with `cargo build --release --locked` using Rust and the Windows MSVC build tools; see [protocol/](protocol/) for the receiver-independent audio specification.
+This processor ships inside D2RHub 0.9.112. Room-tools r33 keeps the create timing and submits joins through the native JoinGame message. Double-Esc r4 removes the persistent HUD receiver-close timer; see [the r33 contract](docs/room-tools-r33.md). Existing Mods must be regenerated and the game restarted. Audio protocol v7 and the overall r25 output format are unchanged. Build with `cargo build --release --locked` using Rust and the Windows MSVC build tools; see [protocol/](protocol/) for the receiver-independent audio specification.
 
 Diablo II: Resurrected and Battle.net are trademarks of Blizzard Entertainment. This is an unofficial project; the MIT license covers this repository's code, not Blizzard game resources or third-party Mod assets.

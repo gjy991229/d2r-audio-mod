@@ -5,9 +5,6 @@
 ## 调用方式
 
 ```powershell
-# Hub 管理调用必须先设置配套身份；普通独立 CLI 可省略 --events
-$env:D2RHUB_VERSION = '0.9.111'
-$env:D2RHUB_PROCESSING_CONTRACT = 'd2rhub-processing-v1-r32'
 d2r-audio-mod.exe hub-compatibility
 d2r-audio-mod.exe capabilities --json
 d2r-audio-mod.exe unpack-mpq --source 'D:\Games\D2R\mods\mini\mini.mpq' --events
@@ -18,7 +15,7 @@ d2r-audio-mod.exe unpack-mpq --licenses
 
 必须使用绝对路径及标准 `<名称>/<名称>.mpq` 布局；外层名称和包名忽略大小写匹配，保留实际拼写。下载目录若叫“mini一键退出”，先安装到 `mods/mini/mini.mpq`，再调用转换。转换不替用户重新命名 Mod。
 
-`--events` 输出逐行 JSON：progress、completed、error。`--json` 或省略输出选项时成功输出单个结果 JSON。退出码 0 成功，2 失败；失败诊断在 stderr，events 模式的操作错误同时输出结构化 error；配套身份检查在操作分派前失败时仅输出 stderr。两种输出选项不可同时使用。
+`--events` 输出逐行 JSON：progress、completed、error。`--json` 或省略输出选项时成功输出单个结果 JSON。退出码 0 成功，2 失败；失败诊断在 stderr，events 模式的操作错误同时输出结构化 error。两种输出选项不可同时使用。
 
 capabilities 返回 mpq_unpack_v1、mpq_recover_v1；不支持的旧加工器不能执行这一步，但原目录源加工逻辑不受影响。
 

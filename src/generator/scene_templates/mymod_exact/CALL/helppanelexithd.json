@@ -1,0 +1,15 @@
+//一键退出
+{
+    "type": "PausePanel",
+    "name": "CALL/helppanelexit",
+    "children": [
+        {
+            "type": "TableRowWidget",
+            "name": "Row Save and Exit Game",
+            "children": [
+		{"type": "TimerWidget", "name": "TimerClose7Center", "fields": {"time": -1, "message": "PausePanelMessage:ExitGame"}},
+		{"type": "TimerWidget", "name": "TimerClose7Center", "fields": {"time": -1, "message": "PanelManager:UnloadPanel:CALL/helppanelexit"}},
+            ]
+        }
+    ]
+}

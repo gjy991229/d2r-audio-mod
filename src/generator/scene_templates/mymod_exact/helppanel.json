@@ -1,0 +1,11 @@
+//小站重建回3C或超市
+{
+  "type": "PausePanel", "name": "helppanel",
+    "fields": {
+    },
+    "children": [        
+		{"type": "TimerWidget", "name": "TimerClose7Center", "fields": {"time": -1, "message": "PanelManager:OpenPanel:WaypointsPanelExpansion"}},
+		{"type": "TimerWidget", "name": "TimerClose7Center", "fields": {"time": 0.1, "message": "PanelManager:OpenPanel:CALL/WPautuexitonekey"}},
+		{"type": "TimerWidget", "name": "TimerClose7Center", "fields": {"time": 0.2, "message": "PanelManager:OpenPanel:CALL/HJWPautuexitonekey"}},
+		{"type": "TimerWidget", "name": "TimerClose7Center", "fields": {"time": 0.3, "message": "PanelManager:UnloadPanel:helppanel"}}]
+}

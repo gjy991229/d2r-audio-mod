@@ -1,0 +1,10 @@
+{
+  "type": "PausePanel", "name": "CALL/OnekeyTravincal",
+    "fields": {
+    },
+    "children": [        
+		{"type": "TimerWidget", "name": "TimerClose7Center", "fields": {"time": -1, "message": "PanelManager:OpenPanel:WaypointsPanelExpansion"}},
+		{"type": "TimerWidget", "name": "TimerClose7Center", "fields": {"time": 0.1, "message": "PanelManager:OpenPanel:CALL/WP-t-autuexitonekey"}},
+		{"type": "TimerWidget", "name": "TimerClose7Center", "fields": {"time": 0.3, "message": "PanelManager:UnloadPanel:CALL/OnekeyTravincal"}},
+    ]
+}

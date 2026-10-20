@@ -1,3 +1,6 @@
+mod hostile;
+mod party_loot;
+mod scene_shortcuts;
 use crate::audio::{decode_flac, encode_flac, resample_interleaved_i32};
 use d2r_audio_protocol::catalog::{
     marker_sort_key, AreaCatalogEntry, AreaCatalogFile, LocationKind, TelemetryMarker,
@@ -9,8 +12,8 @@ use d2r_audio_protocol::item_catalog::{
     SupportedItemDefinition, CATEGORY_RUNES, ITEM_CATALOG_FILE_NAME,
 };
 use d2r_audio_protocol::protocol::{
-    detect_markers, embed_marker, embed_marker_with_delay, interleaved_i32_to_mono, marker_frames,
-    MarkerConfig, MARKER_OFFSET_SECONDS, MIN_SAMPLE_RATE, PACKET_GAP_SECONDS, PROTOCOL_VERSION,
+    detect_markers, embed_marker, interleaved_i32_to_mono, MarkerConfig, MIN_SAMPLE_RATE,
+    PROTOCOL_VERSION,
 };
 use d2r_audio_protocol::rune_data;
 use encoding_rs::{Encoding, GB18030, UTF_16BE, UTF_16LE, WINDOWS_1252};
@@ -21,18 +24,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const MINIMAL_MOD_NAME: &str = "D2RAudioTelemetry";
 const AUDIO_MOD_SUFFIX: &str = "AudioTelemetry";
-const COUNTESS_AREA_IDS: [u32; 8] = [1, 6, 20, 21, 22, 23, 24, 25];
-const TERROR_PROBE_MARKER_AREA_ID: u32 = MAX_AREA_ID;
-const TERROR_PROBE_SD_SOUND: &str = "audio_telemetry_tz_probe_sd";
-const TERROR_PROBE_HD_SOUND: &str = "audio_telemetry_tz_probe_hd";
-const TERROR_PROBE_RELATIVE_PATH: &str = "audio_telemetry\\terror\\tz_probe.flac";
-const TERROR_MARKER_GAIN_DB: f32 = -18.0;
-const AREA_ENTRY_PROBE_RETRY_DELAYS_SECONDS: [f32; 2] = [0.6, 1.2];
-pub const AUDIO_MOD_RECIPE_VERSION: u32 = 25;
+pub const AUDIO_MOD_RECIPE_VERSION: u32 = 26;
 pub const AUDIO_TELEMETRY_FEATURE_ID: &str = "audio_telemetry";
 pub const IN_GAME_ROOM_TOOLS_FEATURE_ID: &str = "in_game_room_tools";
 pub const AUTO_EXIT_ON_DEATH_FEATURE_ID: &str = "auto_exit_on_death";
-const AUDIO_TELEMETRY_FEATURE_RECIPE_VERSION: u32 = 3;
+const AUDIO_TELEMETRY_FEATURE_RECIPE_VERSION: u32 = 4;
 const IN_GAME_ROOM_TOOLS_FEATURE_RECIPE_VERSION: u32 = 33;
 pub const ESC_NEXT_GAME_FEATURE_ID: &str = "esc_next_game";
 const ESC_NEXT_GAME_CAPABILITY: &str = "esc_next_game_v1";
@@ -132,6 +128,12 @@ pub struct BuildAudioModRequest {
     /// Independently opt into double-Esc next Hell game.
     #[serde(default)]
     pub include_esc_next_game: bool,
+    #[serde(default)]
+    pub include_scene_shortcuts: bool,
+    #[serde(default)]
+    pub include_party_loot: bool,
+    #[serde(default)]
+    pub include_hostile_auto_restart: bool,
 }
 
 fn default_enabled() -> bool {
@@ -355,19 +357,10 @@ struct SoundDefinition {
     output_root: &'static str,
 }
 
-#[derive(Debug, Clone)]
-struct AreaAmbienceSource {
-    filename: String,
-    source_gain: f32,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SoundAssetGroup {
     Rune,
     Item,
-    Area,
-    Terror,
-    Frontend,
 }
 
 #[derive(Debug, Clone)]
@@ -2332,13 +2325,9 @@ fn validate_misc(
 #[derive(Clone, Copy)]
 enum SoundRole {
     RuneGroundHeartbeat,
-    AreaAmbience,
-    TerrorZoneProbe,
 }
 
-fn configure_sound_row(table: &TsvTable, row: &mut [String], role: SoundRole) {
-    let is_ambience = matches!(role, SoundRole::AreaAmbience);
-    let is_terror_probe = matches!(role, SoundRole::TerrorZoneProbe);
+fn configure_sound_row(table: &TsvTable, row: &mut [String], _role: SoundRole) {
     for (column, value) in [
         ("Redirect", ""),
         ("Volume Min", "255"),
@@ -2347,27 +2336,19 @@ fn configure_sound_row(table: &TsvTable, row: &mut [String], role: SoundRole) {
         ("Pitch Max", "100"),
         ("Group Size", "0"),
         ("Group Weight", "0"),
-        ("Loop", if is_ambience { "1" } else { "0" }),
+        ("Loop", "0"),
         ("Duration", "0"),
         ("Delay", "0"),
         ("Defer Inst", "0"),
         ("Stop Inst", "0"),
         ("Compound", "0"),
-        ("Stream", if is_ambience { "1" } else { "0" }),
+        ("Stream", "0"),
         ("Tracking", "0"),
-        ("Is2D", if is_terror_probe { "0" } else { "1" }),
-        ("IsAmbientScene", if is_ambience { "1" } else { "0" }),
-        ("IsAmbientEvent", if is_terror_probe { "1" } else { "0" }),
+        ("Is2D", "1"),
+        ("IsAmbientScene", "0"),
+        ("IsAmbientEvent", "0"),
     ] {
         set_if_present(table, row, column, value);
-    }
-    if is_ambience {
-        set_if_present(table, row, "Fade In", "0");
-    }
-    if is_terror_probe {
-        for (column, value) in [("Falloff", "0"), ("Priority", "255"), ("Solo", "0")] {
-            set_if_present(table, row, column, value);
-        }
     }
 }
 
@@ -3449,28 +3430,13 @@ fn patch_sounds(
     mut table: TsvTable,
     rune_plans: &[RuneStatePlan],
     item_plans: &[ItemStatePlan],
-    areas: &[AreaCatalogEntry],
-    area_ambience_sources: &HashMap<u32, AreaAmbienceSource>,
-    compatibility: &mut Vec<AudioModCompatibility>,
+    _compatibility: &mut Vec<AudioModCompatibility>,
 ) -> Result<(TsvTable, Vec<SoundDefinition>), String> {
     let mut next_index = table.max_number("*Index")? + 1;
     let rune_template = table
         .row_by("Sound", "item_rune_hd")
         .or_else(|_| table.row_by("Sound", "item_rune"))?;
-    let area_template = table
-        .row_by("Sound", "wilderness_day_2_hd")
-        .or_else(|_| table.row_by("Sound", "scene_wilderness_day"))
-        .or_else(|_| {
-            let ambient_index = table.column("IsAmbientScene")?;
-            table
-                .rows
-                .iter()
-                .find(|row| row[ambient_index] == "1")
-                .cloned()
-                .ok_or_else(|| "sounds.txt 中找不到持续环境音模板".to_string())
-        })?;
-    let mut definitions =
-        Vec::with_capacity(rune_plans.len() + item_plans.len() + areas.len() + 48);
+    let mut definitions = Vec::with_capacity(rune_plans.len() + item_plans.len());
 
     for plan in rune_plans {
         let rune_number = plan.rune_number;
@@ -3630,241 +3596,6 @@ fn patch_sounds(
         next_index += 1;
     }
 
-    for area in areas {
-        let marker = TelemetryMarker::Area {
-            area_id: area.area_id,
-        };
-        let sound = format!("audio_telemetry_a{}", area.area_id);
-        let relative_path = format!("audio_telemetry\\areas\\a{}.flac", area.area_id);
-        let ambience = area_ambience_sources
-            .get(&area.area_id)
-            .ok_or_else(|| format!("Area {} 缺少已解析的持续环境音", area.area_id))?;
-        let mut row = area_template.clone();
-        table.set(&mut row, "Sound", &sound)?;
-        table.set(&mut row, "*Index", next_index.to_string())?;
-        table.set(&mut row, "FileName", &relative_path)?;
-        configure_sound_row(&table, &mut row, SoundRole::AreaAmbience);
-        table.rows.push(row);
-        definitions.push(SoundDefinition {
-            marker,
-            group: SoundAssetGroup::Area,
-            sound,
-            relative_path,
-            source_filename: Some(ambience.filename.clone()),
-            source_gain: ambience.source_gain,
-            output_root: "data/hd/global/sfx",
-        });
-        next_index += 1;
-    }
-    compatibility.push(AudioModCompatibility {
-        target: "普通区域入场识别".to_string(),
-        action: "add_streamed_area_entry_probe_burst".to_string(),
-        detail: "保留区域原始环境声并按原声音表音量预补偿，避免 255 声纹播放链路放大背景声；环境流起始 1.5 秒内连续发送三组精确 Area 探针，取消淡入对首包的衰减，后续低频心跳仅作丢包兜底。".to_string(),
-    });
-
-    let terror_probe_template = table
-        .row_by("Sound", "desecrated_enter_hd")
-        .or_else(|_| table.row_by("Sound", "desecrated_enter"))
-        .unwrap_or_else(|_| area_template.clone());
-    for (sound, channel) in [
-        (TERROR_PROBE_SD_SOUND, "sfx/ambient/event-3d_sd"),
-        (TERROR_PROBE_HD_SOUND, "sfx/ambient/event-3d_hd"),
-    ] {
-        let mut row = terror_probe_template.clone();
-        table.set(&mut row, "Sound", sound)?;
-        table.set(&mut row, "*Index", next_index.to_string())?;
-        table.set(&mut row, "FileName", TERROR_PROBE_RELATIVE_PATH)?;
-        set_if_present(&table, &mut row, "Channel", channel);
-        configure_sound_row(&table, &mut row, SoundRole::TerrorZoneProbe);
-        table.rows.push(row);
-        next_index += 1;
-    }
-
-    // The shared ambient event is only a delayed heartbeat. Primary TZ
-    // detection must ride the one-shot sound that D2R plays immediately when
-    // entering a desecrated zone. Follow redirects so SD->HD layouts patch the
-    // actual terminal sound once while preserving the original event names,
-    // channels and audible content.
-    let sound_column = table.column("Sound")?;
-    let filename_column = table.column("FileName")?;
-    let redirect_column = table.column("Redirect").ok();
-    let mut terror_entry_rows = Vec::new();
-    for entry_sound in ["desecrated_enter_hd", "desecrated_enter"] {
-        let mut current = entry_sound.to_string();
-        let mut visited = Vec::new();
-        let mut found_entry = false;
-        let mut resolved = false;
-        for _ in 0..8 {
-            let normalized = current.to_ascii_lowercase();
-            if visited.contains(&normalized) {
-                return Err(format!(
-                    "恐怖区域入场声音 {entry_sound} 的 Redirect 形成循环: {} -> {current}",
-                    visited.join(" -> ")
-                ));
-            }
-            visited.push(normalized);
-            let row_index = table
-                .rows
-                .iter()
-                .position(|row| row[sound_column].eq_ignore_ascii_case(&current))
-                .ok_or_else(|| {
-                    if found_entry {
-                        format!("恐怖区域入场声音 {entry_sound} 重定向到不存在的声音 {current}")
-                    } else {
-                        String::new()
-                    }
-                });
-            let row_index = match row_index {
-                Ok(row_index) => row_index,
-                Err(_) if !found_entry => break,
-                Err(error) => return Err(error),
-            };
-            found_entry = true;
-            let redirect = redirect_column
-                .and_then(|column| table.rows[row_index].get(column))
-                .map(|value| value.trim())
-                .filter(|value| !value.is_empty());
-            if let Some(redirect) = redirect {
-                current = redirect.to_string();
-                continue;
-            }
-            if !terror_entry_rows.contains(&row_index) {
-                terror_entry_rows.push(row_index);
-            }
-            resolved = true;
-            break;
-        }
-        if found_entry && !resolved {
-            return Err(format!(
-                "恐怖区域入场声音 {entry_sound} 的 Redirect 链超过 8 层"
-            ));
-        }
-    }
-    if terror_entry_rows.is_empty() {
-        return Err(
-            "sounds.txt 缺少恐怖区域即时入场声音 desecrated_enter_hd / desecrated_enter"
-                .to_string(),
-        );
-    }
-    for row_index in terror_entry_rows {
-        let sound = table.rows[row_index][sound_column].trim().to_string();
-        let source_filename = table.rows[row_index][filename_column].trim().to_string();
-        if source_filename.is_empty() {
-            for column in ["Volume Min", "Volume Max"] {
-                if let Ok(index) = table.column(column) {
-                    table.rows[row_index][index] = "255".into();
-                }
-            }
-        }
-        let relative_path = format!("audio_telemetry\\terror\\{sound}.flac");
-        table.rows[row_index][filename_column] = relative_path.clone();
-        definitions.push(SoundDefinition {
-            marker: TelemetryMarker::Area {
-                area_id: TERROR_PROBE_MARKER_AREA_ID,
-            },
-            group: SoundAssetGroup::Terror,
-            sound: sound.clone(),
-            relative_path,
-            source_filename: Some(source_filename.clone()),
-            source_gain: 1.0,
-            output_root: "data/hd/global/sfx",
-        });
-        compatibility.push(AudioModCompatibility {
-            target: format!("恐怖区域即时入场声音 {sound}"),
-            action: "mix_immediate_terror_presence_marker".to_string(),
-            detail: format!(
-                "保留原入场声音 {source_filename}、事件名、通道与播放参数，只向同一次立即播放中混入固定 {TERROR_MARKER_GAIN_DB:.0} dBFS 的 TZ 1023 声纹；延迟环境事件仅作为后续兜底。"
-            ),
-        });
-    }
-
-    let hd_opt_out_column = table.column("HDOptOut").ok();
-    let loop_column = table.column("Loop").ok();
-    let frontend_rows = table
-        .rows
-        .iter()
-        .enumerate()
-        .filter_map(|(index, row)| {
-            let sound = row[sound_column].trim();
-            let normalized = sound.to_ascii_lowercase();
-            let stable_frontend_event = normalized.starts_with("event_fe_act_")
-                && (normalized.starts_with("event_fe_act_4_")
-                    || loop_column
-                        .and_then(|column| row.get(column))
-                        .is_some_and(|value| value.trim() == "1"));
-            let stable_frontend_scene =
-                normalized.ends_with("_front_end") || normalized == "char_select_fe_fire_loop_hd";
-            (sound.eq_ignore_ascii_case("music_options")
-                || stable_frontend_event
-                || stable_frontend_scene)
-                .then_some(index)
-        })
-        .collect::<Vec<_>>();
-    if !frontend_rows
-        .iter()
-        .any(|&index| table.rows[index][sound_column].eq_ignore_ascii_case("music_options"))
-    {
-        return Err("sounds.txt 缺少主界面稳定入口 music_options".to_string());
-    }
-    for row_index in frontend_rows {
-        let sound = table.rows[row_index][sound_column].trim().to_string();
-        let original_filename = table.rows[row_index][filename_column].trim().to_string();
-        if original_filename.is_empty() {
-            continue;
-        }
-        let source_filename = if table.rows[row_index][filename_column].trim().is_empty() {
-            for column in ["Volume Min", "Volume Max"] {
-                if let Ok(index) = table.column(column) {
-                    table.rows[row_index][index] = "255".into();
-                }
-            }
-            String::new()
-        } else if sound.eq_ignore_ascii_case("music_options") {
-            original_filename
-                .strip_suffix(".flac")
-                .map(|stem| format!("{stem}_hd.flac"))
-                .unwrap_or_else(|| original_filename.clone())
-        } else {
-            original_filename.clone()
-        };
-        let stem = sound
-            .chars()
-            .map(|character| {
-                if character.is_ascii_alphanumeric() || character == '_' {
-                    character.to_ascii_lowercase()
-                } else {
-                    '_'
-                }
-            })
-            .collect::<String>();
-        let relative_path = format!("audio_telemetry\\frontend\\{stem}.flac");
-        table.rows[row_index][filename_column] = relative_path.clone();
-        if sound.eq_ignore_ascii_case("music_options") {
-            if let Some(column) = hd_opt_out_column {
-                table.rows[row_index][column] = "1".to_string();
-            }
-        }
-        definitions.push(SoundDefinition {
-            marker: TelemetryMarker::Frontend,
-            group: SoundAssetGroup::Frontend,
-            sound: sound.clone(),
-            relative_path,
-            source_filename: Some(source_filename.clone()),
-            source_gain: 1.0,
-            output_root: if sound.eq_ignore_ascii_case("music_options") {
-                "data/global/music"
-            } else {
-                "data/hd/global/sfx"
-            },
-        });
-        compatibility.push(AudioModCompatibility {
-            target: format!("主界面声音 {sound}"),
-            action: "mix_original_audio".to_string(),
-            detail: format!(
-                "保留声音条目的通道、音量、循环和优先级，仅把原资源 {source_filename} 克隆为独立主界面声纹；不修改恐惧区域声音条目。"
-            ),
-        });
-    }
     Ok((table, definitions))
 }
 
@@ -3888,11 +3619,6 @@ fn sanitize_scene_key(value: &str, area_id: u32) -> String {
     } else {
         format!("area_{area_id}_{output}")
     }
-}
-
-#[cfg(test)]
-fn collect_areas(levels: &TsvTable) -> Result<Vec<AreaCatalogEntry>, String> {
-    collect_areas_localized(levels, &HashMap::new())
 }
 
 fn strip_level_annotation(value: &str) -> String {
@@ -4004,187 +3730,6 @@ fn collect_areas_localized(
     Ok(areas)
 }
 
-fn patch_sound_environ_and_levels(
-    mut environments: TsvTable,
-    mut levels: TsvTable,
-    areas: &[AreaCatalogEntry],
-) -> Result<(TsvTable, TsvTable), String> {
-    let level_id = levels.column("Id")?;
-    let level_environment = levels.column("SoundEnv")?;
-    let environment_index = environments.column("Index")?;
-    let mut next_index = environments.max_number("Index")? + 1;
-    let area_lookup = areas
-        .iter()
-        .map(|area| (area.area_id, area))
-        .collect::<HashMap<_, _>>();
-
-    for level_row in &mut levels.rows {
-        let Some(area_id) = level_row[level_id].trim().parse::<u32>().ok() else {
-            continue;
-        };
-        if !area_lookup.contains_key(&area_id) {
-            continue;
-        }
-        let original_id = level_row[level_environment].trim();
-        let mut row = environments
-            .rows
-            .iter()
-            .find(|row| row[environment_index].trim() == original_id)
-            .cloned()
-            .ok_or_else(|| {
-                format!(
-                    "soundenviron.txt 缺少 levels.txt Area {area_id} 使用的 Index={original_id}"
-                )
-            })?;
-        environments.set(
-            &mut row,
-            "Handle",
-            format!("ESOUNDENVIRON_AUDIO_TELEMETRY_A{area_id}"),
-        )?;
-        environments.set(&mut row, "Index", next_index.to_string())?;
-        let sound = format!("audio_telemetry_a{area_id}");
-        for column in [
-            "Day Ambience",
-            "HD Day Ambience",
-            "Night Ambience",
-            "HD Night Ambience",
-        ] {
-            environments.set(&mut row, column, &sound)?;
-        }
-        environments.rows.push(row);
-        level_row[level_environment] = next_index.to_string();
-        next_index += 1;
-    }
-
-    if let Ok(handle) = environments.column("Handle") {
-        if let Some(row_index) = environments
-            .rows
-            .iter()
-            .position(|row| row[handle].eq_ignore_ascii_case("ESOUNDENVIRON_INHERIT_DESECRATED"))
-        {
-            let assignments = [
-                ("Day Event", TERROR_PROBE_SD_SOUND),
-                ("HD Day Event", TERROR_PROBE_HD_SOUND),
-                ("Night Event", TERROR_PROBE_SD_SOUND),
-                ("HD Night Event", TERROR_PROBE_HD_SOUND),
-                ("Event Delay", "25"),
-                ("HD Event Delay", "25"),
-            ]
-            .into_iter()
-            .filter_map(|(column, value)| {
-                environments.column(column).ok().map(|index| (index, value))
-            })
-            .collect::<Vec<_>>();
-            let row = &mut environments.rows[row_index];
-            for (column, value) in assignments {
-                row[column] = value.to_string();
-            }
-        }
-    }
-    Ok((environments, levels))
-}
-
-fn resolve_area_ambience_source(
-    sounds: &TsvTable,
-    sound_name: &str,
-) -> Result<AreaAmbienceSource, String> {
-    let sound_column = sounds.column("Sound")?;
-    let filename_column = sounds.column("FileName")?;
-    let volume_max_column = sounds.column("Volume Max")?;
-    let redirect_column = sounds.column("Redirect").ok();
-    let mut current = sound_name.to_string();
-    for _ in 0..8 {
-        let row = sounds
-            .rows
-            .iter()
-            .find(|row| row[sound_column].eq_ignore_ascii_case(&current))
-            .ok_or_else(|| format!("sounds.txt 缺少持续环境音 {current}"))?;
-        if let Some(redirect) = redirect_column
-            .and_then(|index| row.get(index))
-            .map(String::as_str)
-            .filter(|value| !value.trim().is_empty())
-        {
-            current = redirect.to_string();
-            continue;
-        }
-        let volume_max = row[volume_max_column]
-            .trim()
-            .parse::<f32>()
-            .map_err(|error| {
-                format!(
-                    "持续环境音 {current} 的 Volume Max 不是有效数字 {:?}: {error}",
-                    row[volume_max_column]
-                )
-            })?;
-        if !volume_max.is_finite() || !(0.0..=255.0).contains(&volume_max) {
-            return Err(format!(
-                "持续环境音 {current} 的 Volume Max 必须位于 0-255，收到 {volume_max}"
-            ));
-        }
-        return Ok(AreaAmbienceSource {
-            filename: row[filename_column].clone(),
-            source_gain: volume_max / 255.0,
-        });
-    }
-    Err(format!("持续环境音 {sound_name} 的 Redirect 链超过 8 层"))
-}
-
-fn collect_area_ambience_sources(
-    levels: &TsvTable,
-    environments: &TsvTable,
-    sounds: &TsvTable,
-    areas: &[AreaCatalogEntry],
-) -> Result<HashMap<u32, AreaAmbienceSource>, String> {
-    let level_id = levels.column("Id")?;
-    let level_environment = levels.column("SoundEnv")?;
-    let environment_index = environments.column("Index")?;
-    let hd_day = environments.column("HD Day Ambience")?;
-    let day = environments.column("Day Ambience")?;
-    let hd_night = environments.column("HD Night Ambience")?;
-    let night = environments.column("Night Ambience")?;
-    let mut output = HashMap::new();
-    for area in areas {
-        let level = levels
-            .rows
-            .iter()
-            .find(|row| row[level_id].trim() == area.area_id.to_string())
-            .ok_or_else(|| format!("levels.txt 缺少 Area {}", area.area_id))?;
-        let environment = environments
-            .rows
-            .iter()
-            .find(|row| row[environment_index].trim() == level[level_environment].trim())
-            .ok_or_else(|| format!("找不到 Area {} 的 SoundEnv", area.area_id))?;
-        let sound_name = [hd_day, day, hd_night, night]
-            .into_iter()
-            .map(|column| environment[column].trim())
-            .find(|value| !value.is_empty())
-            .ok_or_else(|| format!("Area {} 没有持续环境音定义", area.area_id))?;
-        let source = resolve_area_ambience_source(sounds, sound_name).map_err(|error| {
-            format!(
-                "无法从 sounds.txt 解析 Area {} 的持续环境音 {sound_name}: {error}",
-                area.area_id
-            )
-        })?;
-        output.insert(area.area_id, source);
-    }
-    Ok(output)
-}
-
-#[cfg(test)]
-fn collect_area_ambience_filenames(
-    levels: &TsvTable,
-    environments: &TsvTable,
-    sounds: &TsvTable,
-    areas: &[AreaCatalogEntry],
-) -> Result<HashMap<u32, String>, String> {
-    collect_area_ambience_sources(levels, environments, sounds, areas).map(|sources| {
-        sources
-            .into_iter()
-            .map(|(area_id, source)| (area_id, source.filename))
-            .collect()
-    })
-}
-
 fn resolve_audio_source(
     mpq_directory: &Path,
     storage: Option<&casc_core::Storage>,
@@ -4290,14 +3835,7 @@ fn write_marker_flac_with_source_gain(
         if let Some(source) = source_audio {
             decode_flac(source)?
         } else {
-            let frames = if matches!(
-                marker,
-                TelemetryMarker::Area { .. } | TelemetryMarker::Frontend
-            ) {
-                48_000 * 5
-            } else {
-                48_000 / 3
-            };
+            let frames = 48_000 / 3;
             (vec![0i32; frames * 2], 48_000, 2, 16)
         };
     if source_audio.is_some() && source_gain < 1.0 {
@@ -4309,101 +3847,15 @@ fn write_marker_flac_with_source_gain(
         samples = resample_interleaved_i32(&samples, channels as usize, sample_rate, 48_000);
         sample_rate = 48_000;
     }
-    let periodic_location = matches!(
+    let expected_detections = 1usize;
+    embed_marker(
+        &mut samples,
+        channels as usize,
+        bits_per_sample,
+        sample_rate,
         marker,
-        TelemetryMarker::Area { .. } | TelemetryMarker::Frontend
-    ) && source_audio.is_some();
-    let mut expected_detections = 1usize;
-    if periodic_location {
-        let interval_samples = sample_rate as usize * 5 * channels as usize;
-        let mut embedded_count = 0usize;
-        for (chunk_index, chunk) in samples.chunks_mut(interval_samples).enumerate() {
-            if chunk.len() < interval_samples {
-                break;
-            }
-            let mut marker_chunk = chunk.to_vec();
-            embed_marker(
-                &mut marker_chunk,
-                channels as usize,
-                bits_per_sample,
-                sample_rate,
-                marker,
-                config,
-            )?;
-            if chunk_index == 0 && matches!(marker, TelemetryMarker::Area { .. }) {
-                for delay_seconds in AREA_ENTRY_PROBE_RETRY_DELAYS_SECONDS {
-                    embed_marker_with_delay(
-                        &mut marker_chunk,
-                        channels as usize,
-                        bits_per_sample,
-                        sample_rate,
-                        marker,
-                        config,
-                        delay_seconds,
-                    )?;
-                    embedded_count += 1;
-                }
-            }
-            chunk.copy_from_slice(&marker_chunk);
-            embedded_count += 1;
-        }
-        if embedded_count == 0 {
-            embed_marker(
-                &mut samples,
-                channels as usize,
-                bits_per_sample,
-                sample_rate,
-                marker,
-                config,
-            )?;
-            if matches!(marker, TelemetryMarker::Area { .. }) {
-                for delay_seconds in AREA_ENTRY_PROBE_RETRY_DELAYS_SECONDS {
-                    embed_marker_with_delay(
-                        &mut samples,
-                        channels as usize,
-                        bits_per_sample,
-                        sample_rate,
-                        marker,
-                        config,
-                        delay_seconds,
-                    )?;
-                }
-                expected_detections = 1 + AREA_ENTRY_PROBE_RETRY_DELAYS_SECONDS.len();
-            }
-        } else {
-            expected_detections = embedded_count;
-        }
-    } else if matches!(marker, TelemetryMarker::Area { .. }) {
-        embed_marker(
-            &mut samples,
-            channels as usize,
-            bits_per_sample,
-            sample_rate,
-            marker,
-            config,
-        )?;
-        for delay_seconds in AREA_ENTRY_PROBE_RETRY_DELAYS_SECONDS {
-            embed_marker_with_delay(
-                &mut samples,
-                channels as usize,
-                bits_per_sample,
-                sample_rate,
-                marker,
-                config,
-                delay_seconds,
-            )?;
-        }
-        expected_detections = 1 + AREA_ENTRY_PROBE_RETRY_DELAYS_SECONDS.len();
-    } else {
-        embed_marker(
-            &mut samples,
-            channels as usize,
-            bits_per_sample,
-            sample_rate,
-            marker,
-            config,
-        )?;
-    }
+        config,
+    )?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|error| format!("创建音频目录失败 {}: {error}", parent.display()))?;
@@ -4418,7 +3870,7 @@ fn write_marker_flac_with_source_gain(
     let verified = detections.len() == expected_detections;
     if !verified {
         return Err(format!(
-            "生成的 {:?} FLAC 自检失败：应识别 {expected_detections} 次，实际识别 {} 次（periodic={periodic_location}）",
+            "生成的 {:?} FLAC 自检失败：应识别 {expected_detections} 次，实际识别 {} 次",
             marker,
             detections.len()
         ));
@@ -4427,61 +3879,6 @@ fn write_marker_flac_with_source_gain(
         .iter()
         .map(|detection| detection.confidence)
         .fold(f32::INFINITY, f32::min))
-}
-
-fn write_terror_probe_flac(path: &Path) -> Result<f32, String> {
-    const SAMPLE_RATE: u32 = 48_000;
-    const CHANNELS: usize = 2;
-    const BITS_PER_SAMPLE: u32 = 16;
-    let marker = TelemetryMarker::Area {
-        area_id: TERROR_PROBE_MARKER_AREA_ID,
-    };
-    let config = MarkerConfig {
-        gain_db: TERROR_MARKER_GAIN_DB,
-        ..MarkerConfig::default()
-    };
-    let mut samples = Vec::new();
-    embed_marker(
-        &mut samples,
-        CHANNELS,
-        BITS_PER_SAMPLE,
-        SAMPLE_RATE,
-        marker,
-        config,
-    )?;
-
-    // The desecrated event repeats for as long as the player is in a Terror
-    // Zone. One compact packet per replay is sufficient to signal TZ presence
-    // and avoids turning the redundant packet into a second logical heartbeat.
-    let packet_gap_frames = (SAMPLE_RATE as f32 * PACKET_GAP_SECONDS).round() as usize;
-    let packet_frames = (marker_frames(SAMPLE_RATE) - packet_gap_frames) / 2;
-    let marker_offset_frames = (SAMPLE_RATE as f32 * MARKER_OFFSET_SECONDS).round() as usize;
-    samples.truncate((marker_offset_frames + packet_frames) * CHANNELS);
-
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|error| format!("创建恐怖区域探针目录失败 {}: {error}", parent.display()))?;
-    }
-    encode_flac(
-        path,
-        &samples,
-        SAMPLE_RATE,
-        CHANNELS as u32,
-        BITS_PER_SAMPLE,
-    )?;
-    let (verified, rate, channels, bits) = decode_flac(path)?;
-    let mono = interleaved_i32_to_mono(&verified, channels as usize, bits)?;
-    let detections = detect_markers(&mono, rate, config.detection_threshold)
-        .into_iter()
-        .filter(|detection| detection.marker == marker)
-        .collect::<Vec<_>>();
-    if detections.len() != 1 {
-        return Err(format!(
-            "恐怖区域探针自检失败：期望 1 个探针包，实际识别到 {} 个",
-            detections.len()
-        ));
-    }
-    Ok(detections[0].confidence)
 }
 
 fn default_output_parent(game_root: Option<&Path>, source: Option<&Path>) -> PathBuf {
@@ -4515,16 +3912,14 @@ fn asset_label(
             .map(|area| format!("{} (Area {area_id})", area.scene_name))
             .unwrap_or_else(|| format!("Area {area_id}")),
         TelemetryMarker::Frontend => "主界面".to_string(),
+        TelemetryMarker::Hostile => "敌对提示".to_string(),
     }
 }
 
 fn audio_feature_fingerprint(request: &BuildAudioModRequest) -> String {
     let mut categories = normalize_tracked_categories(&request.tracked_categories);
     categories.sort();
-    let coverage = match request.area_coverage {
-        AudioAreaCoverage::CountessRoute => "countess_route",
-        AudioAreaCoverage::AllAreas => "all_areas",
-    };
+    let coverage = "all_areas";
     let gain = request.gain_db.unwrap_or(MarkerConfig::default().gain_db);
     format!(
         "audio-v{AUDIO_TELEMETRY_FEATURE_RECIPE_VERSION};protocol={PROTOCOL_VERSION};areas={coverage};track={};gain_mdb={}",
@@ -5304,16 +4699,19 @@ pub fn build(request: BuildAudioModRequest) -> Result<BuildAudioModReport, Strin
 }
 
 pub fn build_with_progress<F>(
-    request: BuildAudioModRequest,
+    mut request: BuildAudioModRequest,
     mut progress: F,
 ) -> Result<BuildAudioModReport, String>
 where
     F: FnMut(BuildProgress),
 {
+    request.include_esc_next_game |= request.include_hostile_auto_restart;
     progress(BuildProgress::new("validate", 2, "正在检查游戏与 Mod…"));
     if !request.include_audio_telemetry
         && !request.include_room_tools
         && !request.include_esc_next_game
+        && !request.include_party_loot
+        && !request.include_scene_shortcuts
         && !request.include_auto_exit_on_death
     {
         return Err("请至少选择一个要加工的功能组".to_string());
@@ -5333,6 +4731,63 @@ where
         }
     };
     let source_feature_report = source_layout.as_ref().and_then(read_source_feature_report);
+    if let Some(group) = source_feature_report.as_ref().and_then(|report| {
+        report
+            .feature_groups
+            .iter()
+            .find(|group| group.id == hostile::ID)
+    }) {
+        hostile::validate_source(group)?;
+        // Inherited hostility handling has the same mandatory Esc dependency
+        // as an explicitly requested installation.
+        request.include_esc_next_game = true;
+    }
+    if let Some(group) = source_feature_report.as_ref().and_then(|report| {
+        report
+            .feature_groups
+            .iter()
+            .find(|group| group.id == scene_shortcuts::ID)
+    }) {
+        let supported = scene_shortcuts::feature_group();
+        let legacy = (group.recipe_version == 1 && group.fingerprint == "scene-shortcuts-v1;mymod-wp;select_ms=100;restart_ms=200;cleanup_ms=300;tab=2;help=1") || (group.recipe_version == 2 && group.fingerprint == "scene-shortcuts-v2;mymod-travincal;select_ms=100;restart_ms=200;cleanup_ms=300;tabs=3;tab=2;help=1;launch=immediate");
+        let legacy = legacy || (group.recipe_version == 3 && group.fingerprint == "scene-shortcuts-v3;mymod-two-stage;restart_tabs=4;arrival_tabs=3;tab=2;arrival_ms=1000;launch=immediate");
+        let legacy = legacy || (group.recipe_version == 4 && group.fingerprint == "scene-shortcuts-v4;mymod-two-stage;restart_tabs=4;arrival_tabs=3;tab=2;arrival_ms=1000;launch=immediate;help_only=1");
+        let legacy = legacy || (group.recipe_version == 5 && group.fingerprint == "scene-shortcuts-v5;mymod-hud-direct;restart_tabs=4;arrival_tabs=3;tab=2;arrival_ms=1000;help_only=1");
+        let legacy = legacy || (group.recipe_version == 6 && group.fingerprint == "scene-shortcuts-v6;mymod-exact-chain;hud=unload-then-arrival;arrival_ms=1000;help_only=1");
+        if !legacy
+            && (group.recipe_version != supported.recipe_version
+                || group.fingerprint != supported.fingerprint)
+        {
+            return Err("来源场景重开模块版本不受支持，不能降级覆盖".into());
+        }
+    }
+    if let Some(group) = source_feature_report.as_ref().and_then(|report| {
+        report
+            .feature_groups
+            .iter()
+            .find(|group| group.id == party_loot::ID)
+    }) {
+        let supported = party_loot::feature_group();
+        let legacy = group.recipe_version == 1
+            && group.fingerprint == "party-loot-v1;native-party-row;x=80;y=20";
+        if !legacy
+            && (group.recipe_version != supported.recipe_version
+                || group.fingerprint != supported.fingerprint)
+        {
+            return Err("来源左侧拾取按钮模块版本不受支持，不能降级覆盖".into());
+        }
+    }
+    if source_feature_report.as_ref().is_some_and(|report| {
+        report
+            .feature_groups
+            .iter()
+            .any(|g| g.id == AUDIO_TELEMETRY_FEATURE_ID && g.recipe_version < 4)
+            || !report.area_assets.is_empty()
+            || !report.terror_assets.is_empty()
+            || !report.frontend_assets.is_empty()
+    }) {
+        return Err("旧加工成品包含场景声纹，请在 Hub 使用同名重做并选择未经加工的原始源 Mod；不能把旧场景音当成干净基线继续增补".into());
+    }
     let audio_fingerprint = audio_feature_fingerprint(&request);
     let reusable_audio = source_layout
         .as_ref()
@@ -5469,6 +4924,26 @@ where
         if esc_next_game_available {
             install_esc_next_game(&mpq_directory, storage.as_ref(), room_tools_available)?;
         }
+        let scene_shortcuts_available = request.include_scene_shortcuts
+            || source_feature_report.as_ref().is_some_and(|report| {
+                report
+                    .feature_groups
+                    .iter()
+                    .any(|group| group.id == scene_shortcuts::ID)
+            });
+        if scene_shortcuts_available {
+            scene_shortcuts::install(&mpq_directory, storage.as_ref(), &mut compatibility)?;
+        }
+        let party_loot_available = request.include_party_loot
+            || source_feature_report.as_ref().is_some_and(|report| {
+                report
+                    .feature_groups
+                    .iter()
+                    .any(|group| group.id == party_loot::ID)
+            });
+        if party_loot_available {
+            party_loot::install(&mpq_directory, storage.as_ref(), &mut compatibility)?;
+        }
         if request.include_room_tools && !room_tools_available {
             return Err("局内房间工具安装失败：没有找到可安全复用的完整游戏 UI 布局".to_string());
         }
@@ -5558,6 +5033,19 @@ where
             feature_groups.push(esc_next_game_feature_group());
             capabilities.push(ESC_NEXT_GAME_CAPABILITY.to_string());
         }
+        feature_groups.retain(|group| group.id != scene_shortcuts::ID);
+        capabilities.retain(|value| value != scene_shortcuts::ID);
+        if scene_shortcuts_available {
+            feature_groups.push(scene_shortcuts::feature_group());
+            capabilities.push(scene_shortcuts::ID.into());
+        }
+        feature_groups.retain(|group| group.id != party_loot::ID);
+        capabilities.retain(|value| value != party_loot::ID);
+        if party_loot_available {
+            feature_groups.push(party_loot::feature_group());
+            capabilities.push(party_loot::ID.into());
+        }
+
         let report = BuildAudioModReport {
             manifest_format: "d2r-audio-telemetry-mod".to_string(),
             producer: "d2r-audio-mod".to_string(),
@@ -5605,6 +5093,22 @@ where
                 }
             )],
         };
+        let mut report = report;
+        if request.include_hostile_auto_restart
+            || report.feature_groups.iter().any(|g| g.id == hostile::ID)
+        {
+            hostile::install(&mpq_directory, storage.as_ref())?;
+            report.feature_groups.retain(|g| g.id != hostile::ID);
+            report.feature_groups.push(hostile::feature_group());
+            report.capabilities.retain(|c| c != hostile::ID);
+            report.capabilities.push(hostile::ID.into());
+            if !request.include_audio_telemetry {
+                report
+                    .notes
+                    .retain(|note| !note.contains("产物不包含声纹文件"));
+            }
+            report.notes.push("已安装独立敌对提示音与双击 Esc 下一局；无需场景、掉落识别。开启游戏声音后，由 Hub 的敌对自动重开设置控制执行范围。".into());
+        }
         write_mod_manifests(&staging_mod_directory, &report)?;
         write_file(
             &staging_mod_directory.join("README-安装与测试.txt"),
@@ -5650,6 +5154,26 @@ where
             });
         if esc_next_game_available {
             install_esc_next_game(&mpq_directory, storage.as_ref(), room_tools_available)?;
+        }
+        let scene_shortcuts_available = request.include_scene_shortcuts
+            || source_feature_report.as_ref().is_some_and(|report| {
+                report
+                    .feature_groups
+                    .iter()
+                    .any(|group| group.id == scene_shortcuts::ID)
+            });
+        if scene_shortcuts_available {
+            scene_shortcuts::install(&mpq_directory, storage.as_ref(), &mut compatibility)?;
+        }
+        let party_loot_available = request.include_party_loot
+            || source_feature_report.as_ref().is_some_and(|report| {
+                report
+                    .feature_groups
+                    .iter()
+                    .any(|group| group.id == party_loot::ID)
+            });
+        if party_loot_available {
+            party_loot::install(&mpq_directory, storage.as_ref(), &mut compatibility)?;
         }
         if request.include_room_tools && !room_tools_available {
             return Err("局内房间工具安装失败：没有找到可安全复用的完整游戏 UI 布局".to_string());
@@ -5777,6 +5301,19 @@ where
             feature_groups.push(esc_next_game_feature_group());
             capabilities.push(ESC_NEXT_GAME_CAPABILITY.to_string());
         }
+        feature_groups.retain(|group| group.id != scene_shortcuts::ID);
+        capabilities.retain(|value| value != scene_shortcuts::ID);
+        if scene_shortcuts_available {
+            feature_groups.push(scene_shortcuts::feature_group());
+            capabilities.push(scene_shortcuts::ID.into());
+        }
+        feature_groups.retain(|group| group.id != party_loot::ID);
+        capabilities.retain(|value| value != party_loot::ID);
+        if party_loot_available {
+            feature_groups.push(party_loot::feature_group());
+            capabilities.push(party_loot::ID.into());
+        }
+
         let report = BuildAudioModReport {
             manifest_format: "d2r-audio-telemetry-mod".to_string(),
             producer: "d2r-audio-mod".to_string(),
@@ -5845,6 +5382,22 @@ where
                 }
             )],
         };
+        let mut report = report;
+        if request.include_hostile_auto_restart
+            || report.feature_groups.iter().any(|g| g.id == hostile::ID)
+        {
+            hostile::install(&mpq_directory, storage.as_ref())?;
+            report.feature_groups.retain(|g| g.id != hostile::ID);
+            report.feature_groups.push(hostile::feature_group());
+            report.capabilities.retain(|c| c != hostile::ID);
+            report.capabilities.push(hostile::ID.into());
+            if !request.include_audio_telemetry {
+                report
+                    .notes
+                    .retain(|note| !note.contains("产物不包含声纹文件"));
+            }
+            report.notes.push("已安装独立敌对提示音与双击 Esc 下一局；无需场景、掉落识别。开启游戏声音后，由 Hub 的敌对自动重开设置控制执行范围。".into());
+        }
         write_mod_manifests(&staging_mod_directory, &report)?;
         write_file(
             &staging_mod_directory.join("README-安装与测试.txt"),
@@ -5889,42 +5442,12 @@ where
     let sounds = TsvTable::parse("sounds.txt", &sounds_baseline.text)?;
     let levels = TsvTable::parse("levels.txt", &levels_baseline.text)?;
     let area_localization = load_area_localization(&mpq_directory, storage.as_ref())?;
-    let mut areas = collect_areas_localized(&levels, &area_localization)?;
-    if request.area_coverage == AudioAreaCoverage::CountessRoute {
-        areas.retain(|area| COUNTESS_AREA_IDS.contains(&area.area_id));
-        if areas.len() != COUNTESS_AREA_IDS.len() {
-            return Err("女伯爵路线需要 levels.txt 包含 Area 1、6、20–25".to_string());
-        }
-    } else if areas.len() < 100 {
-        return Err(format!(
-            "全区域模式只从 levels.txt 解析到 {} 个有效区域，疑似不是完整游戏数据",
-            areas.len()
-        ));
-    }
-
-    let explicit_sound_environment = request
-        .sound_environment_file
-        .as_deref()
-        .filter(|value| !value.trim().is_empty())
-        .map(PathBuf::from);
-    let sound_environment_baseline = if let Some(path) = explicit_sound_environment {
-        ResolvedTextFile {
-            text: read_excel_text(&path)?,
-            source: path.to_string_lossy().into_owned(),
-            from_source_mod: true,
-        }
-    } else {
-        read_excel_with_game_fallback(
-            &layout,
-            storage.as_ref(),
-            game_root.as_deref(),
-            "soundenviron.txt",
-        )?
-    };
-    let environments = TsvTable::parse("soundenviron.txt", &sound_environment_baseline.text)?;
-    let area_ambience_sources =
-        collect_area_ambience_sources(&levels, &environments, &sounds, &areas)?;
-    progress(BuildProgress::new("areas", 28, "正在准备全部场景声纹…"));
+    let areas = collect_areas_localized(&levels, &area_localization)?;
+    progress(BuildProgress::new(
+        "areas",
+        28,
+        "正在准备 OCR 地区名称目录（不加工场景音）…",
+    ));
     let casc_cache = staging_mod_directory.join(".audio-telemetry-casc-cache");
     validate_misc(&misc, include_runes, &selected_items)?;
     let mut compatibility = vec![AudioModCompatibility {
@@ -5970,6 +5493,26 @@ where
     if esc_next_game_available {
         install_esc_next_game(&mpq_directory, storage.as_ref(), room_tools_available)?;
     }
+    let scene_shortcuts_available = request.include_scene_shortcuts
+        || source_feature_report.as_ref().is_some_and(|report| {
+            report
+                .feature_groups
+                .iter()
+                .any(|group| group.id == scene_shortcuts::ID)
+        });
+    if scene_shortcuts_available {
+        scene_shortcuts::install(&mpq_directory, storage.as_ref(), &mut compatibility)?;
+    }
+    let party_loot_available = request.include_party_loot
+        || source_feature_report.as_ref().is_some_and(|report| {
+            report
+                .feature_groups
+                .iter()
+                .any(|group| group.id == party_loot::ID)
+        });
+    if party_loot_available {
+        party_loot::install(&mpq_directory, storage.as_ref(), &mut compatibility)?;
+    }
     let auto_exit_on_death_installed =
         if request.include_auto_exit_on_death && source_auto_exit_on_death_enabled.is_none() {
             install_auto_exit_on_death(&mpq_directory, storage.as_ref(), true, &mut compatibility)?
@@ -5987,7 +5530,6 @@ where
             ("misc.txt", &misc_baseline),
             ("sounds.txt", &sounds_baseline),
             ("levels.txt", &levels_baseline),
-            ("soundenviron.txt", &sound_environment_baseline),
         ] {
             if !baseline.from_source_mod {
                 compatibility.push(AudioModCompatibility {
@@ -6067,23 +5609,10 @@ where
         .iter()
         .map(|plan| plan.entry.clone())
         .collect::<Vec<_>>();
-    let (sounds, definitions) = patch_sounds(
-        sounds,
-        &rune_plans,
-        &item_plans,
-        &areas,
-        &area_ambience_sources,
-        &mut compatibility,
-    )?;
-    let (environments, levels) = patch_sound_environ_and_levels(environments, levels, &areas)?;
+    let (sounds, definitions) = patch_sounds(sounds, &rune_plans, &item_plans, &mut compatibility)?;
 
     write_file(&excel_output.join("misc.txt"), misc.to_text())?;
     write_file(&excel_output.join("sounds.txt"), sounds.to_text())?;
-    write_file(&excel_output.join("levels.txt"), levels.to_text())?;
-    write_file(
-        &excel_output.join("soundenviron.txt"),
-        environments.to_text(),
-    )?;
     if needs_item_mapping {
         write_file(
             &mpq_directory.join("data/hd/items/items.json"),
@@ -6104,18 +5633,9 @@ where
         .as_ref()
         .map(|report| report.item_assets.clone())
         .unwrap_or_default();
-    let mut area_assets = reusable_audio
-        .as_ref()
-        .map(|report| report.area_assets.clone())
-        .unwrap_or_default();
-    let mut terror_assets = reusable_audio
-        .as_ref()
-        .map(|report| report.terror_assets.clone())
-        .unwrap_or_default();
-    let mut frontend_assets = reusable_audio
-        .as_ref()
-        .map(|report| report.frontend_assets.clone())
-        .unwrap_or_default();
+    let area_assets = Vec::new();
+    let terror_assets = Vec::new();
+    let frontend_assets = Vec::new();
     let definition_count = definitions.len().max(1);
     if reusable_audio.is_none() {
         for (definition_index, definition) in definitions.into_iter().enumerate() {
@@ -6151,14 +5671,7 @@ where
             let output_path = mpq_directory
                 .join(definition.output_root)
                 .join(definition.relative_path.replace('\\', "/"));
-            let marker_config = if group == SoundAssetGroup::Terror {
-                MarkerConfig {
-                    gain_db: TERROR_MARKER_GAIN_DB,
-                    ..config
-                }
-            } else {
-                config
-            };
+            let marker_config = config;
             let confidence = write_marker_flac_with_source_gain(
                 &output_path,
                 marker,
@@ -6168,13 +5681,7 @@ where
             )?;
             let asset = AudioModAsset {
                 marker,
-                label: match group {
-                    SoundAssetGroup::Terror => "恐怖区域即时入场 · TZ 1023".to_string(),
-                    SoundAssetGroup::Frontend => format!("主界面 · {}", definition.sound),
-                    SoundAssetGroup::Rune | SoundAssetGroup::Item | SoundAssetGroup::Area => {
-                        asset_label(marker, &areas, &item_catalog_entries)
-                    }
-                },
+                label: asset_label(marker, &areas, &item_catalog_entries),
                 sound: definition.sound,
                 relative_path: definition.relative_path,
                 source_audio: resolved_source.as_ref().map(|source| source.label.clone()),
@@ -6184,35 +5691,8 @@ where
             match group {
                 SoundAssetGroup::Rune => rune_assets.push(asset),
                 SoundAssetGroup::Item => item_assets.push(asset),
-                SoundAssetGroup::Area => area_assets.push(asset),
-                SoundAssetGroup::Terror => terror_assets.push(asset),
-                SoundAssetGroup::Frontend => frontend_assets.push(asset),
             }
         }
-        let terror_probe_path = mpq_directory
-            .join("data/hd/global/sfx")
-            .join(TERROR_PROBE_RELATIVE_PATH.replace('\\', "/"));
-        let terror_probe_confidence = write_terror_probe_flac(&terror_probe_path)?;
-        terror_assets.push(AudioModAsset {
-            marker: TelemetryMarker::Area {
-                area_id: TERROR_PROBE_MARKER_AREA_ID,
-            },
-            label: "恐怖区域延迟兜底 · TZ 1023".to_string(),
-            sound: TERROR_PROBE_HD_SOUND.to_string(),
-            relative_path: TERROR_PROBE_RELATIVE_PATH.to_string(),
-            source_audio: None,
-            preserved_source_audio: false,
-            confidence: terror_probe_confidence,
-        });
-        compatibility.push(AudioModCompatibility {
-        target: "恐怖区域状态识别".to_string(),
-        action: "emit_shared_terror_zone_marker".to_string(),
-        detail: format!(
-            "保留恐怖区域音乐与持续环境声；所有恐怖区域共用同一个短促声纹，只表示当前处于 TZ，不再编码具体 Area。即时入场与延迟兜底为保证 3D 混音后的可靠性固定使用 {:.0} dBFS（兜底本地自检置信度 {:.1}%）。",
-            TERROR_MARKER_GAIN_DB,
-            terror_probe_confidence * 100.0
-        ),
-      });
     } else {
         progress(BuildProgress::new(
             "audio",
@@ -6310,9 +5790,7 @@ where
             && capability != IN_GAME_ROOM_TOOLS_CAPABILITY
             && capability != AUTO_EXIT_ON_DEATH_CAPABILITY
     });
-    capabilities.push(AREA_ENTRY_PROBE_CAPABILITY.to_string());
-    capabilities.push(TERROR_IMMEDIATE_ENTRY_CAPABILITY.to_string());
-    capabilities.push(TERROR_ZONE_STATE_CAPABILITY.to_string());
+    capabilities.push("ocr_scene_catalog_v1".into());
     if room_tools_available {
         capabilities.push(IN_GAME_ROOM_TOOLS_CAPABILITY.to_string());
     }
@@ -6348,6 +5826,19 @@ where
         feature_groups.push(esc_next_game_feature_group());
         capabilities.push(ESC_NEXT_GAME_CAPABILITY.to_string());
     }
+    feature_groups.retain(|group| group.id != scene_shortcuts::ID);
+    capabilities.retain(|value| value != scene_shortcuts::ID);
+    if scene_shortcuts_available {
+        feature_groups.push(scene_shortcuts::feature_group());
+        capabilities.push(scene_shortcuts::ID.into());
+    }
+    feature_groups.retain(|group| group.id != party_loot::ID);
+    capabilities.retain(|value| value != party_loot::ID);
+    if party_loot_available {
+        feature_groups.push(party_loot::feature_group());
+        capabilities.push(party_loot::ID.into());
+    }
+
     let report = BuildAudioModReport {
         manifest_format: "d2r-audio-telemetry-mod".to_string(),
         producer: "d2r-audio-mod".to_string(),
@@ -6361,7 +5852,7 @@ where
             .as_secs(),
         protocol_version: PROTOCOL_VERSION,
         build_mode: request.build_mode,
-        area_coverage: request.area_coverage,
+        area_coverage: AudioAreaCoverage::AllAreas,
         mod_name: mod_name.clone(),
         mod_directory: final_mod_directory.to_string_lossy().to_string(),
         mpq_directory: final_mpq_directory.to_string_lossy().to_string(),
@@ -6387,7 +5878,7 @@ where
             request.source_directory.as_deref(),
             source_feature_report.as_ref(),
         ),
-        sound_environment_source: sound_environment_baseline.source,
+        sound_environment_source: "unchanged: scenes use OCR".into(),
         launch_arguments: format!("-mod {mod_name} -txt"),
         rune_assets,
         item_assets,
@@ -6404,23 +5895,8 @@ where
             ),
             "misc.txt 的 dropsound 与 usesound 均保持原值；背包/仓库不进入地面状态。"
                 .to_string(),
-            "主界面使用 music_options、五幕前端场景、营火、选角循环与稳定 event_fe_act_* 条目的独立混音文件；music_desecrated_hd 及其恐惧区域资源保持不变。"
-                .to_string(),
-            if request.area_coverage == AudioAreaCoverage::AllAreas {
-                format!(
-                    "已覆盖 levels.txt 中的全部 {} 个有效区域；环境原声优先取现有 Mod，缺失时取本机 D2R CASC。",
-                    area_count
-                )
-            } else {
-                format!(
-                    "当前覆盖女伯爵路线 Area {:?}；环境原声优先取现有 Mod，缺失时取本机 D2R CASC。",
-                    COUNTESS_AREA_IDS
-                )
-            },
-            "v7 使用独立地点/掉落同步码与 127 路 Gold 掉落签名；主界面标记会立即结束未完成的刷图计时。"
-                .to_string(),
-            "普通 Area 在环境流起始 1.5 秒内发送三组短入场探针，并保留五秒低频心跳；TZ 1023 只表达恐怖化状态，接收端结合当前 TZ 查询确定归属，匹配的精确 Area 可补全 Area ID。"
-                .to_string(),
+            format!("场景只提供 OCR 地区名称目录（{} 项）；不改写 levels.txt、soundenviron.txt，不加工地区、TZ 或主界面声音。",area_count),
+            "v7 掉落和敌对提示声纹保持独立；场景切换、TZ 状态和计时由 Hub 的 OCR 路径负责。".into(),
             if room_tools_available {
                 "局内右上角的 0.30 倍紧凑工具栏可在确认后开始下一局，或按 MDK 原始消息链打开创建/加入；自动流程使用 PausePanel 的 Esc+左/右两次+确认安全入口。自动填写在表单聚焦后用 F13 调用原生 CfgChat 文本态，Tab 切换密码并提交，全程不移动鼠标或点击 HWND。".to_string()
             } else {
@@ -6435,6 +5911,22 @@ where
             },
         ],
     };
+    let mut report = report;
+    if request.include_hostile_auto_restart
+        || report.feature_groups.iter().any(|g| g.id == hostile::ID)
+    {
+        hostile::install(&mpq_directory, storage.as_ref())?;
+        report.feature_groups.retain(|g| g.id != hostile::ID);
+        report.feature_groups.push(hostile::feature_group());
+        report.capabilities.retain(|c| c != hostile::ID);
+        report.capabilities.push(hostile::ID.into());
+        if !request.include_audio_telemetry {
+            report
+                .notes
+                .retain(|note| !note.contains("产物不包含声纹文件"));
+        }
+        report.notes.push("已安装独立敌对提示音与双击 Esc 下一局；无需场景、掉落识别。开启游戏声音后，由 Hub 的敌对自动重开设置控制执行范围。".into());
+    }
     write_mod_manifests(&staging_mod_directory, &report)?;
     write_file(
         &staging_mod_directory.join("README-安装与测试.txt"),
@@ -6734,6 +6226,9 @@ mod tests {
             include_audio_telemetry: false,
             include_room_tools: true,
             include_esc_next_game: false,
+            include_scene_shortcuts: false,
+            include_party_loot: false,
+            include_hostile_auto_restart: false,
             include_auto_exit_on_death: false,
         })
         .unwrap();
@@ -6794,6 +6289,9 @@ mod tests {
             include_audio_telemetry: false,
             include_room_tools: false,
             include_esc_next_game: false,
+            include_scene_shortcuts: false,
+            include_party_loot: false,
+            include_hostile_auto_restart: false,
             include_auto_exit_on_death: true,
         })
         .unwrap();
@@ -6870,6 +6368,9 @@ mod tests {
             include_audio_telemetry: false,
             include_room_tools: false,
             include_esc_next_game: false,
+            include_scene_shortcuts: false,
+            include_party_loot: false,
+            include_hostile_auto_restart: false,
             include_auto_exit_on_death: true,
         })
         .unwrap();
@@ -6972,6 +6473,9 @@ mod tests {
             include_audio_telemetry: false,
             include_room_tools: true,
             include_esc_next_game: true,
+            include_scene_shortcuts: false,
+            include_party_loot: false,
+            include_hostile_auto_restart: false,
             include_auto_exit_on_death: false,
         })
         .unwrap();
@@ -7178,13 +6682,13 @@ mod tests {
         let tagged = root.join("tagged.flac");
         write_marker_flac(
             &tagged,
-            TelemetryMarker::Area { area_id: 6 },
+            TelemetryMarker::Rune { rune_number: 6 },
             resolved.path.as_deref(),
             MarkerConfig::default(),
         )
         .unwrap();
         let (samples, sample_rate, channels, _) = decode_flac(&tagged).unwrap();
-        assert_eq!(samples.len(), sample_rate as usize * channels as usize * 5);
+        assert!(samples.len() < sample_rate as usize * channels as usize);
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -7598,107 +7102,31 @@ mod tests {
     }
 
     #[test]
-    fn patches_all_runes_and_countess_area_rows() {
-        let mut misc = "name\tcode\tdropsound\tusesound\n".to_string();
-        for number in 1..=33 {
-            misc.push_str(&format!(
-                "Rune {number}\tr{number:02}\titem_rune\titem_rune\n"
-            ));
-        }
-        let original = TsvTable::parse("misc", &misc).unwrap();
-        validate_misc(&original, true, &[]).unwrap();
-        assert_eq!(
-            original.get(&original.rows[0], "dropsound"),
-            Some("item_rune")
-        );
-        assert_eq!(
-            original.get(&original.rows[32], "dropsound"),
-            Some("item_rune")
-        );
-        assert_eq!(
-            original.get(&original.rows[0], "usesound"),
-            Some("item_rune")
-        );
-        assert_eq!(
-            original.get(&original.rows[32], "usesound"),
-            Some("item_rune")
-        );
-
-        let levels = TsvTable::parse(
-            "levels",
-            "Name\tId\tSoundEnv\tLevelName\nNull\t0\t0\tNull\nAct 1 - Town\t1\t1\tRogue Encampment\nAct 1 - Wilderness 5\t6\t2\tBlack Marsh\nAct 1 - Crypt 1\t20\t2\tForgotten Tower\nAct 1 - Crypt 2\t21\t2\tTower Cellar Level 1\nAct 1 - Crypt 3\t22\t2\tTower Cellar Level 2\nAct 1 - Crypt 4\t23\t2\tTower Cellar Level 3\nAct 1 - Crypt 5\t24\t2\tTower Cellar Level 4\nAct 1 - Crypt 6\t25\t2\tTower Cellar Level 5\n",
-        )
-        .unwrap();
-        let areas = collect_areas(&levels).unwrap();
-        assert_eq!(areas.len(), 8);
-        assert_eq!(areas[0].kind, LocationKind::Town);
-        assert_eq!(areas[1].scene_name, "Black Marsh");
-        let environments = TsvTable::parse(
-            "soundenviron",
-            "Handle\tIndex\tDay Ambience\tHD Day Ambience\tNight Ambience\tHD Night Ambience\tDay Event\tHD Day Event\tNight Event\tHD Night Event\tEvent Delay\tHD Event Delay\nTown\t1\tscene_wilderness_day\tscene_wilderness_day\tscene_wilderness_day\tscene_wilderness_day\ta\ta\ta\ta\t500\t500\nWild\t2\tscene_wilderness_day\tscene_wilderness_day\tscene_wilderness_day\tscene_wilderness_day\tb\tb\tb\tb\t500\t500\n",
-        )
-        .unwrap();
-        let (environments, levels) =
-            patch_sound_environ_and_levels(environments, levels, &areas).unwrap();
-        assert_eq!(environments.rows.len(), 10);
-        assert_eq!(levels.get(&levels.rows[1], "SoundEnv"), Some("3"));
-        assert_eq!(levels.get(&levels.rows[2], "SoundEnv"), Some("4"));
-
-        let sounds = TsvTable::parse(
-            "sounds",
-            "Sound\t*Index\tRedirect\tFileName\tIsAmbientScene\tIsAmbientEvent\tGroup Weight\tLoop\tHDOptOut\nitem_rune_hd\t10\t\titem\\rune.flac\t0\t0\t0\t0\t0\nscene_wilderness_day\t11\t\tambient\\scene.flac\t1\t0\t0\t1\t0\nmusic_options\t12\t\tcommon\\options.flac\t0\t0\t0\t1\t0\nact1_scene_front_end\t13\t\tfrontend\\act1.flac\t1\t0\t0\t1\t0\ncampfire_front_end\t14\t\tfrontend\\campfire.flac\t1\t0\t0\t1\t0\nchar_select_fe_fire_loop_hd\t15\t\tfrontend\\fire.flac\t1\t0\t0\t1\t0\ndesecrated_enter\t16\tdesecrated_enter_hd\tquest\\desecrated_enter.flac\t0\t0\t0\t0\t0\ndesecrated_enter_hd\t17\t\tquest\\desecrated_enter_hd.flac\t0\t0\t0\t0\t0\n",
-        )
-        .unwrap();
-        let rune_plans = (1..=RUNE_COUNT)
+    fn generates_only_drop_sounds_and_preserves_scene_rows() {
+        let sounds=TsvTable::parse("sounds","Sound\t*Index\tRedirect\tFileName\tLoop\nitem_rune_hd\t1\t\titem/rune.flac\t0\nscene_wilderness_day\t2\t\tambient/scene.flac\t1\nmusic_options\t3\t\tcommon/options.flac\t1\ndesecrated_enter\t4\tmissing_optional_target\tquest/enter.flac\t0\n").unwrap();
+        let before = sounds.clone();
+        let plans = (1..=RUNE_COUNT)
             .map(|rune_number| RuneStatePlan {
                 rune_number,
                 original_audio_id: None,
             })
             .collect::<Vec<_>>();
-        let area_ambience_sources = areas
-            .iter()
-            .map(|area| {
-                (
-                    area.area_id,
-                    AreaAmbienceSource {
-                        filename: "ambient\\scene.flac".to_string(),
-                        source_gain: 1.0,
-                    },
-                )
-            })
-            .collect::<HashMap<_, _>>();
-        let mut compatibility = Vec::new();
-        let (sounds, definitions) = patch_sounds(
-            sounds,
-            &rune_plans,
-            &[],
-            &areas,
-            &area_ambience_sources,
-            &mut compatibility,
-        )
-        .unwrap();
-        let area_row = sounds.row_by("Sound", "audio_telemetry_a1").unwrap();
-        assert_eq!(sounds.get(&area_row, "IsAmbientScene"), Some("1"));
-        assert_eq!(sounds.get(&area_row, "Loop"), Some("1"));
-        assert!(definitions
-            .iter()
-            .any(|definition| definition.marker == TelemetryMarker::Frontend));
-        assert_eq!(
-            sounds.row_by("Sound", "music_options").unwrap()[sounds.column("FileName").unwrap()],
-            "audio_telemetry\\frontend\\music_options.flac"
-        );
-        assert_eq!(
-            sounds.row_by("Sound", "act1_scene_front_end").unwrap()
-                [sounds.column("FileName").unwrap()],
-            "audio_telemetry\\frontend\\act1_scene_front_end.flac"
-        );
-        assert_eq!(
-            definitions
-                .iter()
-                .filter(|definition| definition.marker == TelemetryMarker::Frontend)
-                .count(),
-            4
-        );
+        let (after, definitions) = patch_sounds(sounds, &plans, &[], &mut Vec::new()).unwrap();
+        assert_eq!(definitions.len(), 33);
+        assert!(definitions.iter().all(|v| matches!(
+            v.marker,
+            TelemetryMarker::Rune { .. } | TelemetryMarker::Item { .. }
+        )));
+        for name in ["scene_wilderness_day", "music_options", "desecrated_enter"] {
+            assert_eq!(
+                before.row_by("Sound", name).unwrap(),
+                after.row_by("Sound", name).unwrap()
+            );
+        }
+        assert!(after.row_by("Sound", "audio_telemetry_a1").is_err());
+        assert!(after
+            .row_by("Sound", "audio_telemetry_tz_probe_hd")
+            .is_err());
     }
 
     #[test]
@@ -7708,7 +7136,7 @@ mod tests {
         let path = root.join("a137.flac");
         let confidence = write_marker_flac(
             &path,
-            TelemetryMarker::Area { area_id: 137 },
+            TelemetryMarker::Rune { rune_number: 33 },
             None,
             MarkerConfig::default(),
         )
@@ -7716,83 +7144,6 @@ mod tests {
         assert!(path.is_file());
         assert!(confidence > 0.7);
         std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn terror_entry_sound_is_tagged_at_the_immediate_redirect_target() {
-        let sounds = TsvTable::parse(
-            "sounds",
-            "Sound\t*Index\tRedirect\tFileName\tChannel\tIsAmbientScene\tIsAmbientEvent\tVolume Min\tVolume Max\tPitch Min\tPitch Max\tGroup Size\tGroup Weight\tLoop\tDefer Inst\tStop Inst\tCompound\tStream\tTracking\tIs2D\tHDOptOut\nitem_rune_hd\t1\t\titem\\rune.flac\tsfx/items_hd\t0\t0\t200\t200\t100\t100\t0\t0\t0\t0\t1\t0\t0\t0\t0\t0\nscene_wilderness_day\t2\t\tambient\\scene.flac\tsfx/ambient/scene-2d_hd\t1\t0\t200\t200\t100\t100\t0\t0\t1\t0\t0\t0\t1\t0\t1\t0\nmusic_options\t3\t\tcommon\\options.flac\tmusic_sd\t0\t0\t127\t127\t100\t100\t0\t0\t1\t1\t0\t0\t1\t0\t1\t0\ndesecrated_enter\t4\tdesecrated_enter_hd\tquest\\desecrated_enter.flac\tsfx/ambient/event-3d_sd\t0\t0\t255\t255\t100\t100\t0\t0\t0\t1\t0\t0\t1\t0\t0\t0\ndesecrated_enter_hd\t5\t\tquest\\desecrated_enter_hd.flac\tsfx/ambient/event-3d_hd\t0\t0\t255\t255\t100\t100\t0\t0\t0\t1\t0\t0\t1\t0\t0\t0\n",
-        )
-        .unwrap();
-        let mut compatibility = Vec::new();
-        let (sounds, definitions) =
-            patch_sounds(sounds, &[], &[], &[], &HashMap::new(), &mut compatibility).unwrap();
-
-        let sd = sounds.row_by("Sound", "desecrated_enter").unwrap();
-        assert_eq!(sounds.get(&sd, "Redirect"), Some("desecrated_enter_hd"));
-        let hd = sounds.row_by("Sound", "desecrated_enter_hd").unwrap();
-        assert_eq!(
-            sounds.get(&hd, "FileName"),
-            Some("audio_telemetry\\terror\\desecrated_enter_hd.flac")
-        );
-        let immediate = definitions
-            .iter()
-            .filter(|definition| {
-                definition.marker
-                    == (TelemetryMarker::Area {
-                        area_id: TERROR_PROBE_MARKER_AREA_ID,
-                    })
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(immediate.len(), 1);
-        assert_eq!(
-            immediate[0].source_filename.as_deref(),
-            Some("quest\\desecrated_enter_hd.flac")
-        );
-        assert!(compatibility
-            .iter()
-            .any(|item| { item.action == "mix_immediate_terror_presence_marker" }));
-    }
-
-    #[test]
-    fn missing_terror_entry_sound_fails_instead_of_silently_using_delayed_probe() {
-        let sounds = TsvTable::parse(
-            "sounds",
-            "Sound\t*Index\tRedirect\tFileName\tIsAmbientScene\nitem_rune_hd\t1\t\titem\\rune.flac\t0\nscene_wilderness_day\t2\t\tambient\\scene.flac\t1\nmusic_options\t3\t\tcommon\\options.flac\t0\n",
-        )
-        .unwrap();
-        let error =
-            patch_sounds(sounds, &[], &[], &[], &HashMap::new(), &mut Vec::new()).unwrap_err();
-        assert!(error.contains("缺少恐怖区域即时入场声音"));
-    }
-
-    #[test]
-    fn invalid_terror_entry_redirects_fail_with_a_specific_error() {
-        let missing_target = TsvTable::parse(
-            "sounds",
-            "Sound\t*Index\tRedirect\tFileName\tIsAmbientScene\nitem_rune_hd\t1\t\titem\\rune.flac\t0\nscene_wilderness_day\t2\t\tambient\\scene.flac\t1\nmusic_options\t3\t\tcommon\\options.flac\t0\ndesecrated_enter\t4\tmissing_enter_sound\tquest\\desecrated_enter.flac\t0\n",
-        )
-        .unwrap();
-        let missing_error = patch_sounds(
-            missing_target,
-            &[],
-            &[],
-            &[],
-            &HashMap::new(),
-            &mut Vec::new(),
-        )
-        .unwrap_err();
-        assert!(missing_error.contains("重定向到不存在的声音 missing_enter_sound"));
-
-        let cycle = TsvTable::parse(
-            "sounds",
-            "Sound\t*Index\tRedirect\tFileName\tIsAmbientScene\nitem_rune_hd\t1\t\titem\\rune.flac\t0\nscene_wilderness_day\t2\t\tambient\\scene.flac\t1\nmusic_options\t3\t\tcommon\\options.flac\t0\ndesecrated_enter\t4\tdesecrated_enter_hd\tquest\\desecrated_enter.flac\t0\ndesecrated_enter_hd\t5\tdesecrated_enter\tquest\\desecrated_enter_hd.flac\t0\n",
-        )
-        .unwrap();
-        let cycle_error =
-            patch_sounds(cycle, &[], &[], &[], &HashMap::new(), &mut Vec::new()).unwrap_err();
-        assert!(cycle_error.contains("Redirect 形成循环"));
     }
 
     #[test]
@@ -7948,6 +7299,9 @@ mod tests {
             include_audio_telemetry: true,
             include_room_tools: false,
             include_esc_next_game: false,
+            include_scene_shortcuts: false,
+            include_party_loot: false,
+            include_hostile_auto_restart: false,
             include_auto_exit_on_death: false,
         })
         .unwrap_err();
@@ -8042,17 +7396,20 @@ mod tests {
             include_audio_telemetry: true,
             include_room_tools: false,
             include_esc_next_game: false,
+            include_scene_shortcuts: false,
+            include_party_loot: false,
+            include_hostile_auto_restart: false,
             include_auto_exit_on_death: false,
         })
         .unwrap();
         assert_eq!(report.rune_assets.len(), 33);
-        assert_eq!(report.area_assets.len(), COUNTESS_AREA_IDS.len());
-        assert_eq!(report.terror_assets.len(), 2);
+        assert!(report.area_assets.is_empty());
+        assert!(report.terror_assets.is_empty());
         assert!(report
             .terror_assets
             .iter()
             .all(|asset| asset.confidence > 0.7));
-        assert_eq!(report.frontend_assets.len(), 1);
+        assert!(report.frontend_assets.is_empty());
         assert_eq!(
             report
                 .rune_assets
@@ -8079,7 +7436,7 @@ mod tests {
         .unwrap();
         assert_eq!(output_modinfo["author"], "Preserved Author");
         assert_eq!(output_modinfo["name"], "Countess-Audio-Test");
-        assert!(report
+        assert!(!report
             .capabilities
             .iter()
             .any(|value| value == TERROR_IMMEDIATE_ENTRY_CAPABILITY));
@@ -8093,7 +7450,7 @@ mod tests {
         assert!(output_mpq
             .join("data/hd/global/sfx/audio_telemetry/runes/r01.flac")
             .is_file());
-        assert!(output_mpq
+        assert!(!output_mpq
             .join("data/hd/global/sfx/audio_telemetry/areas/a6.flac")
             .is_file());
         let misc_output = TsvTable::parse(
@@ -8138,7 +7495,7 @@ mod tests {
             heartbeat["dependencies"]["particles"][0]["path"],
             "data/hd/vfx2/custom-preserved.particles"
         );
-        assert!(output_mpq
+        assert!(!output_mpq
             .join("data/global/music/audio_telemetry/frontend/music_options.flac")
             .is_file());
         assert!(Path::new(&report.mod_directory)
@@ -8161,6 +7518,9 @@ mod tests {
             include_audio_telemetry: true,
             include_room_tools: false,
             include_esc_next_game: false,
+            include_scene_shortcuts: false,
+            include_party_loot: false,
+            include_hostile_auto_restart: false,
             include_auto_exit_on_death: false,
         })
         .unwrap();
@@ -8202,12 +7562,15 @@ mod tests {
             include_audio_telemetry: true,
             include_room_tools: true,
             include_esc_next_game: true,
+            include_scene_shortcuts: false,
+            include_party_loot: false,
+            include_hostile_auto_restart: false,
             include_auto_exit_on_death: false,
         })
         .unwrap();
         assert_eq!(report.rune_assets.len(), RUNE_COUNT as usize);
         assert_eq!(report.item_assets.len(), 50);
-        assert_eq!(report.area_assets.len(), COUNTESS_AREA_IDS.len());
+        assert!(report.area_assets.is_empty());
         assert!(report
             .rune_assets
             .iter()
@@ -8247,6 +7610,9 @@ mod tests {
             include_audio_telemetry: true,
             include_room_tools: true,
             include_esc_next_game: true,
+            include_scene_shortcuts: false,
+            include_party_loot: false,
+            include_hostile_auto_restart: false,
             include_auto_exit_on_death: false,
         })
         .unwrap();
@@ -8254,8 +7620,8 @@ mod tests {
         assert!(!report.source_mod_copied);
         assert_eq!(report.rune_assets.len(), RUNE_COUNT as usize);
         assert_eq!(report.item_assets.len(), 50);
-        assert_eq!(report.area_assets.len(), COUNTESS_AREA_IDS.len());
-        assert!(!report.frontend_assets.is_empty());
+        assert!(report.area_assets.is_empty());
+        assert!(report.frontend_assets.is_empty());
         assert!(report
             .frontend_assets
             .iter()
@@ -8265,7 +7631,7 @@ mod tests {
 
     #[test]
     #[ignore = "requires D2RHUB_AUDIO_GAME_ROOT"]
-    fn validates_every_game_area_and_ambience_from_storage() {
+    fn validates_ocr_area_catalog_from_storage() {
         let game_root = std::env::var("D2RHUB_AUDIO_GAME_ROOT").unwrap();
         let storage = casc_core::Storage::open(&game_root).unwrap();
         let levels = TsvTable::parse(
@@ -8273,12 +7639,12 @@ mod tests {
             &read_casc_utf8(&storage, "data/global/excel/levels.txt").unwrap(),
         )
         .unwrap();
-        let sounds = TsvTable::parse(
+        let _sounds = TsvTable::parse(
             "sounds.txt",
             &read_casc_utf8(&storage, "data/global/excel/sounds.txt").unwrap(),
         )
         .unwrap();
-        let environments = TsvTable::parse(
+        let _environments = TsvTable::parse(
             "soundenviron.txt",
             &read_casc_utf8(&storage, "data/global/excel/soundenviron.txt").unwrap(),
         )
@@ -8296,17 +7662,5 @@ mod tests {
                 .scene_name,
             "外域荒原"
         );
-        let filenames =
-            collect_area_ambience_filenames(&levels, &environments, &sounds, &areas).unwrap();
-        assert_eq!(filenames.len(), areas.len());
-        for filename in filenames.values() {
-            let path = format!(
-                "data:data\\hd\\global\\sfx\\{}",
-                filename.replace('/', "\\")
-            );
-            storage
-                .read_n(&path, 32)
-                .unwrap_or_else(|error| panic!("missing {path}: {error}"));
-        }
     }
 }

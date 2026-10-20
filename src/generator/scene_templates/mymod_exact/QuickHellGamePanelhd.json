@@ -1,0 +1,23 @@
+{
+    "type": "MainMenuHDPanel",
+    "name": "QuickHellGamePanel",
+    "fields": {
+        "rect": {
+            "x": -9999,
+            "y": -9999,
+            "scale": 0.01
+        }
+    },
+    "children": [
+        {
+            "type": "TimerWidget",
+            "name": "Timer",
+            "fields": {
+                "time": -1,
+                "message": "CharacterSelect:LoadCharacter:2"
+            }
+        },
+{"type": "TimerWidget","name": "Timer111","fields":{"time": -1,"message": "PanelManager:UnloadPanel:CALL/helppanelonekey"}},
+{"type": "TimerWidget", "name": "TimerClose7Center", "fields": {"time": -1, "message": "PanelManager:UnloadPanel:QuickHellGamePanel"}},
+    ]
+}

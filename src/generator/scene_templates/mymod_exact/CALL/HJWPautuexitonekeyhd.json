@@ -1,0 +1,12 @@
+//小站一键地狱
+{
+  "type": "PausePanel", "name": "CALL/HJWPautuexitonekey",
+    "fields": {
+    },
+    "children": [        
+		{"type": "TimerWidget", "name": "TimerClose7Center", "fields": {"time": -1, "message": "PanelManager:OpenPanel:CALL/helppanelexit"}},
+		{"type": "TimerWidget", "name": "TimerClose7Center", "fields": {"time": -1, "message": "PanelManager:OpenPanel:QuickHellGamePanel"}},
+		{"type": "TimerWidget", "name": "TimerClose7Center", "fields": {"time": -1, "message": "PanelManager:UnloadPanel:CALL/HJWPautuexitonekey"}},
+		{"type": "TimerWidget", "name": "TimerClose7Center", "fields": {"time": -1, "message": "PanelManager:UnloadPanel:helppanel"}},
+    ]
+}

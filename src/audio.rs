@@ -1,7 +1,5 @@
 use claxon::FlacReader;
-use d2r_audio_protocol::catalog::{
-    area_definition, marker_sort_key, TelemetryMarker, MAX_AREA_ID, RUNE_COUNT, TRACKED_AREA_IDS,
-};
+use d2r_audio_protocol::catalog::{area_definition, marker_sort_key, TelemetryMarker, RUNE_COUNT};
 use d2r_audio_protocol::protocol::{
     detect_markers, embed_marker, interleaved_i32_to_mono, MarkerConfig, MIN_SAMPLE_RATE,
     PROTOCOL_VERSION,
@@ -73,36 +71,20 @@ fn marker_from_path(path: &Path) -> Option<TelemetryMarker> {
         return None;
     }
     let stem = path.file_stem()?.to_str()?;
-    if stem.eq_ignore_ascii_case("frontend") {
-        return Some(TelemetryMarker::Frontend);
-    }
-    let (kind, number) =
-        if let Some(number) = stem.strip_prefix('r').or_else(|| stem.strip_prefix('R')) {
-            ('r', number)
-        } else if let Some(number) = stem.strip_prefix('a').or_else(|| stem.strip_prefix('A')) {
-            ('a', number)
-        } else {
-            return None;
-        };
+    let number = stem.strip_prefix('r').or_else(|| stem.strip_prefix('R'))?;
     if number.is_empty() || number.len() > 3 || !number.bytes().all(|byte| byte.is_ascii_digit()) {
         return None;
     }
-    if kind == 'r' && number.starts_with('0') && number.len() != 2 {
+    if number.starts_with('0') && number.len() != 2 {
         return None;
     }
     let value = number.parse::<u32>().ok()?;
-    if kind == 'r' && number.starts_with('0') && value > 9 {
+    if number.starts_with('0') && value > 9 {
         return None;
     }
-    match kind {
-        'r' if (1..=RUNE_COUNT).contains(&value) => {
-            Some(TelemetryMarker::Rune { rune_number: value })
-        }
-        'a' if (1..=MAX_AREA_ID).contains(&value) && !number.starts_with('0') => {
-            Some(TelemetryMarker::Area { area_id: value })
-        }
-        _ => None,
-    }
+    (1..=RUNE_COUNT)
+        .contains(&value)
+        .then_some(TelemetryMarker::Rune { rune_number: value })
 }
 
 fn marker_label(marker: TelemetryMarker) -> String {
@@ -113,6 +95,7 @@ fn marker_label(marker: TelemetryMarker) -> String {
             .map(|area| format!("场景 {}（Area Id {area_id}）", area.scene_name))
             .unwrap_or_else(|| format!("场景 Area Id {area_id}")),
         TelemetryMarker::Frontend => "主界面".to_string(),
+        TelemetryMarker::Hostile => "敌对提示".to_string(),
     }
 }
 
@@ -317,9 +300,7 @@ pub fn process_directory(request: BatchRequest) -> Result<BatchReport, String> {
     }
     candidates.sort_by_key(|(marker, _)| marker_sort_key(*marker));
     if candidates.is_empty() {
-        return Err(
-            "目录中没有找到 r1.flac-r33.flac、受支持的 a{AreaId}.flac 或 frontend.flac".to_string(),
-        );
+        return Err("目录中没有找到 r1.flac-r33.flac；场景识别已改用 OCR".to_string());
     }
     for pair in candidates.windows(2) {
         if pair[0].0 == pair[1].0 {
@@ -336,29 +317,15 @@ pub fn process_directory(request: BatchRequest) -> Result<BatchReport, String> {
             TelemetryMarker::Rune { rune_number } => Some(*rune_number),
             TelemetryMarker::Item { .. }
             | TelemetryMarker::Area { .. }
-            | TelemetryMarker::Frontend => None,
+            | TelemetryMarker::Frontend
+            | TelemetryMarker::Hostile => None,
         })
         .collect();
     let missing_runes = (1..=RUNE_COUNT)
         .filter(|number| !present_runes.contains(number))
         .collect();
-    let present_areas: std::collections::HashSet<u32> = candidates
-        .iter()
-        .filter_map(|(marker, _)| match marker {
-            TelemetryMarker::Area { area_id } => Some(*area_id),
-            TelemetryMarker::Rune { .. }
-            | TelemetryMarker::Item { .. }
-            | TelemetryMarker::Frontend => None,
-        })
-        .collect();
-    let missing_areas = TRACKED_AREA_IDS
-        .iter()
-        .copied()
-        .filter(|area_id| !present_areas.contains(area_id))
-        .collect();
-    let missing_frontend = !candidates
-        .iter()
-        .any(|(marker, _)| *marker == TelemetryMarker::Frontend);
+    let missing_areas = Vec::new();
+    let missing_frontend = false;
     let mut processed = Vec::new();
     for (marker, source_path) in candidates {
         let output_path = output_directory.join(
@@ -398,7 +365,7 @@ mod tests {
     use std::path::Path;
 
     #[test]
-    fn recognizes_rune_and_catalog_area_file_names() {
+    fn recognizes_only_rune_files_and_ignores_legacy_scene_inputs() {
         assert_eq!(
             marker_from_path(Path::new("r1.flac")),
             Some(TelemetryMarker::Rune { rune_number: 1 })
@@ -415,26 +382,14 @@ mod tests {
             marker_from_path(Path::new("R09.FLAC")),
             Some(TelemetryMarker::Rune { rune_number: 9 })
         );
-        assert_eq!(
-            marker_from_path(Path::new("a1.flac")),
-            Some(TelemetryMarker::Area { area_id: 1 })
-        );
-        assert_eq!(
-            marker_from_path(Path::new("A25.FLAC")),
-            Some(TelemetryMarker::Area { area_id: 25 })
-        );
-        assert_eq!(
-            marker_from_path(Path::new("a20.flac")),
-            Some(TelemetryMarker::Area { area_id: 20 })
-        );
+        assert_eq!(marker_from_path(Path::new("a1.flac")), None);
+        assert_eq!(marker_from_path(Path::new("A25.FLAC")), None);
+        assert_eq!(marker_from_path(Path::new("a20.flac")), None);
         assert_eq!(marker_from_path(Path::new("a01.flac")), None);
         assert_eq!(marker_from_path(Path::new("r010.flac")), None);
         assert_eq!(marker_from_path(Path::new("r34.flac")), None);
         assert_eq!(marker_from_path(Path::new("rune1.flac")), None);
-        assert_eq!(
-            marker_from_path(Path::new("FrontEnd.FLAC")),
-            Some(TelemetryMarker::Frontend)
-        );
+        assert_eq!(marker_from_path(Path::new("FrontEnd.FLAC")), None);
         assert_eq!(marker_from_path(Path::new("r1.wav")), None);
     }
 
@@ -477,9 +432,9 @@ mod tests {
         })
         .unwrap();
 
-        assert_eq!(report.processed.len(), 4);
+        assert_eq!(report.processed.len(), 2);
         assert_eq!(report.missing_runes.len(), 31);
-        assert_eq!(report.missing_areas.len(), 6);
+        assert!(report.missing_areas.is_empty());
         assert!(!report.missing_frontend);
         assert_eq!(
             report.processed[0].marker,
@@ -489,11 +444,12 @@ mod tests {
             report.processed[1].marker,
             TelemetryMarker::Rune { rune_number: 33 }
         );
-        assert_eq!(
-            report.processed[2].marker,
-            TelemetryMarker::Area { area_id: 21 }
-        );
-        assert_eq!(report.processed[3].marker, TelemetryMarker::Frontend);
+        assert!(!Path::new(&report.output_directory)
+            .join("a21.flac")
+            .exists());
+        assert!(!Path::new(&report.output_directory)
+            .join("frontend.flac")
+            .exists());
         assert!(report.processed.iter().all(|item| item.confidence > 0.8));
         assert!(report
             .processed

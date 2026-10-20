@@ -1,0 +1,10 @@
+//一键地狱
+{
+  "type": "Panel", "name": "CALL/helppanelonekey",
+    "fields": {
+    },
+    "children": [        
+        {"type": "TimerWidget", "name": "TimerClose7Center", "fields": {"time": -1, "message": "PanelManager:OpenPanel:QuickHellGamePanel"}},
+        {"type": "TimerWidget","name": "Timer111","fields":{"time": -1,"message": "PanelManager:UnloadPanel:CALL/helppanelonekey"}},
+    ]
+}

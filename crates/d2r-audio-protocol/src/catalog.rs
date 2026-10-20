@@ -17,6 +17,7 @@ pub enum TelemetryMarker {
     Item { item_id: u32 },
     Area { area_id: u32 },
     Frontend,
+    Hostile,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -151,7 +152,7 @@ pub fn validate_marker(marker: TelemetryMarker) -> Result<(), String> {
         TelemetryMarker::Item { .. } => Err(format!("物品编号必须位于 1-{MAX_ITEM_ID}")),
         TelemetryMarker::Area { area_id } if (1..=MAX_AREA_ID).contains(&area_id) => Ok(()),
         TelemetryMarker::Area { .. } => Err(format!("Area Id 必须位于 1-{MAX_AREA_ID}")),
-        TelemetryMarker::Frontend => Ok(()),
+        TelemetryMarker::Frontend | TelemetryMarker::Hostile => Ok(()),
     }
 }
 
@@ -161,6 +162,7 @@ pub fn marker_sort_key(marker: TelemetryMarker) -> u32 {
         TelemetryMarker::Item { item_id } => 100 + item_id,
         TelemetryMarker::Area { area_id } => 1_000 + area_id,
         TelemetryMarker::Frontend => u32::MAX,
+        TelemetryMarker::Hostile => u32::MAX - 1,
     }
 }
 
@@ -233,7 +235,8 @@ impl LocationCatalog {
             TelemetryMarker::Rune { .. }
             | TelemetryMarker::Item { .. }
             | TelemetryMarker::Area { .. }
-            | TelemetryMarker::Frontend => None,
+            | TelemetryMarker::Frontend
+            | TelemetryMarker::Hostile => None,
         }
     }
 }

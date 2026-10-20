@@ -2,3 +2,6 @@
 **/target/
 __pycache__/
 *.py[cod]
+
+# Standalone library tests generate a local lock; the processor uses the root lock.
+/crates/d2r-audio-protocol/Cargo.lock

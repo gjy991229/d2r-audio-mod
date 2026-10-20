@@ -8,6 +8,10 @@ the original waypoint table are backed up in the generated Mod. It does not
 apply Hub room naming rules. Static validation is covered; actual in-game
 landing behavior remains experimental.
 
+The embedded `src/generator/scene_templates/mymod_exact/` files are byte-exact
+reference snapshots. Git attributes preserve their original line endings and
+whitespace; do not autoformat them, since that changes the validator digests.
+
 The sections below describe earlier iterations and their corrections; r1
 timer values and removed toolbar entries are not the current recipe.
 

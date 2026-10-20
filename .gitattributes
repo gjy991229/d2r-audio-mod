@@ -1,0 +1,3 @@
+# Frozen reference layouts are validated by byte digest. Retain source line
+# endings and whitespace instead of applying checkout/format normalization.
+src/generator/scene_templates/mymod_exact/** -text -whitespace

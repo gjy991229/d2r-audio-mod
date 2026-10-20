@@ -6,6 +6,8 @@
 
 ## 当前开发变更
 
+- 整体成品配方 r26、声纹组 r4：只加工掉落声音并输出完整 OCR 地区目录，不生成地区、TZ 或主界面声音；旧场景声纹成品须从原始来源重做。
+- 新增可选敌对重开、玩家尸体拾取按钮和实验性场景重开，默认 `all` 仍仅包含 audio + rooms。
 - MPQ 解压、恢复与验证工具保留。
 - 创建保留原 10ms 打开暂停、50ms 退出/提交/关闭，并默认地狱。
 - 房间模块 r33：加入按钮和回车直接发送 `JoinGame:JoinGame`，没有退出中转。
@@ -45,9 +47,9 @@
 - **生成的 MOD 名称**：默认 `D2RAudioTelemetry`，只使用英文字母、数字、`-`、`_`。
 - **输出目录**：选择游戏安装目录中的 `mods` 文件夹最省心；如果选择游戏安装目录本身，界面会自动改为其 `mods` 子目录。
 
-独立 GUI 仍默认生成全区域声纹和局内房间工具；D2RHub 或命令行可用 `--features audio`、`--features rooms`、`--features esc-next-game`、`--features death-exit` 或逗号组合按需选择。`esc-next-game` 和 `death-exit` 均需显式选择，不包含在默认 `all` 中。r25 清单会按功能组记录独立版本和参数指纹。把 r25 成品作为新一轮来源时，声纹版本、协议、覆盖范围、类别、增益、目录及全部文件均一致才会直接复用，不重新编码或覆盖 FLAC。源 MOD 永远不会被覆盖。
+独立 GUI 默认生成掉落声纹、完整 OCR 地区目录和局内房间工具；D2RHub 或命令行可用 `--features audio`、`--features rooms`、`--features esc-next-game`、`--features hostile-restart`、`--features scene-shortcuts`、`--features party-loot`、`--features death-exit` 或逗号组合按需选择。双 Esc、敌对重开、场景重开、拾取按钮与死亡退房均需显式选择，不包含在默认 `all` 中。r26 清单按功能组记录独立版本和参数指纹。音频组 r4 不再生成地区、TZ、主界面声音，仅保留掉落，敌对提示由独立的 `hostile-restart` 模块处理；场景交给 D2RHub OCR。旧场景音成品必须从未加工原始来源重做，不能作为干净基线。相同新版声纹组在参数和全部文件校验一致时可以复用。源 MOD 永远不会被覆盖。
 
-选择 `rooms` 时只加入隐藏的创建/加入入口；选择 `esc-next-game` 才启用双击 Esc 下一局地狱，两者可以独立或组合使用。双击 Esc 复用原“下一局”控制器：正常退出当前房间，再用当前角色加载地狱难度。当前房间工具配方 r32 保留大厅与局内表单分离。大厅 `CreateGamePanel` / `JoinGamePanel` 恢复原生提交；局内按钮和键盘入口打开独立的 `D2RHubInGameCreateGame` / `D2RHubInGameJoinGame`，其回车、按钮与房间列表入口进入退出提交控制器。下一局、局内创建和加入参照 JCY Esc 快速重开：10ms 打开暂停菜单，50ms 按子节点顺序依次发送退出、加载/提交与关闭控制器，退出与提交使用相同时间，不再相隔 150ms。大厅不再触发局内暂停菜单。升级旧产物时恢复大厅提交入口，同时生成独立局内表单。
+选择 `rooms` 时只加入隐藏的创建/加入入口；选择 `esc-next-game` 才启用双击 Esc 下一局地狱，两者可独立或组合使用。当前房间工具 r33 保留大厅与局内表单分离：大厅恢复原生提交；局内创建通过 10ms 打开暂停、50ms 排队退出／创建／清理，默认地狱；局内加入的按钮和回车直接发送 `JoinGame:JoinGame`，不走退出控制器。独立双 Esc r4 保留暂停菜单的 0.5 秒接收窗口，超时后正常返回游戏。
 
 局内房间工具配方 r25 将 `pauselayouthd.json` 与 `pauselayoutgardenhd.json` 整份替换为从当前 D2R 游戏原版重建的布局，再注入房间工具。源 Mod 在这两份文件中的自定义外观、按钮、Esc 快捷行为、定时器和消息链均不再继承；独立模块 `esc-next-game` 在暂停菜单打开后启用 0.5 秒的隐藏 Esc 接收入口，触发下一局地狱；超时后 Esc 通过 `ReturnToGame` 返回游戏，点击其他原生菜单动作会先清除双击状态。加工 `rooms` 必须能读取有效的 D2R 游戏目录（含 `.build.info` 与 `Data`）；原版数据不可用时明确报错，不回退到源 Mod 的暂停布局。
 
@@ -59,7 +61,7 @@
 
 加工始终采用“新产物”策略：先把源 Mod 复制到事务临时目录，再对数据表和布局做结构化合并，全部验证通过后才一次性提交为另一个 Mod。源 Mod 永不改写；同名输出已存在时也不覆盖，而是生成 `-2`、`-3` 等新名称。源内容与 D2RHub 功能没有冲突时原样保留；对 D2RHub 必须拥有的声纹字段、具名布局节点、输入框焦点和安全键盘入口，只在新产物内以当前配方值更新。任何必需资源无法解析时整次加工失败并丢弃未完成产物，不留下半成品。
 
-加工现有 Mod 时不要求它包含完整游戏数据表。`misc.txt`、`sounds.txt`、`levels.txt` 与 `soundenviron.txt` 会逐个解析：源 Mod 提供的版本优先保留，缺失的文件才从 `--game` 指向的本机 D2R 数据中补齐。因此只改动少量数据表的轻量 Mod 也可以直接加工。
+加工现有 Mod 时不要求它包含完整游戏数据表。`misc.txt`、`sounds.txt` 与供 OCR 地区目录使用的 `levels.txt` 会逐个解析：源 Mod 提供的版本优先保留，缺失的文件才从 `--game` 指向的本机 D2R 数据中补齐。因此只改动少量数据表的轻量 Mod 也可以直接加工。
 
 这四张源 Mod 数据表兼容 UTF-8（含 BOM）、UTF-16 LE/BE、GBK/GB18030 与常见 Windows ANSI 编码。生成器只在内存中解码，绝不改写源 Mod；新 Mod 中实际加工的数据表统一输出为 UTF-8。
 
@@ -72,7 +74,7 @@ HD 实体、状态机、物品映射、地图本地化与 `modinfo.json` 优先�
 常用示例：
 
 ```powershell
-# 从本机游戏创建最小 Mod（默认全地图、全部类别）
+# 从本机游戏创建最小 Mod（默认完整 OCR 地区目录、全部掉落类别）
 d2r-audio-mod.exe minimal --game "C:\Program Files (x86)\Diablo II Resurrected"
 
 # 自定义生成名称；目录、.mpq 名称和 -mod 参数都会使用此名称
@@ -87,8 +89,8 @@ d2r-audio-mod.exe augment --source "D:\Mods\jcy.mpq" --track runes,keys,organs
 # 只生成局内房间工具，不生成任何声纹
 d2r-audio-mod.exe minimal --game "C:\Program Files (x86)\Diablo II Resurrected" --features rooms
 
-# 从已有 r22 声纹 Mod 补充房间工具；已验证且未变化的声纹直接复用
-d2r-audio-mod.exe augment --source "D:\Mods\MyAudioR22" --game "C:\Program Files (x86)\Diablo II Resurrected" --features rooms --name "MyAudioAndRooms"
+# 从当前 r26／声纹 r4 成品补充房间工具；已验证且未变化的声纹直接复用
+d2r-audio-mod.exe augment --source "D:\Mods\MyAudioR26" --game "C:\Program Files (x86)\Diablo II Resurrected" --features rooms --name "MyAudioAndRooms"
 
 # 只加入死亡后自动退房；不会生成声纹或房间工具
 d2r-audio-mod.exe minimal --game "C:\Program Files (x86)\Diablo II Resurrected" --features death-exit --name "DeathExitOnly"
@@ -106,19 +108,38 @@ r22 是独立功能组体系的起点。生成结果同时写入 `d2rhub-mod-man
 - `fingerprint`：标识该组已安装能力的配方参数；运行时启停状态不写入能力指纹。
 - `reused_from_source`：本次是否直接复用了已经完整核对的来源产物。
 
-加工是“增加或更新所选组”，不是删除未选择组。以当前 r25 成品为来源时，来源中未选择、但清单有效的其他功能组及其未知未来组会原样保留；因此继续增加新功能组时，不需要改变现有清单结构或重做无关组。
+加工是“增加或更新所选组”，不是删除未选择组。以当前 r26 成品为来源时，来源中未选择、但清单有效的其他功能组及其未知未来组会原样保留；因此继续增加新功能组时，不需要改变现有清单结构或重做无关组。
 
-r22 的声纹组仍使用旧的环境音首包配方；r23 将普通 Area 改为流式三连入场探针，并把 TZ 1023 明确定义为独立状态位；r24 的局内房间工具组 r20 进一步加固了暂停菜单焦点入口；r25 的声纹组 r3 会按原声音表音量预补偿区域背景声，避免统一的 255 声纹播放链路放大 A4 等区域的环境音，同时保持声纹本身的输出强度，局内房间工具组 r22 曾让重开、创建和加入都先经正常退出路径提交；房间组 r26 将该链限制在独立局内表单，并按 JCY 时序让退出与下一步动作在同一计时点依次提交，大厅恢复原生提交。请从原版或当初未经加工的原始 Mod 生成一个新名称的 r25 Mod，之后的二次加工才能安全复用未变化的组。
+r22–r25 是历史环境音场景配方。r26 不会把其残留场景／TZ／主界面声纹当作干净来源继续增补；应回到原版或未经加工的源 Mod 重新生成。当前 r4 声纹组参数和文件都一致时可复用，其他已知模块遇到未来版本或未知指纹时拒绝降级。生成器软件版本、整体成品配方和各功能组版本分别维护。
 
 ### 声纹复用判定
 
 声纹组只有在以下内容全部一致时才复用：声纹组配方版本、v7 协议、区域覆盖、跟踪类别、增益参数、区域/物品目录，以及清单声明的每个声纹文件。任一项缺失或变化都会拒绝复用。复用成功时不会重新编码、覆盖或用新空文件替换已有 FLAC；生成报告会把 `audio_telemetry.reused_from_source` 标为 `true`。
 
-如果只需要局内房间工具，应从原版或未加工 Mod 选择 `--features rooms`；产物不会生成声纹、区域目录或物品目录。如果以已有 r22 声纹 Mod 为来源再加入 `rooms`，原声纹会保留并复用，而不是被删除。
+如果只需要局内房间工具，应从原版或未加工 Mod 选择 `--features rooms`；产物不会生成声纹、区域目录或物品目录。如果以当前 r26／声纹 r4 成品为来源再加入 `rooms`，原声纹在完整校验通过后保留并复用；r22 旧声纹来源会拒绝增补。
 
 `--name` 只接受 ASCII 字母、数字、连字符和下划线，例如 `MyAudioMod` 或 `jcy-Audio`。若同名目录已存在，工具仍不会覆盖，而会自动生成 `-2`、`-3` 等后缀；请以本次输出的启动参数为准。
 
-加工扩展物品时，工具为每个代码克隆独立实体和状态机，并同步复制其普通/低配背包 sprite；这既保留模型与物品图标，也允许原本共用同一实体的物品使用不同声纹。主界面同时覆盖五幕前端场景、营火、选角循环、前端事件与选项音乐入口。
+加工扩展物品时，工具为每个代码克隆独立实体和状态机，并同步复制其普通/低配背包 sprite；这既保留模型与物品图标，也允许原本共用同一实体的物品使用不同声纹。当前不生成主界面声音，也不生成菜单结束场景的信号。
+
+## 新增独立模块
+
+| CLI 功能 | 功能组 | 行为与依赖 |
+| --- | --- | --- |
+| `hostile-restart` | `hostile_auto_restart` r1 | 保留敌对原音并加入 v7 控制标记 `type=11,id=1`；自动包含双 Esc。仅修改四条敌对声音映射，不依赖掉落或场景识别。 |
+| `party-loot` | `party_loot` r2 | 合并 MYMOD／JCY 的原生玩家行拾取按钮；其他来源增加独立列表。不模拟点击，不自动授予所有玩家权限。 |
+| `scene-shortcuts` | `scene_shortcuts` r7 | 使用参考面板链并同步第三、四幕小站映射；替换帮助页并保留备份。不使用 Hub 的房名密码，不代表任意地图传送。 |
+
+场景重开是实验模块，高清键鼠、已解锁小站等实际条件仍需游戏内验证。实现与各轮调整见 [场景重开说明](docs/scene-shortcuts.md)。旧版 r1–r6 的已知指纹支持重建升级；未知未来配方拒绝降级覆盖。
+
+```powershell
+# 只加工敌对提示与双 Esc
+.\target\release\d2r-audio-mod.exe minimal --game "C:\Diablo II Resurrected" --output "D:\ModBuild" --name HostileReview --features hostile-restart
+# 组合房间工具、场景重开与原生拾取按钮
+.\target\release\d2r-audio-mod.exe minimal --game "C:\Diablo II Resurrected" --output "D:\ModBuild" --name RoomTools --features "rooms,scene-shortcuts,party-loot"
+```
+
+在 Hub 中选择“同名加工源 Mod”时，生成器仍写入独立暂存目录，由 Hub 校验后保留原始备份并执行同名替换；生成器本身不会原位覆盖源目录。
 
 ## 仓库边界
 
@@ -133,7 +154,7 @@ r22 的声纹组仍使用旧的环境音首包配方；r23 将普通 Area 改为
 ```powershell
 git clone https://github.com/gjy991229/d2r-audio-mod.git
 Set-Location d2r-audio-mod
-cargo build --release --locked
+cargo build --locked --release --locked
 ```
 
 Windows 构建需要 Rust stable 的 MSVC 工具链、Visual Studio C++ Build Tools 与 Windows SDK。源代码自带协议实现，Cargo 会按锁文件下载依赖；构建不需要 D2RHub 仓库。生成 Mod 时仍需你自己的游戏安装或源 Mod 资源。
@@ -157,3 +178,14 @@ Double-click the executable for its standalone UI, or use `minimal` / `augment` 
 This processor ships inside D2RHub 0.9.112. Room-tools r33 keeps the create timing and submits joins through the native JoinGame message. Double-Esc r4 removes the persistent HUD receiver-close timer; see [the r33 contract](docs/room-tools-r33.md). Existing Mods must be regenerated and the game restarted. Audio protocol v7 and the overall r25 output format are unchanged. Build with `cargo build --release --locked` using Rust and the Windows MSVC build tools; see [protocol/](protocol/) for the receiver-independent audio specification.
 
 Diablo II: Resurrected and Battle.net are trademarks of Blizzard Entertainment. This is an unofficial project; the MIT license covers this repository's code, not Blizzard game resources or third-party Mod assets.
+
+常规验证包括生成器及独立协议 crate 的测试；依赖原始游戏资源的测试默认忽略，只显式运行时读取本地游戏数据。
+
+```powershell
+cargo fmt --all -- --check
+cargo clippy --locked --all-targets --all-features -- -D warnings
+cargo test --locked
+cargo test --manifest-path crates/d2r-audio-protocol/Cargo.toml
+```
+
+根目录 `Cargo.lock` 固定加工器依赖；独立协议库测试产生的局部锁文件只用于本机，不纳入源码。

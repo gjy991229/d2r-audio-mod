@@ -210,8 +210,8 @@ pub(super) fn install(
     std::fs::create_dir_all(table_path.parent().unwrap()).map_err(|e| e.to_string())?;
     std::fs::write(table_path, patched_table).map_err(|e| e.to_string())?;
     write_json_layout(root, HUD_WARNINGS_LAYOUT, &hud)?;
-    compatibility.push(AudioModCompatibility { target:"场景重开（实验）".into(), action:"add_scene_shortcuts".into(),
-        detail:"同步MYMOD第三、四幕小站列表映射，并直接使用已启用MYMOD的原始链路文件，保留文件名、面板名、消息、重复控件名与时序。帮助键重建，每次进房尝试传送崔凡克。HUD接入按MYMOD使用1秒卸载再启动传送；JCY的警告副本启动延至1秒。被替换布局有备份，实际组合效果需复测。".into() });
+    compatibility.push(AudioModCompatibility { target:"场景重开".into(), action:"add_scene_shortcuts".into(),
+        detail:"需在 A3、崔凡克或 A4 小站处重开或创房，使用游戏原生小站与房间消息链，无需图像识别。同步第三、四幕小站列表映射并保留参考面板时序；帮助键可触发下一局地狱，被替换的帮助页与布局均保留备份。".into() });
     Ok(())
 }
 #[cfg(test)]

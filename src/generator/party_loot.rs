@@ -153,7 +153,7 @@ pub(super) fn install(
     write_json_layout(root, file, &panel)?;
     write_json_layout(root, HUD_WARNINGS_LAYOUT, &hud)?;
     compatibility.push(AudioModCompatibility {target:"左侧玩家尸体拾取按钮".into(), action:"add_party_loot".into(),
-        detail:"使用游戏原生玩家行绑定和拾取权限按钮；点击某人的按钮切换该人的权限。仅高清键鼠界面，权限可用性由游戏决定。已有 MYMOD 或 JCY 列表原位合并，否则增加独立左侧列表。启动器立即执行，避免源 HUD 提前关闭导致按钮未加载。不绑定快捷键、不模拟点击。".into()});
+        detail:"使用游戏原生玩家行绑定和拾取权限按钮；点击某人的按钮切换该人的权限，无需图像识别。仅高清键鼠界面，权限可用性由游戏决定。已有 MYMOD 或 JCY 列表原位合并，否则增加独立左侧列表。启动器立即执行，避免源 HUD 提前关闭导致按钮未加载。".into()});
     Ok(())
 }
 

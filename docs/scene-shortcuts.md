@@ -5,8 +5,9 @@ It embeds ten reference layouts and the Act 3/4 waypoint mapping used by the
 paired Hub validator. The help key starts the restart chain; the entry HUD
 attempts the arrival waypoint action after loading. Overwritten layouts and
 the original waypoint table are backed up in the generated Mod. It does not
-apply Hub room naming rules. Static validation is covered; actual in-game
-landing behavior remains experimental.
+apply Hub room naming rules. Restart or create a game at an A3, Travincal, or
+A4 waypoint. This module uses native game UI messages, without image recognition
+or OCR.
 
 The embedded `src/generator/scene_templates/mymod_exact/` files are byte-exact
 reference snapshots. Git attributes preserve their original line endings and

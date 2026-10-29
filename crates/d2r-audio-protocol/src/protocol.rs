@@ -22,6 +22,7 @@ pub const MIN_SAMPLE_RATE: u32 = 44_100;
 const PACKET_MAGIC: u32 = 0b10;
 const TYPE_ITEM: u32 = 0b00;
 const TYPE_RUNE: u32 = 0b01;
+const TYPE_AREA: u32 = 0b10;
 const TYPE_FRONTEND: u32 = 0b11;
 const PAYLOAD_HEADER_BITS: usize = 14;
 const CRC_BITS: usize = 6;
@@ -67,6 +68,9 @@ pub struct Detection {
     pub marker: TelemetryMarker,
     pub confidence: f32,
     pub start_frame: u64,
+    /// Independently decoded copies at the physical packet repetition interval.
+    #[serde(default)]
+    pub repeated: bool,
 }
 
 fn m_sequence_63(feedback_mask: u8) -> [f32; PREAMBLE_CHIPS] {
@@ -165,9 +169,8 @@ fn encode_payload(marker: TelemetryMarker) -> Result<u32, String> {
     let (kind, id) = match marker {
         TelemetryMarker::Item { item_id } => (TYPE_ITEM, item_id),
         TelemetryMarker::Rune { rune_number } => (TYPE_RUNE, rune_number),
-        TelemetryMarker::Area { .. } | TelemetryMarker::Frontend => {
-            return Err("场景不再编码为声纹，请使用 OCR".into())
-        }
+        TelemetryMarker::Area { area_id } => (TYPE_AREA, area_id),
+        TelemetryMarker::Frontend => (TYPE_FRONTEND, 0),
         TelemetryMarker::Hostile => (TYPE_FRONTEND, 1),
     };
     let header = (PACKET_MAGIC << 12) | (kind << 10) | id;
@@ -184,6 +187,8 @@ fn decode_payload(payload: u32) -> Option<TelemetryMarker> {
     let marker = match kind {
         TYPE_ITEM => TelemetryMarker::Item { item_id: id },
         TYPE_RUNE => TelemetryMarker::Rune { rune_number: id },
+        TYPE_AREA => TelemetryMarker::Area { area_id: id },
+        TYPE_FRONTEND if id == 0 => TelemetryMarker::Frontend,
         TYPE_FRONTEND if id == 1 => TelemetryMarker::Hostile,
         _ => return None,
     };
@@ -511,6 +516,102 @@ fn decode_candidate(
     decode_payload(payload).map(|marker| (marker, bit_quality))
 }
 
+// Fit simultaneous Gold signatures before judging any one identity. All
+// thresholds below refer to identity evidence, never the shared preamble.
+fn separate_drop_signatures(
+    chip_i: &[f32; RUNE_SIGNATURE_CHIPS],
+    chip_q: &[f32; RUNE_SIGNATURE_CHIPS],
+    plan: &DetectorPlan,
+    threshold: f32,
+) -> Vec<(TelemetryMarker, f32)> {
+    const N: usize = RUNE_SIGNATURE_CHIPS;
+    const MAX_COMPONENTS: usize = 16;
+    let mut residual_i = *chip_i;
+    let mut residual_q = *chip_q;
+    let original_power: f32 = (0..N)
+        .map(|k| chip_i[k] * chip_i[k] + chip_q[k] * chip_q[k])
+        .sum();
+    if original_power / (N as f32) < 0.000_005f32.powi(2) {
+        return Vec::new();
+    }
+    let mut components: Vec<(usize, f32, f32)> = Vec::new();
+    for _ in 0..MAX_COMPONENTS {
+        let power: f32 = (0..N)
+            .map(|k| residual_i[k].powi(2) + residual_q[k].powi(2))
+            .sum();
+        // Do not promote numerical cancellation residue to a new identity.
+        if power < original_power * 0.0001 {
+            break;
+        }
+        let mut best = (0, 0.0f32, 0.0f32, 0.0f32);
+        for (index, code) in plan.rune_signatures.iter().enumerate() {
+            if components.iter().any(|c| c.0 == index) {
+                continue;
+            }
+            let i: f32 = (0..N).map(|k| code[k] * residual_i[k]).sum();
+            let q: f32 = (0..N).map(|k| code[k] * residual_q[k]).sum();
+            let score = (i * i + q * q) / (N as f32 * power);
+            if score > best.3 {
+                best = (index, i / N as f32, q / N as f32, score);
+            }
+        }
+        // This is candidate admission only. Each fitted component still has
+        // to pass full-length and two independent temporal-support checks.
+        if best.3 < 0.24f32.powi(2) {
+            break;
+        }
+        components.push((best.0, 0.0, 0.0));
+        // Coordinate least squares removes cross-talk between nonorthogonal
+        // Gold codes instead of treating the first subtraction as exact.
+        for _ in 0..6 {
+            for component in &mut components {
+                let code = &plan.rune_signatures[component.0];
+                let di = (0..N).map(|k| code[k] * residual_i[k]).sum::<f32>() / N as f32;
+                let dq = (0..N).map(|k| code[k] * residual_q[k]).sum::<f32>() / N as f32;
+                component.1 += di;
+                component.2 += dq;
+                for k in 0..N {
+                    residual_i[k] -= di * code[k];
+                    residual_q[k] -= dq * code[k];
+                }
+            }
+        }
+    }
+    components
+        .iter()
+        .filter_map(|&(index, ai, aq)| {
+            let code = &plan.rune_signatures[index];
+            let mut correlations = [(0.0f32, 0.0f32, 0.0f32); 2];
+            for k in 0..N {
+                let i = residual_i[k] + ai * code[k];
+                let q = residual_q[k] + aq * code[k];
+                let part = usize::from(k >= N / 2);
+                correlations[part].0 += code[k] * i;
+                correlations[part].1 += code[k] * q;
+                correlations[part].2 += i * i + q * q;
+            }
+            let [(i0, q0, p0), (i1, q1, p1)] = correlations;
+            let a0 = i0.hypot(q0);
+            let a1 = i1.hypot(q1);
+            let score = (i0 + i1).hypot(q0 + q1) / (N as f32 * (p0 + p1)).sqrt();
+            let first = a0 / ((N / 2) as f32 * p0).sqrt();
+            let second = a1 / ((N - N / 2) as f32 * p1).sqrt();
+            let phase_agreement = (i0 * i1 + q0 * q1) / (a0 * a1);
+            // A localized burst, a side lobe or an unrelated phase in one half
+            // must not become a high-confidence rune after a strong sync header.
+            (score >= threshold.max(0.56)
+                && first >= 0.40
+                && second >= 0.40
+                && phase_agreement >= 0.5
+                && N as f32 * (ai * ai + aq * aq) >= original_power * 0.0001)
+                .then(|| {
+                    marker_from_drop_signature(index as u32 + 1)
+                        .map(|marker| (marker, score.min(1.0)))
+                })?
+        })
+        .collect()
+}
+
 fn decode_rune_signatures(
     demod_i: &[f32],
     demod_q: &[f32],
@@ -540,27 +641,185 @@ fn decode_rune_signatures(
         return Vec::new();
     }
 
-    let signature_threshold = (threshold * 0.48).clamp(0.24, 0.44);
-    (1..=DROP_SIGNATURE_COUNT as u32)
-        .filter_map(|signature_number| {
-            let signature = &plan.rune_signatures[signature_number as usize - 1];
-            let mut correlation_i = 0.0f32;
-            let mut correlation_q = 0.0f32;
-            for chip_index in 0..RUNE_SIGNATURE_CHIPS {
-                correlation_i += signature[chip_index] * chip_i[chip_index];
-                correlation_q += signature[chip_index] * chip_q[chip_index];
-            }
-            let confidence = (correlation_i * correlation_i + correlation_q * correlation_q).sqrt()
-                / (RUNE_SIGNATURE_CHIPS as f32 * carrier_level);
-            (confidence >= signature_threshold).then(|| {
-                marker_from_drop_signature(signature_number)
-                    .map(|marker| (marker, confidence.min(1.0)))
-            })?
-        })
-        .collect()
+    separate_drop_signatures(&chip_i, &chip_q, plan, threshold)
+}
+
+// Estimate carrier phase and gain from the received samples, not from the
+// configured embedding gain (game volume and resampling change both).
+fn fit_drop_segment(
+    samples: &[f32],
+    plan: &DetectorPlan,
+    start: usize,
+    code: &[f32],
+    frequency: f32,
+) -> (f32, f32, f32) {
+    let mut ss = 0.0;
+    let mut cc = 0.0;
+    let mut sc = 0.0;
+    let mut ys = 0.0;
+    let mut yc = 0.0;
+    let mut yy = 0.0;
+    let mut chip_s = 0.0;
+    let mut chip_c = 0.0;
+    let mut chip_power = 0.0;
+    for (k, &sample) in samples[start..start + code.len() * plan.chip_len]
+        .iter()
+        .enumerate()
+    {
+        let envelope = plan.chip_weights[k % plan.chip_len] * code[k / plan.chip_len];
+        let (sin, cos) =
+            (std::f32::consts::TAU * frequency * k as f32 / plan.sample_rate as f32).sin_cos();
+        let s = envelope * sin;
+        let c = envelope * cos;
+        ss += s * s;
+        cc += c * c;
+        sc += s * c;
+        ys += sample * s;
+        yc += sample * c;
+        yy += sample * sample;
+        chip_s += sample * s;
+        chip_c += sample * c;
+        if (k + 1) % plan.chip_len == 0 {
+            chip_power += chip_s * chip_s + chip_c * chip_c;
+            chip_s = 0.0;
+            chip_c = 0.0;
+        }
+    }
+    let determinant = ss * cc - sc * sc;
+    if determinant <= 1e-12 || yy <= 1e-16 {
+        return (0.0, 0.0, 0.0);
+    }
+    let a = (ys * cc - yc * sc) / determinant;
+    let b = (yc * ss - ys * sc) / determinant;
+    (
+        a,
+        b,
+        ((ys * ys + yc * yc) / (code.len() as f32 * chip_power).max(1e-20)).sqrt(),
+    )
+}
+
+fn cancel_drop_packet(samples: &mut [f32], plan: &DetectorPlan, detection: &Detection) -> bool {
+    let Some(id) = drop_signature_number(detection.marker) else {
+        return false;
+    };
+    let code = &plan.rune_signatures[id as usize - 1];
+    let nominal = detection.start_frame as usize;
+    let begin = nominal.saturating_sub(plan.step);
+    let end = (nominal + plan.step).min(samples.len() - plan.packet_len);
+    let mut best = (nominal, 0.0f32);
+    for start in begin..=end {
+        let (_, _, quality) = fit_drop_segment(
+            samples,
+            plan,
+            start + plan.payload_offset,
+            code,
+            RUNE_SIGNATURE_CARRIER_HZ,
+        );
+        if quality > best.1 {
+            best = (start, quality);
+        }
+    }
+    // Require strong identity evidence before cancellation. Broadband energy
+    // is not a rejection gate: loud low-frequency game audio is orthogonal
+    // to this template and must not block recovery of a high-frequency packet.
+    if best.1 < 0.66 || detection.confidence < 0.66 {
+        return false;
+    }
+    for (offset, code, carrier) in [
+        (0, plan.rune_code.as_slice(), PREAMBLE_CARRIER_HZ),
+        (
+            plan.payload_offset,
+            code.as_slice(),
+            RUNE_SIGNATURE_CARRIER_HZ,
+        ),
+    ] {
+        let start = best.0 + offset;
+        let (a, b, _) = fit_drop_segment(samples, plan, start, code, carrier);
+        for k in 0..code.len() * plan.chip_len {
+            let envelope = plan.chip_weights[k % plan.chip_len] * code[k / plan.chip_len];
+            let (sin, cos) =
+                (std::f32::consts::TAU * carrier * k as f32 / plan.sample_rate as f32).sin_cos();
+            samples[start + k] -= envelope * (a * sin + b * cos);
+        }
+    }
+    true
 }
 
 fn detect_ready_samples(samples: &[f32], plan: &DetectorPlan, threshold: f32) -> Vec<Detection> {
+    let mut detections = detect_pass(samples, plan, threshold);
+    if !detections
+        .iter()
+        .any(|d| drop_signature_number(d.marker).is_some())
+    {
+        return detections;
+    }
+    let mut residual = samples.to_vec();
+    let mut cancelled = Vec::<(TelemetryMarker, u64)>::new();
+    for _ in 0..8 {
+        let mut changed = false;
+        let mut strongest: Vec<_> = detections
+            .iter()
+            .filter(|d| drop_signature_number(d.marker).is_some())
+            .collect();
+        strongest.sort_by(|a, b| b.confidence.total_cmp(&a.confidence));
+        for detection in strongest {
+            // Both physical repetitions can mask another drop. They are
+            // separate cancellation targets but still one emitted event.
+            let stride =
+                (plan.packet_len + seconds_frames(plan.sample_rate, PACKET_GAP_SECONDS)) as u64;
+            for start in [
+                Some(detection.start_frame),
+                detection.start_frame.checked_sub(stride),
+                detection.start_frame.checked_add(stride),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                if start as usize + plan.packet_len > residual.len()
+                    || cancelled.iter().any(|(marker, at)| {
+                        *marker == detection.marker && at.abs_diff(start) < plan.chip_len as u64
+                    })
+                {
+                    continue;
+                }
+                let packet = Detection {
+                    marker: detection.marker,
+                    confidence: detection.confidence,
+                    start_frame: start,
+                    repeated: false,
+                };
+                if cancel_drop_packet(&mut residual, plan, &packet) {
+                    cancelled.push((packet.marker, start));
+                    changed = true;
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+        let recovered = detect_pass(&residual, plan, threshold);
+        let mut added = false;
+        for detection in recovered {
+            if drop_signature_number(detection.marker).is_none() {
+                continue;
+            }
+            if !detections.iter().any(|d| {
+                d.marker == detection.marker
+                    && d.start_frame.abs_diff(detection.start_frame) < plan.marker_len as u64
+            }) {
+                detections.push(detection);
+                added = true;
+            }
+        }
+        if !added {
+            break;
+        }
+    }
+    detections.sort_by_key(|d| d.start_frame);
+    detections
+}
+
+fn detect_pass(samples: &[f32], plan: &DetectorPlan, threshold: f32) -> Vec<Detection> {
     if samples.len() < plan.packet_len {
         return Vec::new();
     }
@@ -609,12 +868,18 @@ fn detect_ready_samples(samples: &[f32], plan: &DetectorPlan, threshold: f32) ->
         }
         if control_preamble_confidence >= threshold {
             if let Some((marker, bit_quality)) = decode_candidate(samples, plan, start) {
-                if marker == TelemetryMarker::Hostile {
+                if matches!(
+                    marker,
+                    TelemetryMarker::Hostile
+                        | TelemetryMarker::Area { .. }
+                        | TelemetryMarker::Frontend
+                ) {
                     raw.push(Detection {
                         marker,
                         confidence: (control_preamble_confidence * 0.75 + bit_quality * 0.25)
                             .min(1.0),
                         start_frame: start as u64,
+                        repeated: false,
                     });
                 }
             }
@@ -623,13 +888,13 @@ fn detect_ready_samples(samples: &[f32], plan: &DetectorPlan, threshold: f32) ->
             for (marker, signature_confidence) in
                 decode_rune_signatures(&signature_i, &signature_q, plan, start, threshold)
             {
-                let confidence =
-                    (rune_preamble_confidence * 0.60 + signature_confidence * 0.40).min(1.0);
+                let confidence = rune_preamble_confidence.min(signature_confidence).min(1.0);
                 if confidence >= threshold {
                     raw.push(Detection {
                         marker,
                         confidence,
                         start_frame: start as u64,
+                        repeated: false,
                     });
                 }
             }
@@ -644,7 +909,20 @@ fn detect_ready_samples(samples: &[f32], plan: &DetectorPlan, threshold: f32) ->
     });
     let suppression_radius = plan.marker_len as u64;
     let mut selected: Vec<Detection> = Vec::new();
-    for detection in raw {
+    let stride = (plan.packet_len + seconds_frames(plan.sample_rate, PACKET_GAP_SECONDS)) as u64;
+    let paired: Vec<bool> = raw
+        .iter()
+        .map(|d| {
+            drop_signature_number(d.marker).is_some()
+                && raw.iter().any(|other| {
+                    other.marker == d.marker
+                        && other.start_frame.abs_diff(d.start_frame).abs_diff(stride)
+                            <= plan.step as u64 * 2
+                })
+        })
+        .collect();
+    for (mut detection, repeated) in raw.into_iter().zip(paired) {
+        detection.repeated = repeated;
         let duplicate = selected.iter().any(|existing| {
             existing.marker == detection.marker
                 && existing.start_frame.abs_diff(detection.start_frame) < suppression_radius
@@ -657,14 +935,15 @@ fn detect_ready_samples(samples: &[f32], plan: &DetectorPlan, threshold: f32) ->
     selected
 }
 
-/// Incremental detector. CRC validation and packet-level NMS prevent ordinary
-/// game audio and the protocol's second copy from becoming logical events.
+/// Incremental detector. Control packets use CRC; drops use separated Gold
+/// signatures with temporal support checks. NMS deduplicates repeated packets.
 pub struct StreamingDetector {
     plan: DetectorPlan,
     threshold: f32,
     buffer: Vec<f32>,
     buffer_start_frame: u64,
     last_detections: HashMap<TelemetryMarker, u64>,
+    pending_confirmation: HashMap<TelemetryMarker, u64>,
 }
 
 impl StreamingDetector {
@@ -681,6 +960,7 @@ impl StreamingDetector {
             buffer: Vec::new(),
             buffer_start_frame: 0,
             last_detections: HashMap::new(),
+            pending_confirmation: HashMap::new(),
         })
     }
 
@@ -691,7 +971,10 @@ impl StreamingDetector {
         }
         let max_start = self.buffer.len() - self.plan.packet_len;
         let candidate_count = max_start / self.plan.step + 1;
-        let consumed_frames = candidate_count * self.plan.step;
+        // Retain a full extra packet for cancellation and repetition evidence
+        // across capture boundaries; this does not delay strong detections.
+        let history_steps = self.plan.packet_len.div_ceil(self.plan.step);
+        let consumed_frames = candidate_count.saturating_sub(history_steps) * self.plan.step;
         let mut detections = detect_ready_samples(&self.buffer, &self.plan, self.threshold);
         for detection in &mut detections {
             detection.start_frame += self.buffer_start_frame;
@@ -699,7 +982,23 @@ impl StreamingDetector {
         self.buffer.drain(..consumed_frames);
         self.buffer_start_frame += consumed_frames as u64;
 
-        detections.retain(|detection| {
+        detections.retain_mut(|detection| {
+            let stride = (self.plan.packet_len
+                + seconds_frames(self.plan.sample_rate, PACKET_GAP_SECONDS))
+                as u64;
+            let paired = self
+                .pending_confirmation
+                .get(&detection.marker)
+                .is_some_and(|first| {
+                    let gap = detection.start_frame.abs_diff(*first);
+                    (detection.start_frame > *first
+                        && gap.abs_diff(stride) <= self.plan.step as u64 * 2)
+                        || (detection.repeated && gap <= self.plan.step as u64 * 2)
+                });
+            if paired {
+                detection.repeated = true;
+                self.pending_confirmation.remove(&detection.marker);
+            }
             let duplicate = self
                 .last_detections
                 .get(&detection.marker)
@@ -710,7 +1009,15 @@ impl StreamingDetector {
                 self.last_detections
                     .insert(detection.marker, detection.start_frame);
             }
-            !duplicate
+            if !duplicate && drop_signature_number(detection.marker).is_some() {
+                if !detection.repeated && detection.confidence < 0.66 {
+                    self.pending_confirmation
+                        .insert(detection.marker, detection.start_frame);
+                } else {
+                    self.pending_confirmation.remove(&detection.marker);
+                }
+            }
+            !duplicate || paired
         });
         detections
     }
@@ -793,17 +1100,32 @@ mod tests {
     }
 
     #[test]
-    fn scene_audio_payloads_are_disabled_even_with_valid_legacy_crc() {
+    fn scene_audio_payloads_round_trip() {
         for marker in [
             TelemetryMarker::Area { area_id: 1 },
             TelemetryMarker::Area { area_id: 1023 },
             TelemetryMarker::Frontend,
         ] {
-            assert!(encode_payload(marker).is_err());
+            assert_eq!(
+                decode_payload(encode_payload(marker).unwrap()),
+                Some(marker)
+            );
         }
-        for (kind, id) in [(0b10, 1), (0b10, 1023), (TYPE_FRONTEND, 0)] {
-            let header = (PACKET_MAGIC << 12) | (kind << 10) | id;
-            assert_eq!(decode_payload((header << CRC_BITS) | crc6(header)), None);
+    }
+    #[test]
+    fn area_audio_survives_stream_boundaries() {
+        for marker in [
+            TelemetryMarker::Area { area_id: 6 },
+            TelemetryMarker::Area { area_id: 104 },
+        ] {
+            let signal = tagged(marker, 48_000, -26.0);
+            let mut detector = StreamingDetector::new(48_000, 0.50).unwrap();
+            let detections: Vec<_> = signal
+                .chunks(997)
+                .flat_map(|chunk| detector.push(chunk))
+                .collect();
+            assert_eq!(detections.len(), 1);
+            assert_eq!(detections[0].marker, marker);
         }
     }
     #[test]
@@ -1219,9 +1541,123 @@ mod tests {
         let mut detections = Vec::new();
         for chunk in signal.chunks(997) {
             detections.extend(detector.push(chunk));
-            assert!(detector.buffered_frames() < packet_frames(48_000) + 997);
+            assert!(detector.buffered_frames() < 2 * packet_frames(48_000) + 997);
         }
         assert_eq!(detections.len(), 1, "{detections:?}");
         assert_eq!(detections[0].marker, marker);
+    }
+    #[test]
+    fn all_runes_survive_a_twenty_db_stronger_drop() {
+        for rate in [44_100, 48_000] {
+            for number in 1..=33 {
+                let weak = tagged(rune(number), rate, -40.0);
+                let strong_marker = rune(number % 33 + 1);
+                let strong = tagged(strong_marker, rate, -20.0);
+                let mixed: Vec<_> = weak.iter().zip(strong).map(|(a, b)| a + b).collect();
+                let found: std::collections::HashSet<_> = detect_markers(&mixed, rate, 0.56)
+                    .into_iter()
+                    .map(|d| d.marker)
+                    .collect();
+                assert_eq!(
+                    found,
+                    [rune(number), strong_marker].into_iter().collect(),
+                    "rate={rate}, rune={number}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn asynchronous_25_28_32_with_noise_and_echo_have_no_extra_identities() {
+        let rate = 48_000;
+        for delay in [0, 9, 36, 177, 960, 2400] {
+            let mut mixed = vec![0.0; 24000];
+            for (number, offset, gain) in
+                [(25, 0, -32.0), (28, delay, -24.0), (32, delay * 2, -28.0)]
+            {
+                for (k, value) in tagged(rune(number), rate, gain).into_iter().enumerate() {
+                    mixed[k + offset] += value;
+                    mixed[k + offset + 72] += value * 0.25;
+                }
+            }
+            let mut state = 0x12345678u32;
+            for (k, value) in mixed.iter_mut().enumerate() {
+                state = state.wrapping_mul(1664525).wrapping_add(1013904223);
+                *value += (state as f64 / u32::MAX as f64 - 0.5) as f32 * 0.001
+                    + (std::f32::consts::TAU * 4700.0 * k as f32 / rate as f32).sin() * 0.05;
+            }
+            let mut detector = StreamingDetector::new(rate, 0.56).unwrap();
+            let detections: Vec<_> = mixed
+                .chunks(997)
+                .flat_map(|chunk| detector.push(chunk))
+                .collect();
+            for number in [25, 28, 32] {
+                let events: Vec<_> = detections
+                    .iter()
+                    .filter(|d| d.marker == rune(number))
+                    .collect();
+                assert!((1..=2).contains(&events.len()), "delay={delay}: {events:?}");
+                if events.len() == 2 {
+                    assert!(events[1].repeated);
+                }
+                assert!(
+                    events.iter().any(|d| d.confidence >= 0.66 || d.repeated),
+                    "no actionable evidence: delay={delay}: {events:?}"
+                );
+            }
+            let found: std::collections::HashSet<_> =
+                detections.into_iter().map(|d| d.marker).collect();
+            assert_eq!(
+                found,
+                [rune(25), rune(28), rune(32)].into_iter().collect(),
+                "delay={delay}"
+            );
+        }
+    }
+
+    #[test]
+    fn strong_sync_cannot_certify_noise_or_a_partial_identity() {
+        let rate = 48_000;
+        for number in [25, 28, 32] {
+            for keep_half in [false, true] {
+                let mut signal = tagged(rune(number), rate, -26.0);
+                let plan = DetectorPlan::new(rate);
+                let mut random = 0x98765432u32;
+                for packet in 0..PACKET_REPETITIONS {
+                    let start = marker_offset_frames(rate)
+                        + packet * (plan.packet_len + seconds_frames(rate, PACKET_GAP_SECONDS))
+                        + plan.payload_offset;
+                    for k in 0..RUNE_SIGNATURE_CHIPS * plan.chip_len {
+                        if !keep_half || k >= (RUNE_SIGNATURE_CHIPS / 2) * plan.chip_len {
+                            random = random.wrapping_mul(1664525).wrapping_add(1013904223);
+                            signal[start + k] =
+                                (random as f64 / u32::MAX as f64 - 0.5) as f32 * 0.05;
+                        }
+                    }
+                }
+                assert!(
+                    detect_markers(&signal, rate, 0.56).is_empty(),
+                    "rune={number}, half={keep_half}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn unstructured_signature_noise_does_not_fit_phantom_drops() {
+        let plan = DetectorPlan::new(48000);
+        let mut random = 0x12345678u32;
+        for trial in 0..1000 {
+            let mut i = [0.0; RUNE_SIGNATURE_CHIPS];
+            let mut q = i;
+            for value in i.iter_mut().chain(q.iter_mut()) {
+                random = random.wrapping_mul(1664525).wrapping_add(1013904223);
+                *value = (random as f64 / u32::MAX as f64 - 0.5) as f32;
+            }
+            assert!(
+                separate_drop_signatures(&i, &q, &plan, 0.56).is_empty(),
+                "trial={trial}"
+            );
+        }
     }
 }

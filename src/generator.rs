@@ -28,7 +28,7 @@ pub const AUDIO_MOD_RECIPE_VERSION: u32 = 26;
 pub const AUDIO_TELEMETRY_FEATURE_ID: &str = "audio_telemetry";
 pub const IN_GAME_ROOM_TOOLS_FEATURE_ID: &str = "in_game_room_tools";
 pub const AUTO_EXIT_ON_DEATH_FEATURE_ID: &str = "auto_exit_on_death";
-const AUDIO_TELEMETRY_FEATURE_RECIPE_VERSION: u32 = 4;
+const AUDIO_TELEMETRY_FEATURE_RECIPE_VERSION: u32 = 5;
 const IN_GAME_ROOM_TOOLS_FEATURE_RECIPE_VERSION: u32 = 33;
 pub const ESC_NEXT_GAME_FEATURE_ID: &str = "esc_next_game";
 const ESC_NEXT_GAME_CAPABILITY: &str = "esc_next_game_v1";
@@ -357,8 +357,154 @@ struct SoundDefinition {
     output_root: &'static str,
 }
 
+#[derive(Debug, Clone)]
+struct AreaAmbienceSource {
+    filename: String,
+    source_gain: f32,
+}
+
+fn patch_sound_environ_and_levels(
+    mut environments: TsvTable,
+    mut levels: TsvTable,
+    areas: &[AreaCatalogEntry],
+) -> Result<(TsvTable, TsvTable), String> {
+    let level_id = levels.column("Id")?;
+    let level_environment = levels.column("SoundEnv")?;
+    let environment_index = environments.column("Index")?;
+    let mut next_index = environments.max_number("Index")? + 1;
+    let area_lookup = areas
+        .iter()
+        .map(|area| (area.area_id, area))
+        .collect::<HashMap<_, _>>();
+
+    for level_row in &mut levels.rows {
+        let Some(area_id) = level_row[level_id].trim().parse::<u32>().ok() else {
+            continue;
+        };
+        if !area_lookup.contains_key(&area_id) {
+            continue;
+        }
+        let original_id = level_row[level_environment].trim();
+        let mut row = environments
+            .rows
+            .iter()
+            .find(|row| row[environment_index].trim() == original_id)
+            .cloned()
+            .ok_or_else(|| {
+                format!(
+                    "soundenviron.txt 缺少 levels.txt Area {area_id} 使用的 Index={original_id}"
+                )
+            })?;
+        environments.set(
+            &mut row,
+            "Handle",
+            format!("ESOUNDENVIRON_AUDIO_TELEMETRY_A{area_id}"),
+        )?;
+        environments.set(&mut row, "Index", next_index.to_string())?;
+        let sound = format!("audio_telemetry_a{area_id}");
+        for column in [
+            "Day Ambience",
+            "HD Day Ambience",
+            "Night Ambience",
+            "HD Night Ambience",
+        ] {
+            environments.set(&mut row, column, &sound)?;
+        }
+        environments.rows.push(row);
+        level_row[level_environment] = next_index.to_string();
+        next_index += 1;
+    }
+
+    Ok((environments, levels))
+}
+fn resolve_area_ambience_source(
+    sounds: &TsvTable,
+    sound_name: &str,
+) -> Result<AreaAmbienceSource, String> {
+    let sound_column = sounds.column("Sound")?;
+    let filename_column = sounds.column("FileName")?;
+    let volume_max_column = sounds.column("Volume Max")?;
+    let redirect_column = sounds.column("Redirect").ok();
+    let mut current = sound_name.to_string();
+    for _ in 0..8 {
+        let row = sounds
+            .rows
+            .iter()
+            .find(|row| row[sound_column].eq_ignore_ascii_case(&current))
+            .ok_or_else(|| format!("sounds.txt 缺少持续环境音 {current}"))?;
+        if let Some(redirect) = redirect_column
+            .and_then(|index| row.get(index))
+            .map(String::as_str)
+            .filter(|value| !value.trim().is_empty())
+        {
+            current = redirect.to_string();
+            continue;
+        }
+        let volume_max = row[volume_max_column]
+            .trim()
+            .parse::<f32>()
+            .map_err(|error| {
+                format!(
+                    "持续环境音 {current} 的 Volume Max 不是有效数字 {:?}: {error}",
+                    row[volume_max_column]
+                )
+            })?;
+        if !volume_max.is_finite() || !(0.0..=255.0).contains(&volume_max) {
+            return Err(format!(
+                "持续环境音 {current} 的 Volume Max 必须位于 0-255，收到 {volume_max}"
+            ));
+        }
+        return Ok(AreaAmbienceSource {
+            filename: row[filename_column].clone(),
+            source_gain: volume_max / 255.0,
+        });
+    }
+    Err(format!("持续环境音 {sound_name} 的 Redirect 链超过 8 层"))
+}
+fn collect_area_ambience_sources(
+    levels: &TsvTable,
+    environments: &TsvTable,
+    sounds: &TsvTable,
+    areas: &[AreaCatalogEntry],
+) -> Result<HashMap<u32, AreaAmbienceSource>, String> {
+    let level_id = levels.column("Id")?;
+    let level_environment = levels.column("SoundEnv")?;
+    let environment_index = environments.column("Index")?;
+    let hd_day = environments.column("HD Day Ambience")?;
+    let day = environments.column("Day Ambience")?;
+    let hd_night = environments.column("HD Night Ambience")?;
+    let night = environments.column("Night Ambience")?;
+    let mut output = HashMap::new();
+    for area in areas {
+        let level = levels
+            .rows
+            .iter()
+            .find(|row| row[level_id].trim() == area.area_id.to_string())
+            .ok_or_else(|| format!("levels.txt 缺少 Area {}", area.area_id))?;
+        let environment = environments
+            .rows
+            .iter()
+            .find(|row| row[environment_index].trim() == level[level_environment].trim())
+            .ok_or_else(|| format!("找不到 Area {} 的 SoundEnv", area.area_id))?;
+        let sound_name = [hd_day, day, hd_night, night]
+            .into_iter()
+            .map(|column| environment[column].trim())
+            .find(|value| !value.is_empty())
+            .ok_or_else(|| format!("Area {} 没有持续环境音定义", area.area_id))?;
+        let source = resolve_area_ambience_source(sounds, sound_name).map_err(|error| {
+            format!(
+                "无法从 sounds.txt 解析 Area {} 的持续环境音 {sound_name}: {error}",
+                area.area_id
+            )
+        })?;
+        output.insert(area.area_id, source);
+    }
+    Ok(output)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SoundAssetGroup {
+    Area,
     Rune,
     Item,
 }
@@ -4782,7 +4928,6 @@ where
             .feature_groups
             .iter()
             .any(|g| g.id == AUDIO_TELEMETRY_FEATURE_ID && g.recipe_version < 4)
-            || !report.area_assets.is_empty()
             || !report.terror_assets.is_empty()
             || !report.frontend_assets.is_empty()
     }) {
@@ -5443,10 +5588,19 @@ where
     let levels = TsvTable::parse("levels.txt", &levels_baseline.text)?;
     let area_localization = load_area_localization(&mpq_directory, storage.as_ref())?;
     let areas = collect_areas_localized(&levels, &area_localization)?;
+    let sound_environment_baseline = read_excel_with_game_fallback(
+        &layout,
+        storage.as_ref(),
+        game_root.as_deref(),
+        "soundenviron.txt",
+    )?;
+    let environments = TsvTable::parse("soundenviron.txt", &sound_environment_baseline.text)?;
+    let area_ambience_sources =
+        collect_area_ambience_sources(&levels, &environments, &sounds, &areas)?;
     progress(BuildProgress::new(
         "areas",
         28,
-        "正在准备 OCR 地区名称目录（不加工场景音）…",
+        "正在准备地区声纹与 OCR 名称目录…",
     ));
     let casc_cache = staging_mod_directory.join(".audio-telemetry-casc-cache");
     validate_misc(&misc, include_runes, &selected_items)?;
@@ -5609,8 +5763,58 @@ where
         .iter()
         .map(|plan| plan.entry.clone())
         .collect::<Vec<_>>();
-    let (sounds, definitions) = patch_sounds(sounds, &rune_plans, &item_plans, &mut compatibility)?;
+    let (mut sounds, mut definitions) =
+        patch_sounds(sounds, &rune_plans, &item_plans, &mut compatibility)?;
 
+    let first_area_index = sounds.max_number("*Index")? + 1;
+    let area_template = sounds
+        .row_by("Sound", "wilderness_day_2_hd")
+        .or_else(|_| sounds.row_by("Sound", "scene_wilderness_day"))
+        .or_else(|_| {
+            let ambient_index = sounds.column("IsAmbientScene")?;
+            sounds
+                .rows
+                .iter()
+                .find(|row| row[ambient_index] == "1")
+                .cloned()
+                .ok_or_else(|| "sounds.txt 中找不到持续环境音模板".to_string())
+        })?;
+
+    for (next_index, area) in (first_area_index..).zip(&areas) {
+        let marker = TelemetryMarker::Area {
+            area_id: area.area_id,
+        };
+        let sound = format!("audio_telemetry_a{}", area.area_id);
+        let relative_path = format!("audio_telemetry\\areas\\a{}.flac", area.area_id);
+        let ambience = area_ambience_sources
+            .get(&area.area_id)
+            .ok_or_else(|| format!("Area {} 缺少已解析的持续环境音", area.area_id))?;
+        let mut row = area_template.clone();
+        sounds.set(&mut row, "Sound", &sound)?;
+        sounds.set(&mut row, "*Index", next_index.to_string())?;
+        sounds.set(&mut row, "FileName", &relative_path)?;
+        configure_sound_row(&sounds, &mut row, SoundRole::RuneGroundHeartbeat);
+        for column in ["Loop", "Stream", "IsAmbientScene"] {
+            set_if_present(&sounds, &mut row, column, "1");
+        }
+        set_if_present(&sounds, &mut row, "Fade In", "0");
+        sounds.rows.push(row);
+        definitions.push(SoundDefinition {
+            marker,
+            group: SoundAssetGroup::Area,
+            sound,
+            relative_path,
+            source_filename: Some(ambience.filename.clone()),
+            source_gain: ambience.source_gain,
+            output_root: "data/hd/global/sfx",
+        });
+    }
+    let (environments, levels) = patch_sound_environ_and_levels(environments, levels, &areas)?;
+    write_file(&excel_output.join("levels.txt"), levels.to_text())?;
+    write_file(
+        &excel_output.join("soundenviron.txt"),
+        environments.to_text(),
+    )?;
     write_file(&excel_output.join("misc.txt"), misc.to_text())?;
     write_file(&excel_output.join("sounds.txt"), sounds.to_text())?;
     if needs_item_mapping {
@@ -5633,7 +5837,10 @@ where
         .as_ref()
         .map(|report| report.item_assets.clone())
         .unwrap_or_default();
-    let area_assets = Vec::new();
+    let mut area_assets = reusable_audio
+        .as_ref()
+        .map(|report| report.area_assets.clone())
+        .unwrap_or_default();
     let terror_assets = Vec::new();
     let frontend_assets = Vec::new();
     let definition_count = definitions.len().max(1);
@@ -5691,6 +5898,7 @@ where
             match group {
                 SoundAssetGroup::Rune => rune_assets.push(asset),
                 SoundAssetGroup::Item => item_assets.push(asset),
+                SoundAssetGroup::Area => area_assets.push(asset),
             }
         }
     } else {
@@ -5878,7 +6086,7 @@ where
             request.source_directory.as_deref(),
             source_feature_report.as_ref(),
         ),
-        sound_environment_source: "unchanged: scenes use OCR".into(),
+        sound_environment_source: "mapped area ambience + OCR fallback".into(),
         launch_arguments: format!("-mod {mod_name} -txt"),
         rune_assets,
         item_assets,
@@ -5895,8 +6103,8 @@ where
             ),
             "misc.txt 的 dropsound 与 usesound 均保持原值；背包/仓库不进入地面状态。"
                 .to_string(),
-            format!("场景只提供 OCR 地区名称目录（{} 项）；不改写 levels.txt、soundenviron.txt，不加工地区、TZ 或主界面声音。",area_count),
-            "v7 掉落和敌对提示声纹保持独立；场景切换、TZ 状态和计时由 Hub 的 OCR 路径负责。".into(),
+            format!("地区声纹与 OCR 共用名称目录（{} 项）；恐惧区域由紫色提示像素判定。",area_count),
+            "v7 掉落和敌对提示声纹保持独立；地区声纹优先，OCR 兜底；TZ 状态由紫色提示像素确认。".into(),
             if room_tools_available {
                 "局内右上角的 0.30 倍紧凑工具栏可在确认后开始下一局，或按 MDK 原始消息链打开创建/加入；自动流程使用 PausePanel 的 Esc+左/右两次+确认安全入口。自动填写在表单聚焦后用 F13 调用原生 CfgChat 文本态，Tab 切换密码并提交，全程不移动鼠标或点击 HWND。".to_string()
             } else {
@@ -7403,7 +7611,7 @@ mod tests {
         })
         .unwrap();
         assert_eq!(report.rune_assets.len(), 33);
-        assert!(report.area_assets.is_empty());
+        assert!(!report.area_assets.is_empty());
         assert!(report.terror_assets.is_empty());
         assert!(report
             .terror_assets
@@ -7450,7 +7658,7 @@ mod tests {
         assert!(output_mpq
             .join("data/hd/global/sfx/audio_telemetry/runes/r01.flac")
             .is_file());
-        assert!(!output_mpq
+        assert!(output_mpq
             .join("data/hd/global/sfx/audio_telemetry/areas/a6.flac")
             .is_file());
         let misc_output = TsvTable::parse(
@@ -7570,7 +7778,7 @@ mod tests {
         .unwrap();
         assert_eq!(report.rune_assets.len(), RUNE_COUNT as usize);
         assert_eq!(report.item_assets.len(), 50);
-        assert!(report.area_assets.is_empty());
+        assert!(!report.area_assets.is_empty());
         assert!(report
             .rune_assets
             .iter()
@@ -7620,7 +7828,7 @@ mod tests {
         assert!(!report.source_mod_copied);
         assert_eq!(report.rune_assets.len(), RUNE_COUNT as usize);
         assert_eq!(report.item_assets.len(), 50);
-        assert!(report.area_assets.is_empty());
+        assert!(!report.area_assets.is_empty());
         assert!(report.frontend_assets.is_empty());
         assert!(report
             .frontend_assets

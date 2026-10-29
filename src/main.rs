@@ -374,7 +374,7 @@ fn print_help() {
 Mod 选项：
   --output <目录>             输出父目录；省略时优先使用游戏的 mods 目录
   --name <名称>              自定义 Mod 名；仅允许 ASCII 字母、数字、- 和 _
-  --areas all|countess       兼容参数；始终生成完整 OCR 地区目录，不加工场景音
+  --areas all|countess       兼容参数；生成完整地区声纹及 OCR 名称目录
   --track all|none|类别列表   默认 all；列表以英文逗号分隔
   --features all|audio|rooms|esc-next-game|hostile-restart|scene-shortcuts|party-loot|death-exit
                               默认 all（audio+rooms）；双击 Esc、场景重开、玩家拾取按钮与死亡退房需显式选择 esc-next-game、scene-shortcuts、party-loot、death-exit

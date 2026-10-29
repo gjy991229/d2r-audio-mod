@@ -300,7 +300,7 @@ pub fn process_directory(request: BatchRequest) -> Result<BatchReport, String> {
     }
     candidates.sort_by_key(|(marker, _)| marker_sort_key(*marker));
     if candidates.is_empty() {
-        return Err("目录中没有找到 r1.flac-r33.flac；场景识别已改用 OCR".to_string());
+        return Err("目录中没有找到 r1.flac-r33.flac；地区声纹请使用完整 Mod 加工功能".to_string());
     }
     for pair in candidates.windows(2) {
         if pair[0].0 == pair[1].0 {

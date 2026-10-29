@@ -322,7 +322,8 @@ unsafe fn finish_build(state: &mut AppState, result: BuildResult) {
         Ok(output) => {
             let directory = output.mod_directory;
             let arguments = output.launch_arguments;
-            let summary = "已包含：完整 OCR 地区目录和全部支持物品掉落声纹；不加工场景音。源 MOD 没有被修改。";
+            let summary =
+                "已包含：地区声纹、完整 OCR 地区目录和全部支持物品掉落声纹。源 MOD 没有被修改。";
             state.last_output = Some(PathBuf::from(&directory));
             EnableWindow(state.open_button, 1);
             set_text(

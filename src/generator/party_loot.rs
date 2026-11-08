@@ -11,8 +11,10 @@ const MYMOD: &str = "data/global/ui/layouts/mymodsShowListLayouthd.json";
 pub(super) fn feature_group() -> ModFeatureGroup {
     ModFeatureGroup {
         id: ID.into(),
-        recipe_version: 3,
-        fingerprint: "party-loot-v3;native-party-row;portrait-position;launch=immediate".into(),
+        recipe_version: 4,
+        fingerprint:
+            "party-loot-v4;native-party-row;portrait-scale=1.6;offset=-0.8,2.4;launch=immediate"
+                .into(),
         reused_from_source: false,
     }
 }
@@ -66,7 +68,8 @@ fn adapt_jcy(panel: &mut Value) -> Result<(), String> {
 }
 
 // The portrait and party lists are separate native bindings. Align their geometry,
-// keeping the loot widget's intrinsic image/hitbox size and the hireables untouched.
+// 120px portraits / 75px button = 1.6. Opaque button center (38,36)
+// requires (-0.8,2.4) to align with portrait center (60,60).
 fn align_to_portraits(panel: &mut Value, portraits: &Value) -> Result<(), String> {
     let fields = &portraits["fields"];
     let x = fields["rect"]["x"].as_f64().ok_or("头像横坐标无效")?;
@@ -87,7 +90,7 @@ fn align_to_portraits(panel: &mut Value, portraits: &Value) -> Result<(), String
     row["fields"]["rect"]["y"] = json!(y);
     row["fields"]["rect"]["height"] = json!(pitch);
     let loot = find_layout_node_mut(row, "LootBodyButton").ok_or("缺少拾取按钮")?;
-    loot["fields"]["rect"] = json!({"x":0,"y":0});
+    loot["fields"]["rect"] = json!({"x":-0.8 * scale,"y":2.4 * scale,"scale":1.6 * scale});
     // MYMOD can place HireablesPanel at priority 100. Render the button above it.
     panel["fields"]["priority"] = json!(fields["priority"].as_i64().unwrap_or(-100).max(-5) + 1);
     Ok(())
@@ -200,7 +203,7 @@ pub(super) fn install(
 mod tests {
     use super::*;
     #[test]
-    fn portrait_alignment_uses_source_scale_and_preserves_native_hitbox() {
+    fn portrait_alignment_uses_source_scale_and_centers_and_sizes_button() {
         for (scale, priority) in [(0.85, 100), (1.0, -100)] {
             let portraits = json!({"fields":{"rect":{"x":46,"y":266,"scale":scale},
                 "nextIconOffset":{"y":204},"priority":priority}});
@@ -211,7 +214,10 @@ mod tests {
             assert_eq!(row["fields"]["rect"]["height"], json!(204.0 * scale));
             assert_eq!(row["fields"]["rect"]["y"], 266.0);
             let loot = find_layout_node_mut(row, "LootBodyButton").unwrap();
-            assert_eq!(loot["fields"]["rect"], json!({"x":0,"y":0}));
+            assert_eq!(
+                loot["fields"]["rect"],
+                json!({"x":-0.8 * scale,"y":2.4 * scale,"scale":1.6 * scale})
+            );
             assert!(panel["fields"]["priority"].as_i64().unwrap() > priority);
         }
     }

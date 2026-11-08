@@ -4922,7 +4922,10 @@ where
         let legacy = (group.recipe_version == 1
             && group.fingerprint == "party-loot-v1;native-party-row;x=80;y=20")
             || (group.recipe_version == 2
-                && group.fingerprint == "party-loot-v2;native-party-row;jcy=1;launch=immediate");
+                && group.fingerprint == "party-loot-v2;native-party-row;jcy=1;launch=immediate")
+            || (group.recipe_version == 3
+                && group.fingerprint
+                    == "party-loot-v3;native-party-row;portrait-position;launch=immediate");
         if !legacy
             && (group.recipe_version != supported.recipe_version
                 || group.fingerprint != supported.fingerprint)

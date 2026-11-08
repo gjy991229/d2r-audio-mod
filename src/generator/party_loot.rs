@@ -11,8 +11,8 @@ const MYMOD: &str = "data/global/ui/layouts/mymodsShowListLayouthd.json";
 pub(super) fn feature_group() -> ModFeatureGroup {
     ModFeatureGroup {
         id: ID.into(),
-        recipe_version: 2,
-        fingerprint: "party-loot-v2;native-party-row;jcy=1;launch=immediate".into(),
+        recipe_version: 3,
+        fingerprint: "party-loot-v3;native-party-row;portrait-position;launch=immediate".into(),
         reused_from_source: false,
     }
 }
@@ -62,6 +62,34 @@ fn adapt_jcy(panel: &mut Value) -> Result<(), String> {
         }
     }
     panel["fields"]["priority"] = json!(-5);
+    Ok(())
+}
+
+// The portrait and party lists are separate native bindings. Align their geometry,
+// keeping the loot widget's intrinsic image/hitbox size and the hireables untouched.
+fn align_to_portraits(panel: &mut Value, portraits: &Value) -> Result<(), String> {
+    let fields = &portraits["fields"];
+    let x = fields["rect"]["x"].as_f64().ok_or("头像横坐标无效")?;
+    let y = fields["rect"]["y"].as_f64().ok_or("头像纵坐标无效")?;
+    let scale = fields["rect"]["scale"].as_f64().unwrap_or(1.0);
+    let pitch = fields["nextIconOffset"]["y"]
+        .as_f64()
+        .ok_or("头像行间距无效")?
+        * scale;
+    if !scale.is_finite() || scale <= 0.0 || !pitch.is_finite() || pitch <= 0.0 {
+        return Err("头像缩放或行间距无效".into());
+    }
+    let list = find_layout_node_mut(panel, "ListContainer").ok_or("缺少玩家列表")?;
+    list["fields"]["rect"]["x"] = json!(x);
+    list["fields"]["rect"]["y"] = json!(0);
+    let row = find_layout_node_mut(list, "FriendsListTemplate").ok_or("缺少玩家行")?;
+    row["fields"]["rect"]["x"] = json!(0);
+    row["fields"]["rect"]["y"] = json!(y);
+    row["fields"]["rect"]["height"] = json!(pitch);
+    let loot = find_layout_node_mut(row, "LootBodyButton").ok_or("缺少拾取按钮")?;
+    loot["fields"]["rect"] = json!({"x":0,"y":0});
+    // MYMOD can place HireablesPanel at priority 100. Render the button above it.
+    panel["fields"]["priority"] = json!(fields["priority"].as_i64().unwrap_or(-100).max(-5) + 1);
     Ok(())
 }
 
@@ -149,6 +177,17 @@ pub(super) fn install(
     if jcy {
         adapt_jcy(&mut panel)?;
     }
+    let portraits = read_local_or_casc_json(
+        root,
+        storage,
+        "data/global/ui/layouts/hireablespanelhd.json",
+    )?;
+    align_to_portraits(&mut panel, &portraits)?;
+    write_json_layout(
+        root,
+        "data/global/ui/layouts/hireablespanelhd.json",
+        &portraits,
+    )?;
     ensure_launcher(&mut hud, name)?;
     write_json_layout(root, file, &panel)?;
     write_json_layout(root, HUD_WARNINGS_LAYOUT, &hud)?;
@@ -160,6 +199,22 @@ pub(super) fn install(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn portrait_alignment_uses_source_scale_and_preserves_native_hitbox() {
+        for (scale, priority) in [(0.85, 100), (1.0, -100)] {
+            let portraits = json!({"fields":{"rect":{"x":46,"y":266,"scale":scale},
+                "nextIconOffset":{"y":204},"priority":priority}});
+            let mut panel = json!({"fields":{},"children":[{"name":"ListContainer","fields":{"rect":{}},
+                "children":[{"name":"FriendsListTemplate","fields":{"rect":{}},"children":[button()]}]}]});
+            align_to_portraits(&mut panel, &portraits).unwrap();
+            let row = find_layout_node_mut(&mut panel, "FriendsListTemplate").unwrap();
+            assert_eq!(row["fields"]["rect"]["height"], json!(204.0 * scale));
+            assert_eq!(row["fields"]["rect"]["y"], 266.0);
+            let loot = find_layout_node_mut(row, "LootBodyButton").unwrap();
+            assert_eq!(loot["fields"]["rect"], json!({"x":0,"y":0}));
+            assert!(panel["fields"]["priority"].as_i64().unwrap() > priority);
+        }
+    }
     #[test]
     fn jcy_keeps_its_row_spacing_and_launcher_precedes_early_hud_close() {
         let mut panel = json!({"type":"PartyPanel","fields":{"priority":-99},"children":[{

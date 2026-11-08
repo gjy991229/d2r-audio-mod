@@ -107,6 +107,7 @@ fn path_text(path: Option<PathBuf>) -> Option<String> {
 fn parse_area_coverage(raw: Option<&str>) -> Result<AudioAreaCoverage, String> {
     match raw.unwrap_or("all").trim().to_ascii_lowercase().as_str() {
         "all" => Ok(AudioAreaCoverage::AllAreas),
+        "none" => Ok(AudioAreaCoverage::None),
         "countess" => Ok(AudioAreaCoverage::CountessRoute),
         value => Err(format!("--areas 仅支持 all 或 countess，收到: {value}")),
     }

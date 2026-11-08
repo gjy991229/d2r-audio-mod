@@ -90,6 +90,7 @@ pub enum AudioModBuildMode {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AudioAreaCoverage {
+    None,
     #[default]
     CountessRoute,
     AllAreas,
@@ -4065,7 +4066,11 @@ fn asset_label(
 fn audio_feature_fingerprint(request: &BuildAudioModRequest) -> String {
     let mut categories = normalize_tracked_categories(&request.tracked_categories);
     categories.sort();
-    let coverage = "all_areas";
+    let coverage = if request.area_coverage == AudioAreaCoverage::None {
+        "none"
+    } else {
+        "all_areas"
+    };
     let gain = request.gain_db.unwrap_or(MarkerConfig::default().gain_db);
     format!(
         "audio-v{AUDIO_TELEMETRY_FEATURE_RECIPE_VERSION};protocol={PROTOCOL_VERSION};areas={coverage};track={};gain_mdb={}",
@@ -4914,8 +4919,10 @@ where
             .find(|group| group.id == party_loot::ID)
     }) {
         let supported = party_loot::feature_group();
-        let legacy = group.recipe_version == 1
-            && group.fingerprint == "party-loot-v1;native-party-row;x=80;y=20";
+        let legacy = (group.recipe_version == 1
+            && group.fingerprint == "party-loot-v1;native-party-row;x=80;y=20")
+            || (group.recipe_version == 2
+                && group.fingerprint == "party-loot-v2;native-party-row;jcy=1;launch=immediate");
         if !legacy
             && (group.recipe_version != supported.recipe_version
                 || group.fingerprint != supported.fingerprint)
@@ -4932,6 +4939,17 @@ where
             || !report.frontend_assets.is_empty()
     }) {
         return Err("旧加工成品包含场景声纹，请在 Hub 使用同名重做并选择未经加工的原始源 Mod；不能把旧场景音当成干净基线继续增补".into());
+    }
+    if request.include_audio_telemetry
+        && source_feature_report.as_ref().is_some_and(|report| {
+            report.feature_groups.iter().any(|g| {
+                g.id == AUDIO_TELEMETRY_FEATURE_ID
+                    && g.fingerprint.split(';').any(|part| part == "areas=none")
+                        != (request.area_coverage == AudioAreaCoverage::None)
+            })
+        })
+    {
+        return Err("更改地区声纹需要从未经加工的原始源 Mod 重做，不能复用已有场景音".into());
     }
     let audio_fingerprint = audio_feature_fingerprint(&request);
     let reusable_audio = source_layout
@@ -5595,8 +5613,11 @@ where
         "soundenviron.txt",
     )?;
     let environments = TsvTable::parse("soundenviron.txt", &sound_environment_baseline.text)?;
-    let area_ambience_sources =
-        collect_area_ambience_sources(&levels, &environments, &sounds, &areas)?;
+    let area_ambience_sources = if request.area_coverage == AudioAreaCoverage::None {
+        Default::default()
+    } else {
+        collect_area_ambience_sources(&levels, &environments, &sounds, &areas)?
+    };
     progress(BuildProgress::new(
         "areas",
         28,
@@ -5766,50 +5787,56 @@ where
     let (mut sounds, mut definitions) =
         patch_sounds(sounds, &rune_plans, &item_plans, &mut compatibility)?;
 
-    let first_area_index = sounds.max_number("*Index")? + 1;
-    let area_template = sounds
-        .row_by("Sound", "wilderness_day_2_hd")
-        .or_else(|_| sounds.row_by("Sound", "scene_wilderness_day"))
-        .or_else(|_| {
-            let ambient_index = sounds.column("IsAmbientScene")?;
-            sounds
-                .rows
-                .iter()
-                .find(|row| row[ambient_index] == "1")
-                .cloned()
-                .ok_or_else(|| "sounds.txt 中找不到持续环境音模板".to_string())
-        })?;
+    if request.area_coverage != AudioAreaCoverage::None {
+        let first_area_index = sounds.max_number("*Index")? + 1;
+        let area_template = sounds
+            .row_by("Sound", "wilderness_day_2_hd")
+            .or_else(|_| sounds.row_by("Sound", "scene_wilderness_day"))
+            .or_else(|_| {
+                let ambient_index = sounds.column("IsAmbientScene")?;
+                sounds
+                    .rows
+                    .iter()
+                    .find(|row| row[ambient_index] == "1")
+                    .cloned()
+                    .ok_or_else(|| "sounds.txt 中找不到持续环境音模板".to_string())
+            })?;
 
-    for (next_index, area) in (first_area_index..).zip(&areas) {
-        let marker = TelemetryMarker::Area {
-            area_id: area.area_id,
-        };
-        let sound = format!("audio_telemetry_a{}", area.area_id);
-        let relative_path = format!("audio_telemetry\\areas\\a{}.flac", area.area_id);
-        let ambience = area_ambience_sources
-            .get(&area.area_id)
-            .ok_or_else(|| format!("Area {} 缺少已解析的持续环境音", area.area_id))?;
-        let mut row = area_template.clone();
-        sounds.set(&mut row, "Sound", &sound)?;
-        sounds.set(&mut row, "*Index", next_index.to_string())?;
-        sounds.set(&mut row, "FileName", &relative_path)?;
-        configure_sound_row(&sounds, &mut row, SoundRole::RuneGroundHeartbeat);
-        for column in ["Loop", "Stream", "IsAmbientScene"] {
-            set_if_present(&sounds, &mut row, column, "1");
+        for (next_index, area) in (first_area_index..).zip(&areas) {
+            let marker = TelemetryMarker::Area {
+                area_id: area.area_id,
+            };
+            let sound = format!("audio_telemetry_a{}", area.area_id);
+            let relative_path = format!("audio_telemetry\\areas\\a{}.flac", area.area_id);
+            let ambience = area_ambience_sources
+                .get(&area.area_id)
+                .ok_or_else(|| format!("Area {} 缺少已解析的持续环境音", area.area_id))?;
+            let mut row = area_template.clone();
+            sounds.set(&mut row, "Sound", &sound)?;
+            sounds.set(&mut row, "*Index", next_index.to_string())?;
+            sounds.set(&mut row, "FileName", &relative_path)?;
+            configure_sound_row(&sounds, &mut row, SoundRole::RuneGroundHeartbeat);
+            for column in ["Loop", "Stream", "IsAmbientScene"] {
+                set_if_present(&sounds, &mut row, column, "1");
+            }
+            set_if_present(&sounds, &mut row, "Fade In", "0");
+            sounds.rows.push(row);
+            definitions.push(SoundDefinition {
+                marker,
+                group: SoundAssetGroup::Area,
+                sound,
+                relative_path,
+                source_filename: Some(ambience.filename.clone()),
+                source_gain: ambience.source_gain,
+                output_root: "data/hd/global/sfx",
+            });
         }
-        set_if_present(&sounds, &mut row, "Fade In", "0");
-        sounds.rows.push(row);
-        definitions.push(SoundDefinition {
-            marker,
-            group: SoundAssetGroup::Area,
-            sound,
-            relative_path,
-            source_filename: Some(ambience.filename.clone()),
-            source_gain: ambience.source_gain,
-            output_root: "data/hd/global/sfx",
-        });
     }
-    let (environments, levels) = patch_sound_environ_and_levels(environments, levels, &areas)?;
+    let (environments, levels) = if request.area_coverage == AudioAreaCoverage::None {
+        (environments, levels)
+    } else {
+        patch_sound_environ_and_levels(environments, levels, &areas)?
+    };
     write_file(&excel_output.join("levels.txt"), levels.to_text())?;
     write_file(
         &excel_output.join("soundenviron.txt"),
@@ -6060,7 +6087,7 @@ where
             .as_secs(),
         protocol_version: PROTOCOL_VERSION,
         build_mode: request.build_mode,
-        area_coverage: AudioAreaCoverage::AllAreas,
+        area_coverage: request.area_coverage,
         mod_name: mod_name.clone(),
         mod_directory: final_mod_directory.to_string_lossy().to_string(),
         mpq_directory: final_mpq_directory.to_string_lossy().to_string(),
@@ -7591,6 +7618,36 @@ mod tests {
         )
         .unwrap();
 
+        let drops_only = build(BuildAudioModRequest {
+            build_mode: AudioModBuildMode::Augment,
+            area_coverage: AudioAreaCoverage::None,
+            tracked_categories: vec![CATEGORY_RUNES.to_string()],
+            source_directory: Some(source.to_string_lossy().to_string()),
+            game_directory: None,
+            output_directory: Some(output.to_string_lossy().to_string()),
+            mod_name: Some("Drops-Only-Test".to_string()),
+            sound_environment_file: None,
+            gain_db: Some(-26.0),
+            include_audio_telemetry: true,
+            include_room_tools: false,
+            include_esc_next_game: false,
+            include_scene_shortcuts: false,
+            include_party_loot: false,
+            include_hostile_auto_restart: false,
+            include_auto_exit_on_death: false,
+        })
+        .unwrap();
+        assert!(drops_only.area_assets.is_empty());
+        assert_eq!(drops_only.rune_assets.len(), 33);
+        assert!(drops_only
+            .feature_groups
+            .iter()
+            .any(|g| g.fingerprint.contains("areas=none")));
+        let dropped_levels = std::fs::read_to_string(
+            output.join("Drops-Only-Test/Drops-Only-Test.mpq/data/global/excel/levels.txt"),
+        )
+        .unwrap();
+        assert!(!dropped_levels.contains("audio_telemetry"));
         let report = build(BuildAudioModRequest {
             build_mode: AudioModBuildMode::Augment,
             area_coverage: AudioAreaCoverage::CountessRoute,

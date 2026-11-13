@@ -24,11 +24,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const MINIMAL_MOD_NAME: &str = "D2RAudioTelemetry";
 const AUDIO_MOD_SUFFIX: &str = "AudioTelemetry";
-pub const AUDIO_MOD_RECIPE_VERSION: u32 = 26;
+pub const AUDIO_MOD_RECIPE_VERSION: u32 = 27;
 pub const AUDIO_TELEMETRY_FEATURE_ID: &str = "audio_telemetry";
 pub const IN_GAME_ROOM_TOOLS_FEATURE_ID: &str = "in_game_room_tools";
 pub const AUTO_EXIT_ON_DEATH_FEATURE_ID: &str = "auto_exit_on_death";
-const AUDIO_TELEMETRY_FEATURE_RECIPE_VERSION: u32 = 5;
+const AUDIO_TELEMETRY_FEATURE_RECIPE_VERSION: u32 = 8;
 const IN_GAME_ROOM_TOOLS_FEATURE_RECIPE_VERSION: u32 = 33;
 pub const ESC_NEXT_GAME_FEATURE_ID: &str = "esc_next_game";
 const ESC_NEXT_GAME_CAPABILITY: &str = "esc_next_game_v1";
@@ -508,6 +508,7 @@ enum SoundAssetGroup {
     Area,
     Rune,
     Item,
+    Frontend,
 }
 
 #[derive(Debug, Clone)]
@@ -3994,15 +3995,43 @@ fn write_marker_flac_with_source_gain(
         samples = resample_interleaved_i32(&samples, channels as usize, sample_rate, 48_000);
         sample_rate = 48_000;
     }
-    let expected_detections = 1usize;
-    embed_marker(
-        &mut samples,
-        channels as usize,
-        bits_per_sample,
-        sample_rate,
+    let repeating = matches!(
         marker,
-        config,
-    )?;
+        TelemetryMarker::Area { .. } | TelemetryMarker::Frontend
+    );
+    // Half-second scene heartbeat; the host allows three intervals before departure.
+    let interval = sample_rate as usize / 2 * channels as usize;
+    if repeating {
+        samples.resize(samples.len().div_ceil(interval).max(1) * interval, 0);
+    }
+    let expected_detections = if repeating {
+        samples.len().div_ceil(interval)
+    } else {
+        1
+    };
+    if repeating {
+        for chunk in samples.chunks_mut(interval) {
+            let mut marked = chunk.to_vec();
+            embed_marker(
+                &mut marked,
+                channels as usize,
+                bits_per_sample,
+                sample_rate,
+                marker,
+                config,
+            )?;
+            chunk.copy_from_slice(&marked);
+        }
+    } else {
+        embed_marker(
+            &mut samples,
+            channels as usize,
+            bits_per_sample,
+            sample_rate,
+            marker,
+            config,
+        )?;
+    }
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|error| format!("创建音频目录失败 {}: {error}", parent.display()))?;
@@ -4939,7 +4968,10 @@ where
             .iter()
             .any(|g| g.id == AUDIO_TELEMETRY_FEATURE_ID && g.recipe_version < 4)
             || !report.terror_assets.is_empty()
-            || !report.frontend_assets.is_empty()
+            || (!report.frontend_assets.is_empty()
+                && report.feature_groups.iter().any(|group| {
+                    group.id == AUDIO_TELEMETRY_FEATURE_ID && group.recipe_version < 6
+                }))
     }) {
         return Err("旧加工成品包含场景声纹，请在 Hub 使用同名重做并选择未经加工的原始源 Mod；不能把旧场景音当成干净基线继续增补".into());
     }
@@ -5608,7 +5640,10 @@ where
     let sounds = TsvTable::parse("sounds.txt", &sounds_baseline.text)?;
     let levels = TsvTable::parse("levels.txt", &levels_baseline.text)?;
     let area_localization = load_area_localization(&mpq_directory, storage.as_ref())?;
-    let areas = collect_areas_localized(&levels, &area_localization)?;
+    let areas: Vec<_> = collect_areas_localized(&levels, &area_localization)?
+        .into_iter()
+        .filter(|area| area.kind == LocationKind::Town)
+        .collect();
     let sound_environment_baseline = read_excel_with_game_fallback(
         &layout,
         storage.as_ref(),
@@ -5624,7 +5659,7 @@ where
     progress(BuildProgress::new(
         "areas",
         28,
-        "正在准备地区声纹与 OCR 名称目录…",
+        "正在准备主城和主界面计时标记…",
     ));
     let casc_cache = staging_mod_directory.join(".audio-telemetry-casc-cache");
     validate_misc(&misc, include_runes, &selected_items)?;
@@ -5835,6 +5870,85 @@ where
             });
         }
     }
+    // JCY opens LobbyBackgroundPanel even from character select. Its scene is a
+    // different preset from the vanilla act selection background.
+    for (frontend_path, position) in [
+        (
+            "data/hd/env/preset/ui/frontendact2.json",
+            [50.0, 4.0, 483.0],
+        ),
+        ("data/hd/env/preset/ui/lobby.json", [50.0, 0.0, 100.0]),
+    ] {
+        let frontend_local = mpq_directory.join(frontend_path);
+        let frontend_text = if frontend_local.is_file() {
+            Some(read_utf8(&frontend_local)?)
+        } else {
+            storage
+                .as_ref()
+                .map(|game| read_casc_utf8(game, frontend_path))
+                .transpose()?
+        };
+        {
+            let text = frontend_text
+                .ok_or("缺少原生主界面背景资源，无法安装主界面水印，请配置游戏目录")?;
+            // Lightweight Mods intentionally blank this preset to remove scenery.
+            // Add only the audio entity; never restore the original heavy background.
+            let mut preset = if text.trim_start_matches('\u{feff}').trim().is_empty() {
+                serde_json::json!({"type":"Preset","name":"preset","dependencies":{},"entities":[],"terrain":{},"biomeFilename":"","perTileBiomeOverrides":[],"specialTiles":{}})
+            } else {
+                parse_json_value(&text)
+                    .map_err(|error| format!("解析主界面资源 {frontend_path} 失败: {error}"))?
+            };
+            let entities = preset
+                .get_mut("entities")
+                .and_then(serde_json::Value::as_array_mut)
+                .ok_or("主界面背景缺少 entities")?;
+            entities.retain(|entity| entity["name"] != "D2RHubFrontendAudio");
+            entities.push(serde_json::json!({"type":"Entity","name":"D2RHubFrontendAudio","id":3900182871u32,"components":[
+            {"type":"AudioEmitterComponent","name":"D2RHubFrontendEmitter","audioId":"d2rhub_frontend_state","randomDelay":{"x":0.0,"y":0.0},"forceNoRandom":true},
+            {"type":"TransformDefinitionComponent","name":"D2RHubFrontendPosition","position":{"x":position[0],"y":position[1],"z":position[2]},"orientation":{"x":0.0,"y":0.0,"z":0.0,"w":1.0},"scale":{"x":1.0,"y":1.0,"z":1.0},"inheritOnlyPosition":false}
+        ]}));
+            write_file(
+                &frontend_local,
+                serde_json::to_vec_pretty(&preset).map_err(|error| error.to_string())?,
+            )?;
+        }
+    }
+    {
+        let mut row = sounds.row_by("Sound", "scene_wilderness_day")?;
+        configure_sound_row(&sounds, &mut row, SoundRole::RuneGroundHeartbeat);
+        let index = sounds.max_number("*Index")? + 1;
+        sounds.set(&mut row, "Sound", "d2rhub_frontend_state")?;
+        sounds.set(&mut row, "*Index", index.to_string())?;
+        sounds.set(&mut row, "FileName", "audio_telemetry/frontend/state.flac")?;
+        for (field, value) in [
+            ("Redirect", ""),
+            ("Channel", "sfx/ambient/scene-2d_hd"),
+            ("IsMusic", "0"),
+            ("Music Vol", "0"),
+            ("IsAmbientScene", "1"),
+            ("Defer Inst", "0"),
+            ("Loop", "1"),
+            ("Stream", "1"),
+            ("Is2D", "1"),
+            ("Volume Min", "255"),
+            ("Volume Max", "255"),
+            ("Fade In", "0"),
+            ("Fade Out", "0"),
+        ] {
+            set_if_present(&sounds, &mut row, field, value);
+        }
+        sounds.rows.push(row);
+        definitions.push(SoundDefinition {
+            marker: TelemetryMarker::Frontend,
+            group: SoundAssetGroup::Frontend,
+            sound: "d2rhub_frontend_state".into(),
+            relative_path: "audio_telemetry/frontend/state.flac".into(),
+            source_filename: None,
+            source_gain: 1.0,
+            output_root: "data/hd/global/sfx",
+        });
+    }
     let (environments, levels) = if request.area_coverage == AudioAreaCoverage::None {
         (environments, levels)
     } else {
@@ -5872,7 +5986,10 @@ where
         .map(|report| report.area_assets.clone())
         .unwrap_or_default();
     let terror_assets = Vec::new();
-    let frontend_assets = Vec::new();
+    let mut frontend_assets = reusable_audio
+        .as_ref()
+        .map(|report| report.frontend_assets.clone())
+        .unwrap_or_default();
     let definition_count = definitions.len().max(1);
     if reusable_audio.is_none() {
         for (definition_index, definition) in definitions.into_iter().enumerate() {
@@ -5908,7 +6025,17 @@ where
             let output_path = mpq_directory
                 .join(definition.output_root)
                 .join(definition.relative_path.replace('\\', "/"));
-            let marker_config = config;
+            let marker_config = if matches!(
+                marker,
+                TelemetryMarker::Area { .. } | TelemetryMarker::Frontend
+            ) {
+                MarkerConfig {
+                    gain_db: config.gain_db.min(-40.0),
+                    ..config
+                }
+            } else {
+                config
+            };
             let confidence = write_marker_flac_with_source_gain(
                 &output_path,
                 marker,
@@ -5929,6 +6056,7 @@ where
                 SoundAssetGroup::Rune => rune_assets.push(asset),
                 SoundAssetGroup::Item => item_assets.push(asset),
                 SoundAssetGroup::Area => area_assets.push(asset),
+                SoundAssetGroup::Frontend => frontend_assets.push(asset),
             }
         }
     } else {
@@ -7607,10 +7735,20 @@ mod tests {
                 ((std::f32::consts::TAU * 880.0 * index as f32 / 48_000.0).sin() * 4_000.0) as i32
             })
             .collect::<Vec<_>>();
+        for name in ["frontendact2", "lobby"] {
+            let frontend = source.join(format!("data/hd/env/preset/ui/{name}.json"));
+            std::fs::create_dir_all(frontend.parent().unwrap()).unwrap();
+            std::fs::write(
+                frontend,
+                if name == "frontendact2" { "" } else { r#"{"type":"Preset","entities":[{"type":"Entity","name":"OriginalBackground","id":42,"components":[]}],"dependencies":{}}"# },
+            )
+            .unwrap();
+        }
         for source_audio in [
             source.join("data/hd/global/sfx/ambient/scene.flac"),
             source.join("data/hd/global/sfx/quest/desecrated_enter_hd.flac"),
             source.join("data/hd/global/music/common/options_hd.flac"),
+            source.join("data/global/music/common/options.flac"),
         ] {
             std::fs::create_dir_all(source_audio.parent().unwrap()).unwrap();
             encode_flac(&source_audio, &samples, 48_000, 1, 16).unwrap();
@@ -7677,7 +7815,7 @@ mod tests {
             .terror_assets
             .iter()
             .all(|asset| asset.confidence > 0.7));
-        assert!(report.frontend_assets.is_empty());
+        assert!(!report.frontend_assets.is_empty());
         assert_eq!(
             report
                 .rune_assets
@@ -7712,13 +7850,52 @@ mod tests {
         let output_mpq = output
             .join("Countess-Audio-Test")
             .join("Countess-Audio-Test.mpq");
+        for name in ["frontendact2", "lobby"] {
+            let preset = parse_json_value(
+                &read_utf8(&output_mpq.join(format!("data/hd/env/preset/ui/{name}.json"))).unwrap(),
+            )
+            .unwrap();
+            let entities = preset["entities"].as_array().unwrap();
+            assert_eq!(
+                entities
+                    .iter()
+                    .any(|entity| entity["name"] == "OriginalBackground"),
+                name == "lobby"
+            );
+            assert_eq!(
+                entities
+                    .iter()
+                    .filter(|entity| entity["name"] == "D2RHubFrontendAudio")
+                    .count(),
+                1
+            );
+        }
+        let generated_sounds = TsvTable::parse(
+            "sounds",
+            &read_utf8(&output_mpq.join("data/global/excel/sounds.txt")).unwrap(),
+        )
+        .unwrap();
+        let frontend_sound = generated_sounds
+            .row_by("Sound", "d2rhub_frontend_state")
+            .unwrap();
+        for (field, expected) in [
+            ("Defer Inst", "0"),
+            ("Channel", "sfx/ambient/scene-2d_hd"),
+            ("Loop", "1"),
+            ("Is2D", "1"),
+        ] {
+            assert_eq!(
+                frontend_sound[generated_sounds.column(field).unwrap()],
+                expected
+            );
+        }
         assert!(output_mpq
             .join("data/global/excel/soundenviron.txt")
             .is_file());
         assert!(output_mpq
             .join("data/hd/global/sfx/audio_telemetry/runes/r01.flac")
             .is_file());
-        assert!(output_mpq
+        assert!(!output_mpq
             .join("data/hd/global/sfx/audio_telemetry/areas/a6.flac")
             .is_file());
         let misc_output = TsvTable::parse(
@@ -7763,8 +7940,8 @@ mod tests {
             heartbeat["dependencies"]["particles"][0]["path"],
             "data/hd/vfx2/custom-preserved.particles"
         );
-        assert!(!output_mpq
-            .join("data/global/music/audio_telemetry/frontend/music_options.flac")
+        assert!(output_mpq
+            .join("data/hd/global/sfx/audio_telemetry/frontend/state.flac")
             .is_file());
         assert!(Path::new(&report.mod_directory)
             .join(AREA_CATALOG_FILE_NAME)
@@ -7889,11 +8066,11 @@ mod tests {
         assert_eq!(report.rune_assets.len(), RUNE_COUNT as usize);
         assert_eq!(report.item_assets.len(), 50);
         assert!(!report.area_assets.is_empty());
-        assert!(report.frontend_assets.is_empty());
+        assert!(!report.frontend_assets.is_empty());
         assert!(report
             .frontend_assets
             .iter()
-            .all(|asset| asset.preserved_source_audio && asset.confidence > 0.7));
+            .all(|asset| asset.confidence > 0.7));
         std::fs::remove_dir_all(temporary_root).unwrap();
     }
 

@@ -1,10 +1,12 @@
 mod hostile;
+mod jcy_inventory;
+pub(crate) use jcy_inventory::preset_available as inventory_preset_available;
 mod party_loot;
 mod scene_shortcuts;
 use crate::audio::{decode_flac, encode_flac, resample_interleaved_i32};
 use d2r_audio_protocol::catalog::{
-    marker_sort_key, AreaCatalogEntry, AreaCatalogFile, LocationKind, TelemetryMarker,
-    AREA_CATALOG_FILE_NAME, MAX_AREA_ID, RUNE_COUNT,
+    is_timed_scene, marker_sort_key, AreaCatalogEntry, AreaCatalogFile, LocationKind,
+    TelemetryMarker, AREA_CATALOG_FILE_NAME, MAX_AREA_ID, RUNE_COUNT,
 };
 use d2r_audio_protocol::item_catalog::{
     catalog_file as build_item_catalog_file, default_tracked_categories,
@@ -28,7 +30,7 @@ pub const AUDIO_MOD_RECIPE_VERSION: u32 = 27;
 pub const AUDIO_TELEMETRY_FEATURE_ID: &str = "audio_telemetry";
 pub const IN_GAME_ROOM_TOOLS_FEATURE_ID: &str = "in_game_room_tools";
 pub const AUTO_EXIT_ON_DEATH_FEATURE_ID: &str = "auto_exit_on_death";
-const AUDIO_TELEMETRY_FEATURE_RECIPE_VERSION: u32 = 8;
+const AUDIO_TELEMETRY_FEATURE_RECIPE_VERSION: u32 = 9;
 const IN_GAME_ROOM_TOOLS_FEATURE_RECIPE_VERSION: u32 = 33;
 pub const ESC_NEXT_GAME_FEATURE_ID: &str = "esc_next_game";
 const ESC_NEXT_GAME_CAPABILITY: &str = "esc_next_game_v1";
@@ -133,6 +135,8 @@ pub struct BuildAudioModRequest {
     pub include_scene_shortcuts: bool,
     #[serde(default)]
     pub include_party_loot: bool,
+    #[serde(default)]
+    pub include_jcy_inventory: bool,
     #[serde(default)]
     pub include_hostile_auto_restart: bool,
 }
@@ -4891,6 +4895,7 @@ where
         && !request.include_room_tools
         && !request.include_esc_next_game
         && !request.include_party_loot
+        && !request.include_jcy_inventory
         && !request.include_scene_shortcuts
         && !request.include_auto_exit_on_death
     {
@@ -5091,6 +5096,18 @@ where
         )?,
     };
 
+    let inventory = jcy_inventory::prepare(
+        &mpq_directory,
+        storage.as_ref(),
+        request.include_jcy_inventory,
+        source_feature_report.as_ref().and_then(|report| {
+            report
+                .feature_groups
+                .iter()
+                .find(|group| group.id == jcy_inventory::ID)
+        }),
+    )?;
+
     if let Some(reused) = reusable_audio.as_ref() {
         progress(BuildProgress::new(
             "reuse",
@@ -5102,6 +5119,7 @@ where
             action: "reuse_verified_feature_group".to_string(),
             detail: "配方版本、协议、覆盖范围、跟踪类别、增益、目录与全部声纹文件均一致；没有重新编码或覆盖声纹。".to_string(),
         }];
+        compatibility.extend(inventory.as_ref().map(|(_, entry)| entry.clone()));
         let source_has_room_tools =
             source_has_current_room_tools(source_feature_report.as_ref(), &mpq_directory);
         let source_auto_exit_on_death_enabled =
@@ -5237,6 +5255,12 @@ where
             feature_groups.push(scene_shortcuts::feature_group());
             capabilities.push(scene_shortcuts::ID.into());
         }
+        if let Some((group, _)) = &inventory {
+            feature_groups.retain(|existing| existing.id != jcy_inventory::ID);
+            feature_groups.push(group.clone());
+            capabilities.retain(|id| id != jcy_inventory::ID);
+            capabilities.push(jcy_inventory::ID.into());
+        }
         feature_groups.retain(|group| group.id != party_loot::ID);
         capabilities.retain(|value| value != party_loot::ID);
         if party_loot_available {
@@ -5333,6 +5357,7 @@ where
             "正在安装所选界面功能…",
         ));
         let mut compatibility = Vec::new();
+        compatibility.extend(inventory.as_ref().map(|(_, entry)| entry.clone()));
         let source_has_room_tools =
             source_has_current_room_tools(source_feature_report.as_ref(), &mpq_directory);
         let source_auto_exit_on_death_enabled =
@@ -5505,6 +5530,12 @@ where
             feature_groups.push(scene_shortcuts::feature_group());
             capabilities.push(scene_shortcuts::ID.into());
         }
+        if let Some((group, _)) = &inventory {
+            feature_groups.retain(|existing| existing.id != jcy_inventory::ID);
+            feature_groups.push(group.clone());
+            capabilities.retain(|id| id != jcy_inventory::ID);
+            capabilities.push(jcy_inventory::ID.into());
+        }
         feature_groups.retain(|group| group.id != party_loot::ID);
         capabilities.retain(|value| value != party_loot::ID);
         if party_loot_available {
@@ -5642,7 +5673,7 @@ where
     let area_localization = load_area_localization(&mpq_directory, storage.as_ref())?;
     let areas: Vec<_> = collect_areas_localized(&levels, &area_localization)?
         .into_iter()
-        .filter(|area| area.kind == LocationKind::Town)
+        .filter(|area| area.kind == LocationKind::Town || is_timed_scene(area.area_id))
         .collect();
     let sound_environment_baseline = read_excel_with_game_fallback(
         &layout,
@@ -5659,7 +5690,7 @@ where
     progress(BuildProgress::new(
         "areas",
         28,
-        "正在准备主城和主界面计时标记…",
+        "正在准备主城、主界面和计次场景声纹…",
     ));
     let casc_cache = staging_mod_directory.join(".audio-telemetry-casc-cache");
     validate_misc(&misc, include_runes, &selected_items)?;
@@ -5686,6 +5717,7 @@ where
             "源 Mod 未被修改；加工结果写入新的组合 Mod 目录。".to_string()
         },
     }];
+    compatibility.extend(inventory.as_ref().map(|(_, entry)| entry.clone()));
     let source_has_room_tools =
         source_has_current_room_tools(source_feature_report.as_ref(), &mpq_directory);
     let source_auto_exit_on_death_enabled =
@@ -6198,6 +6230,12 @@ where
         feature_groups.push(scene_shortcuts::feature_group());
         capabilities.push(scene_shortcuts::ID.into());
     }
+    if let Some((group, _)) = &inventory {
+        feature_groups.retain(|existing| existing.id != jcy_inventory::ID);
+        feature_groups.push(group.clone());
+        capabilities.retain(|id| id != jcy_inventory::ID);
+        capabilities.push(jcy_inventory::ID.into());
+    }
     feature_groups.retain(|group| group.id != party_loot::ID);
     capabilities.retain(|value| value != party_loot::ID);
     if party_loot_available {
@@ -6594,6 +6632,7 @@ mod tests {
             include_esc_next_game: false,
             include_scene_shortcuts: false,
             include_party_loot: false,
+            include_jcy_inventory: false,
             include_hostile_auto_restart: false,
             include_auto_exit_on_death: false,
         })
@@ -6657,6 +6696,7 @@ mod tests {
             include_esc_next_game: false,
             include_scene_shortcuts: false,
             include_party_loot: false,
+            include_jcy_inventory: false,
             include_hostile_auto_restart: false,
             include_auto_exit_on_death: true,
         })
@@ -6736,6 +6776,7 @@ mod tests {
             include_esc_next_game: false,
             include_scene_shortcuts: false,
             include_party_loot: false,
+            include_jcy_inventory: false,
             include_hostile_auto_restart: false,
             include_auto_exit_on_death: true,
         })
@@ -6841,6 +6882,7 @@ mod tests {
             include_esc_next_game: true,
             include_scene_shortcuts: false,
             include_party_loot: false,
+            include_jcy_inventory: false,
             include_hostile_auto_restart: false,
             include_auto_exit_on_death: false,
         })
@@ -7667,6 +7709,7 @@ mod tests {
             include_esc_next_game: false,
             include_scene_shortcuts: false,
             include_party_loot: false,
+            include_jcy_inventory: false,
             include_hostile_auto_restart: false,
             include_auto_exit_on_death: false,
         })
@@ -7699,7 +7742,7 @@ mod tests {
         .unwrap();
         std::fs::write(
             excel.join("levels.txt"),
-            "Name\tId\tSoundEnv\tLevelName\nNull\t0\t0\tNull\nAct 1 - Town\t1\t1\tRogue Encampment\nAct 1 - Wilderness 5\t6\t2\tBlack Marsh\nAct 1 - Crypt 1\t20\t2\tForgotten Tower\nAct 1 - Crypt 2\t21\t2\tTower Cellar Level 1\nAct 1 - Crypt 3\t22\t2\tTower Cellar Level 2\nAct 1 - Crypt 4\t23\t2\tTower Cellar Level 3\nAct 1 - Crypt 5\t24\t2\tTower Cellar Level 4\nAct 1 - Crypt 6\t25\t2\tTower Cellar Level 5\n",
+            "Name\tId\tSoundEnv\tLevelName\nNull\t0\t0\tNull\nAct 1 - Town\t1\t1\tRogue Encampment\nAct 1 - Wilderness 5\t6\t2\tBlack Marsh\nAct 1 - Crypt 1\t20\t2\tForgotten Tower\nAct 1 - Crypt 2\t21\t2\tTower Cellar Level 1\nAct 1 - Crypt 3\t22\t2\tTower Cellar Level 2\nAct 1 - Crypt 4\t23\t2\tTower Cellar Level 3\nAct 1 - Crypt 5\t24\t2\tTower Cellar Level 4\nAct 1 - Crypt 6\t25\t2\tTower Cellar Level 5\nAct 3 - Travincal\t83\t2\tTravincal\nAct 4 - Diablo\t108\t2\tThe Chaos Sanctuary\n",
         )
         .unwrap();
         std::fs::write(
@@ -7774,6 +7817,7 @@ mod tests {
             include_esc_next_game: false,
             include_scene_shortcuts: false,
             include_party_loot: false,
+            include_jcy_inventory: false,
             include_hostile_auto_restart: false,
             include_auto_exit_on_death: false,
         })
@@ -7804,12 +7848,18 @@ mod tests {
             include_esc_next_game: false,
             include_scene_shortcuts: false,
             include_party_loot: false,
+            include_jcy_inventory: false,
             include_hostile_auto_restart: false,
             include_auto_exit_on_death: false,
         })
         .unwrap();
         assert_eq!(report.rune_assets.len(), 33);
-        assert!(!report.area_assets.is_empty());
+        for area_id in [83, 108] {
+            assert!(report
+                .area_assets
+                .iter()
+                .any(|asset| asset.marker == TelemetryMarker::Area { area_id }));
+        }
         assert!(report.terror_assets.is_empty());
         assert!(report
             .terror_assets
@@ -7965,6 +8015,7 @@ mod tests {
             include_esc_next_game: false,
             include_scene_shortcuts: false,
             include_party_loot: false,
+            include_jcy_inventory: false,
             include_hostile_auto_restart: false,
             include_auto_exit_on_death: false,
         })
@@ -8009,6 +8060,7 @@ mod tests {
             include_esc_next_game: true,
             include_scene_shortcuts: false,
             include_party_loot: false,
+            include_jcy_inventory: false,
             include_hostile_auto_restart: false,
             include_auto_exit_on_death: false,
         })
@@ -8057,6 +8109,7 @@ mod tests {
             include_esc_next_game: true,
             include_scene_shortcuts: false,
             include_party_loot: false,
+            include_jcy_inventory: false,
             include_hostile_auto_restart: false,
             include_auto_exit_on_death: false,
         })

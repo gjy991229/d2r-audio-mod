@@ -149,13 +149,13 @@ fn parse_tracking(raw: Option<&str>) -> Result<Vec<String>, String> {
     Ok(normalize_tracked_categories(&requested))
 }
 
-type CliFeatures = (bool, bool, bool, bool, bool, bool, bool);
+type CliFeatures = (bool, bool, bool, bool, bool, bool, bool, bool);
 
 fn parse_features(raw: Option<&str>) -> Result<CliFeatures, String> {
     let normalized = raw.unwrap_or("all").trim().to_ascii_lowercase();
     if normalized == "all" {
         // Double-Esc and death auto-exit are independent opt-in features.
-        return Ok((true, true, false, false, false, false, false));
+        return Ok((true, true, false, false, false, false, false, false));
     }
     let values = normalized
         .split(',')
@@ -169,6 +169,12 @@ fn parse_features(raw: Option<&str>) -> Result<CliFeatures, String> {
     let scene_shortcuts = values
         .iter()
         .any(|value| matches!(*value, "scene-shortcuts" | "scene_shortcuts"));
+    let jcy_inventory = values.iter().any(|value| {
+        matches!(
+            *value,
+            "inventory-stash" | "jcy-inventory" | "jcy_inventory"
+        )
+    });
     let audio = values
         .iter()
         .any(|value| matches!(*value, "audio" | "audio_telemetry"));
@@ -190,6 +196,9 @@ fn parse_features(raw: Option<&str>) -> Result<CliFeatures, String> {
                     | "party_loot"
                     | "scene-shortcuts"
                     | "scene_shortcuts"
+                    | "inventory-stash"
+                    | "jcy-inventory"
+                    | "jcy_inventory"
                     | "audio"
                     | "audio_telemetry"
                     | "rooms"
@@ -204,7 +213,7 @@ fn parse_features(raw: Option<&str>) -> Result<CliFeatures, String> {
         })
     {
         return Err(
-            "--features 仅支持 all、audio、rooms、esc-next-game、hostile-restart、scene-shortcuts、party-loot、death-exit，多个功能用逗号分隔"
+            "--features 仅支持 all、audio、rooms、esc-next-game、hostile-restart、scene-shortcuts、party-loot、inventory-stash、death-exit，多个功能用逗号分隔"
                 .to_string(),
         );
     }
@@ -215,6 +224,7 @@ fn parse_features(raw: Option<&str>) -> Result<CliFeatures, String> {
         esc_next_game,
         scene_shortcuts,
         party_loot,
+        jcy_inventory,
         hostile_auto_restart,
     ))
 }
@@ -239,6 +249,7 @@ fn run_build(mode: AudioModBuildMode, options: Options) -> Result<(), String> {
         include_esc_next_game,
         include_scene_shortcuts,
         include_party_loot,
+        include_jcy_inventory,
         include_hostile_auto_restart,
     ) = parse_features(options.features.as_deref())?;
     let request = BuildAudioModRequest {
@@ -257,6 +268,7 @@ fn run_build(mode: AudioModBuildMode, options: Options) -> Result<(), String> {
         include_esc_next_game,
         include_scene_shortcuts,
         include_party_loot,
+        include_jcy_inventory,
         include_hostile_auto_restart,
     };
     let report = if options.events {
@@ -377,8 +389,9 @@ Mod 选项：
   --name <名称>              自定义 Mod 名；仅允许 ASCII 字母、数字、- 和 _
   --areas all|countess       兼容参数；生成完整地区声纹及 OCR 名称目录
   --track all|none|类别列表   默认 all；列表以英文逗号分隔
-  --features all|audio|rooms|esc-next-game|hostile-restart|scene-shortcuts|party-loot|death-exit
-                              默认 all（audio+rooms）；双击 Esc、场景重开、玩家拾取按钮与死亡退房需显式选择 esc-next-game、scene-shortcuts、party-loot、death-exit
+  --features all|audio|rooms|esc-next-game|hostile-restart|scene-shortcuts|party-loot|inventory-stash|death-exit
+                              默认 all（audio+rooms）；双击 Esc、场景重开、玩家拾取按钮、背包与仓库及死亡退房需显式选择 esc-next-game、scene-shortcuts、party-loot、inventory-stash、death-exit
+  inventory-stash 应用内置的 JCY 参考布局和贴图，保留内嵌方盒与共享页直达。
   --gain <dBFS>              掉落声纹增益，范围 -42 到 -12，默认 -30；敌对提示固定 -18
   --sound-environment <文件> 显式指定 soundenviron.txt
   --json                     将完整结果写到标准输出

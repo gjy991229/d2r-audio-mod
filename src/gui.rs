@@ -25,11 +25,11 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW,
     GetWindowLongPtrW, GetWindowTextLengthW, GetWindowTextW, IsDialogMessageW, LoadCursorW,
     PostMessageW, PostQuitMessage, RegisterClassW, SendMessageW, SetWindowLongPtrW, SetWindowTextW,
-    ShowWindow, TranslateMessage, BS_DEFPUSHBUTTON, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT,
-    ES_AUTOHSCROLL, ES_AUTOVSCROLL, ES_MULTILINE, ES_READONLY, GWLP_USERDATA, IDC_ARROW, MSG,
-    SW_SHOW, WM_APP, WM_CLOSE, WM_COMMAND, WM_DESTROY, WM_SETFONT, WNDCLASSW, WS_BORDER,
-    WS_CAPTION, WS_CHILD, WS_EX_CLIENTEDGE, WS_EX_CONTROLPARENT, WS_MINIMIZEBOX, WS_SYSMENU,
-    WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
+    ShowWindow, TranslateMessage, BM_GETCHECK, BM_SETCHECK, BS_AUTOCHECKBOX, BS_DEFPUSHBUTTON,
+    CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, ES_AUTOHSCROLL, ES_AUTOVSCROLL, ES_MULTILINE,
+    ES_READONLY, GWLP_USERDATA, IDC_ARROW, MSG, SW_SHOW, WM_APP, WM_CLOSE, WM_COMMAND, WM_DESTROY,
+    WM_SETFONT, WNDCLASSW, WS_BORDER, WS_CAPTION, WS_CHILD, WS_EX_CLIENTEDGE, WS_EX_CONTROLPARENT,
+    WS_MINIMIZEBOX, WS_SYSMENU, WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
 };
 
 const WINDOW_CLASS: &str = "D2RAudioModGeneratorWindow";
@@ -54,6 +54,8 @@ struct AppState {
     name_edit: HWND,
     output_edit: HWND,
     output_browse: HWND,
+    default_features: HWND,
+    jcy_inventory: HWND,
     generate_button: HWND,
     open_button: HWND,
     status: HWND,
@@ -236,10 +238,15 @@ unsafe fn set_busy(state: &AppState, busy: bool) {
         state.name_edit,
         state.output_edit,
         state.output_browse,
+        state.default_features,
         state.generate_button,
     ] {
         EnableWindow(control, enabled);
     }
+    EnableWindow(
+        state.jcy_inventory,
+        i32::from(!busy && generator::inventory_preset_available()),
+    );
     if busy {
         EnableWindow(state.open_button, 0);
     }
@@ -270,6 +277,12 @@ unsafe fn start_build(window: HWND, state: &mut AppState) {
     } else {
         AudioModBuildMode::Minimal
     };
+    let include_default_features = SendMessageW(state.default_features, BM_GETCHECK, 0, 0) == 1;
+    let include_jcy_inventory = SendMessageW(state.jcy_inventory, BM_GETCHECK, 0, 0) == 1;
+    if !include_default_features && !include_jcy_inventory {
+        set_text(state.status, "请至少选择一个加工模块。");
+        return;
+    }
     let request = BuildAudioModRequest {
         build_mode: mode,
         source_directory: source_path.map(|path| path.to_string_lossy().into_owned()),
@@ -280,8 +293,9 @@ unsafe fn start_build(window: HWND, state: &mut AppState) {
         mod_name: Some(mod_name),
         sound_environment_file: None,
         gain_db: None,
-        include_audio_telemetry: true,
-        include_room_tools: true,
+        include_audio_telemetry: include_default_features,
+        include_room_tools: include_default_features,
+        include_jcy_inventory,
         include_esc_next_game: false,
         include_scene_shortcuts: false,
         include_party_loot: false,
@@ -291,10 +305,7 @@ unsafe fn start_build(window: HWND, state: &mut AppState) {
 
     state.last_output = None;
     set_busy(state, true);
-    set_text(
-        state.status,
-        "正在生成全量声纹 MOD……首次需要从游戏资源中提取文件，可能需要一点时间，请勿关闭窗口。",
-    );
+    set_text(state.status, "正在加工所选模块与游戏资源，请勿关闭窗口。");
 
     let window_value = window as isize;
     std::thread::spawn(move || {
@@ -322,8 +333,15 @@ unsafe fn finish_build(state: &mut AppState, result: BuildResult) {
         Ok(output) => {
             let directory = output.mod_directory;
             let arguments = output.launch_arguments;
-            let summary =
-                "已包含：地区声纹、完整 OCR 地区目录和全部支持物品掉落声纹。源 MOD 没有被修改。";
+            let summary = if output
+                .feature_groups
+                .iter()
+                .any(|group| group.id == "jcy_inventory")
+            {
+                "已应用 JCY 背包和仓库布局，含内嵌方盒。"
+            } else {
+                "已加工所选模块。"
+            };
             state.last_output = Some(PathBuf::from(&directory));
             EnableWindow(state.open_button, 1);
             set_text(
@@ -449,7 +467,7 @@ unsafe fn create_app_window() -> Result<HWND, String> {
         CW_USEDEFAULT,
         CW_USEDEFAULT,
         680,
-        440,
+        475,
         null_mut(),
         null_mut(),
         instance,
@@ -462,7 +480,7 @@ unsafe fn create_app_window() -> Result<HWND, String> {
     let static_style = WS_CHILD | WS_VISIBLE;
     create_control(
         "STATIC",
-        "为现有 MOD 附加声纹与房间工具，或创建独立最小声纹 MOD。",
+        "为现有 MOD 加工所选模块，或以游戏原版为基线创建 MOD。",
         static_style,
         0,
         24,
@@ -577,13 +595,49 @@ unsafe fn create_app_window() -> Result<HWND, String> {
         ID_OUTPUT_BROWSE,
         instance,
     )?;
+    let feature_style = WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX as u32;
+    let default_features = create_control(
+        "BUTTON",
+        "声纹与房间工具",
+        feature_style,
+        0,
+        24,
+        268,
+        165,
+        24,
+        window,
+        601,
+        instance,
+    )?;
+    SendMessageW(default_features, BM_SETCHECK, 1, 0);
+    let jcy_inventory = create_control(
+        "BUTTON",
+        if generator::inventory_preset_available() {
+            "背包与仓库（JCY 布局、内嵌方盒、共享页直达）"
+        } else {
+            "背包与仓库（此构建未内置 JCY 预设）"
+        },
+        feature_style,
+        0,
+        202,
+        268,
+        444,
+        24,
+        window,
+        602,
+        instance,
+    )?;
+    EnableWindow(
+        jcy_inventory,
+        i32::from(generator::inventory_preset_available()),
+    );
     let generate_button = create_control(
         "BUTTON",
         "生成 MOD",
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON as u32,
         0,
         24,
-        278,
+        313,
         128,
         34,
         window,
@@ -596,7 +650,7 @@ unsafe fn create_app_window() -> Result<HWND, String> {
         WS_CHILD | WS_VISIBLE | WS_TABSTOP,
         0,
         162,
-        278,
+        313,
         128,
         34,
         window,
@@ -606,7 +660,7 @@ unsafe fn create_app_window() -> Result<HWND, String> {
     EnableWindow(open_button, 0);
     let status = create_control(
         "EDIT",
-        "不选择源 MOD：创建独立最小 MOD。选择源 MOD：保留原内容并附加声纹。",
+        "加工结果写入新的 MOD 目录。",
         WS_CHILD
             | WS_VISIBLE
             | WS_BORDER
@@ -616,7 +670,7 @@ unsafe fn create_app_window() -> Result<HWND, String> {
             | ES_READONLY as u32,
         WS_EX_CLIENTEDGE,
         308,
-        276,
+        311,
         338,
         82,
         window,
@@ -630,6 +684,8 @@ unsafe fn create_app_window() -> Result<HWND, String> {
         name_edit,
         output_edit,
         output_browse,
+        default_features,
+        jcy_inventory,
         generate_button,
         open_button,
         status,

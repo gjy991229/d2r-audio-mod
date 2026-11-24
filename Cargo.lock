@@ -168,6 +168,7 @@ dependencies = [
  "d2r-stormlib-sys",
  "encoding_rs",
  "flacenc",
+ "flate2",
  "json5",
  "junction",
  "serde",

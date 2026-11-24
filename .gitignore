@@ -5,3 +5,6 @@ __pycache__/
 
 # Standalone library tests generate a local lock; the processor uses the root lock.
 /crates/d2r-audio-protocol/Cargo.lock
+
+# Local inventory appearance bundle exported from a user-supplied reference Mod.
+/resources/private-inventory.preset.gz

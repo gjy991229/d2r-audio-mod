@@ -41,6 +41,10 @@ pub fn capabilities(args: &[OsString]) -> std::result::Result<(), String> {
     } else {
         &[]
     };
+    let mut supported = supported.to_vec();
+    if crate::generator::inventory_preset_available() {
+        supported.push("jcy_inventory");
+    }
     emit(json!({"schema_version":1,"capabilities":supported}));
     Ok(())
 }

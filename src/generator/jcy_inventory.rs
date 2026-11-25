@@ -3,7 +3,7 @@ use super::*;
 use flate2::read::GzDecoder;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::Read;
+use std::{fs::File, io::Read};
 
 // Retain feature identity for saved Hub jobs and upgrade the two native reconstructions.
 pub(super) const ID: &str = "jcy_inventory";
@@ -38,7 +38,6 @@ const NATIVE_FALLBACKS: &[&str] = &[
     "playerinventoryoriginallayouthd.json",
     "bankoriginallayouthd.json",
 ];
-const PACKED_PRESET: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/inventory.preset.gz"));
 
 #[derive(Deserialize)]
 struct Preset {
@@ -53,20 +52,25 @@ struct Preset {
     sprites: Vec<(String, usize)>,
 }
 
-pub(crate) fn preset_available() -> bool {
-    !PACKED_PRESET.is_empty()
+pub(crate) fn configured_preset() -> Option<PathBuf> {
+    std::env::var_os("D2RHUB_INVENTORY_PRESET")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
 }
 
-fn read_preset() -> Result<(Preset, Vec<u8>), String> {
-    if !preset_available() {
-        return Err("此加工器未内置 JCY 背包与仓库预设，请使用带预设的构建".into());
-    }
-    let mut reader = GzDecoder::new(PACKED_PRESET).take(64 * 1024 * 1024 + 1);
+#[cfg(target_os = "windows")]
+pub(crate) fn preset_available() -> bool {
+    configured_preset().is_some_and(|path| path.is_file())
+}
+
+fn read_preset(path: &Path) -> Result<(Preset, Vec<u8>), String> {
+    let file = File::open(path).map_err(|e| format!("打开 JCY 布局预设失败：{e}"))?;
+    let mut reader = GzDecoder::new(file).take(64 * 1024 * 1024 + 1);
     let mut bytes = Vec::new();
     reader
         .read_to_end(&mut bytes)
-        .map_err(|e| format!("读取内置布局预设失败：{e}"))?;
-    let invalid = || "内置 JCY 布局预设不完整".to_string();
+        .map_err(|e| format!("读取 JCY 布局预设失败：{e}"))?;
+    let invalid = || "JCY 布局预设不完整".to_string();
     if bytes.len() > 64 * 1024 * 1024 {
         return Err(invalid());
     }
@@ -75,7 +79,7 @@ fn read_preset() -> Result<(Preset, Vec<u8>), String> {
     let header_end = 4 + header_len;
     let manifest = bytes.get(4..header_end).ok_or_else(invalid)?;
     let preset: Preset =
-        serde_json::from_slice(manifest).map_err(|e| format!("解析内置布局预设失败：{e}"))?;
+        serde_json::from_slice(manifest).map_err(|e| format!("解析 JCY 布局预设失败：{e}"))?;
     let sprites = bytes.split_off(header_end);
     Ok((preset, sprites))
 }
@@ -523,6 +527,7 @@ pub(super) fn prepare(
     storage: Option<&casc_core::Storage>,
     requested: bool,
     inherited: Option<&ModFeatureGroup>,
+    preset_path: Option<&Path>,
 ) -> Result<Option<(ModFeatureGroup, AudioModCompatibility)>, String> {
     if let Some(group) = inherited {
         validate_source(group)?;
@@ -542,7 +547,8 @@ pub(super) fn prepare(
         return Ok(None);
     }
     check_capacity(mpq)?;
-    let (preset, sprites) = read_preset()?;
+    let path = preset_path.ok_or("缺少 JCY 背包与仓库预设，请通过 D2RHub 加工或指定预设文件")?;
+    let (preset, sprites) = read_preset(path)?;
     let count = if mpq.join(LAYOUTS).join(BANK).is_file() {
         page_count(&read_layout(mpq, BANK)?).clamp(9, 11)
     } else {
@@ -634,11 +640,13 @@ mod tests {
     }
 
     #[test]
-    fn bundled_reference_has_both_page_counts_and_the_embedded_cube() {
-        if !preset_available() {
+    fn external_reference_has_both_page_counts_and_the_embedded_cube() {
+        let path = configured_preset()
+            .unwrap_or_else(|| PathBuf::from("resources/private-inventory.preset.gz"));
+        if !path.is_file() {
             return;
         }
-        let (preset, sprites) = read_preset().unwrap();
+        let (preset, sprites) = read_preset(&path).unwrap();
         assert_eq!(page_count(&preset.bank), 11);
         assert_eq!(page_count(&preset.bank_nine), 9);
         assert_eq!(preset.cube["fields"]["rect"], json!({"x":-1322,"y":-138}));

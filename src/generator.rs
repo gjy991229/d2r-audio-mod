@@ -1,5 +1,7 @@
 mod hostile;
 mod jcy_inventory;
+pub(crate) use jcy_inventory::configured_preset as configured_inventory_preset;
+#[cfg(target_os = "windows")]
 pub(crate) use jcy_inventory::preset_available as inventory_preset_available;
 mod party_loot;
 mod scene_shortcuts;
@@ -137,6 +139,8 @@ pub struct BuildAudioModRequest {
     pub include_party_loot: bool,
     #[serde(default)]
     pub include_jcy_inventory: bool,
+    #[serde(default)]
+    pub inventory_preset: Option<PathBuf>,
     #[serde(default)]
     pub include_hostile_auto_restart: bool,
 }
@@ -5106,6 +5110,7 @@ where
                 .iter()
                 .find(|group| group.id == jcy_inventory::ID)
         }),
+        request.inventory_preset.as_deref(),
     )?;
 
     if let Some(reused) = reusable_audio.as_ref() {
@@ -6633,6 +6638,7 @@ mod tests {
             include_scene_shortcuts: false,
             include_party_loot: false,
             include_jcy_inventory: false,
+            inventory_preset: None,
             include_hostile_auto_restart: false,
             include_auto_exit_on_death: false,
         })
@@ -6697,6 +6703,7 @@ mod tests {
             include_scene_shortcuts: false,
             include_party_loot: false,
             include_jcy_inventory: false,
+            inventory_preset: None,
             include_hostile_auto_restart: false,
             include_auto_exit_on_death: true,
         })
@@ -6777,6 +6784,7 @@ mod tests {
             include_scene_shortcuts: false,
             include_party_loot: false,
             include_jcy_inventory: false,
+            inventory_preset: None,
             include_hostile_auto_restart: false,
             include_auto_exit_on_death: true,
         })
@@ -6883,6 +6891,7 @@ mod tests {
             include_scene_shortcuts: false,
             include_party_loot: false,
             include_jcy_inventory: false,
+            inventory_preset: None,
             include_hostile_auto_restart: false,
             include_auto_exit_on_death: false,
         })
@@ -7710,6 +7719,7 @@ mod tests {
             include_scene_shortcuts: false,
             include_party_loot: false,
             include_jcy_inventory: false,
+            inventory_preset: None,
             include_hostile_auto_restart: false,
             include_auto_exit_on_death: false,
         })
@@ -7818,6 +7828,7 @@ mod tests {
             include_scene_shortcuts: false,
             include_party_loot: false,
             include_jcy_inventory: false,
+            inventory_preset: None,
             include_hostile_auto_restart: false,
             include_auto_exit_on_death: false,
         })
@@ -7849,6 +7860,7 @@ mod tests {
             include_scene_shortcuts: false,
             include_party_loot: false,
             include_jcy_inventory: false,
+            inventory_preset: None,
             include_hostile_auto_restart: false,
             include_auto_exit_on_death: false,
         })
@@ -8016,6 +8028,7 @@ mod tests {
             include_scene_shortcuts: false,
             include_party_loot: false,
             include_jcy_inventory: false,
+            inventory_preset: None,
             include_hostile_auto_restart: false,
             include_auto_exit_on_death: false,
         })
@@ -8061,6 +8074,7 @@ mod tests {
             include_scene_shortcuts: false,
             include_party_loot: false,
             include_jcy_inventory: false,
+            inventory_preset: None,
             include_hostile_auto_restart: false,
             include_auto_exit_on_death: false,
         })
@@ -8110,6 +8124,7 @@ mod tests {
             include_scene_shortcuts: false,
             include_party_loot: false,
             include_jcy_inventory: false,
+            inventory_preset: None,
             include_hostile_auto_restart: false,
             include_auto_exit_on_death: false,
         })

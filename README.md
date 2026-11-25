@@ -1,3 +1,7 @@
+# 1.4.0-beta.27
+
+新增 JCY 背包与仓库加工和场景声纹支持。Hub 按需校验并传入外置预设，命令行可通过 `--inventory-preset` 指定文件。
+
 # 1.4.0-beta.26
 
 声纹配方 r8：仅主城与主界面参与累计计时，高频信号每 0.5 秒重复；兼容 LiteHub 空背景，保留旧掉落解码。加工器随 D2RHub 0.9.123 发布。
@@ -140,7 +144,7 @@ r22–r25 是历史环境音场景配方。r26 不会把其残留场景／TZ／�
 
 带有预设的加工器可通过界面或 `--features inventory-stash` 将高清键鼠背包和仓库替换为经确认的 JCY 参考样式，包括贴图、内嵌的 3×4 方盒和转化按钮。加工时无需安装 JCY。共享仓库默认保留 9 页直达，源 Mod 已有 10 或 11 页时沿用。旧外挂方盒和独立迷你方盒入口会被清理。若源 Mod 的实际储物格数与参考贴图不同，加工会提示对应表行，保留源 Mod。
 
-本机构建可用 `scripts/pack-inventory-preset.py` 从已加工好的 11 页与 9 页参考 `.mpq` 导出预设，保存为 `resources/private-inventory.preset.gz`，或用 `D2RHUB_INVENTORY_PRESET` 指定预设绝对路径。Cargo 构建将预设放进加工器。预设素材单独保存在本地，不进入源码仓库。
+使用 D2RHub 加工时，按需下载并校验预设。独立运行加工器时，可传入 `--inventory-preset`，或把预设文件路径设为环境变量 `D2RHUB_INVENTORY_PRESET`。独立 GUI 从该环境变量读取路径。可用 `scripts/pack-inventory-preset.py` 从已加工好的 11 页与 9 页参考 `.mpq` 导出预设，素材文件留在源码仓库之外。
 
 ## 新增独立模块
 

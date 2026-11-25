@@ -296,6 +296,7 @@ unsafe fn start_build(window: HWND, state: &mut AppState) {
         include_audio_telemetry: include_default_features,
         include_room_tools: include_default_features,
         include_jcy_inventory,
+        inventory_preset: generator::configured_inventory_preset(),
         include_esc_next_game: false,
         include_scene_shortcuts: false,
         include_party_loot: false,
@@ -615,7 +616,7 @@ unsafe fn create_app_window() -> Result<HWND, String> {
         if generator::inventory_preset_available() {
             "背包与仓库（JCY 布局、内嵌方盒、共享页直达）"
         } else {
-            "背包与仓库（此构建未内置 JCY 预设）"
+            "背包与仓库（尚未指定 JCY 预设文件）"
         },
         feature_style,
         0,

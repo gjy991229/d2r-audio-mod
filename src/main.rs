@@ -28,6 +28,7 @@ struct Options {
     areas: Option<String>,
     track: Option<String>,
     features: Option<String>,
+    inventory_preset: Option<PathBuf>,
     gain_db: Option<f32>,
     json: bool,
     events: bool,
@@ -61,6 +62,9 @@ fn parse_options(args: &[OsString]) -> Result<Options, String> {
             }
             "--sound-environment" => {
                 options.sound_environment = Some(value_after(args, &mut index, key)?.into())
+            }
+            "--inventory-preset" => {
+                options.inventory_preset = Some(value_after(args, &mut index, key)?.into());
             }
             "--areas" => {
                 options.areas = Some(
@@ -269,6 +273,9 @@ fn run_build(mode: AudioModBuildMode, options: Options) -> Result<(), String> {
         include_scene_shortcuts,
         include_party_loot,
         include_jcy_inventory,
+        inventory_preset: options
+            .inventory_preset
+            .or_else(generator::configured_inventory_preset),
         include_hostile_auto_restart,
     };
     let report = if options.events {
@@ -391,7 +398,7 @@ Mod 选项：
   --track all|none|类别列表   默认 all；列表以英文逗号分隔
   --features all|audio|rooms|esc-next-game|hostile-restart|scene-shortcuts|party-loot|inventory-stash|death-exit
                               默认 all（audio+rooms）；双击 Esc、场景重开、玩家拾取按钮、背包与仓库及死亡退房需显式选择 esc-next-game、scene-shortcuts、party-loot、inventory-stash、death-exit
-  inventory-stash 应用内置的 JCY 参考布局和贴图，保留内嵌方盒与共享页直达。
+  --inventory-preset <文件>  为 inventory-stash 提供 JCY 布局与贴图，也可通过 D2RHUB_INVENTORY_PRESET 指定。
   --gain <dBFS>              掉落声纹增益，范围 -42 到 -12，默认 -30；敌对提示固定 -18
   --sound-environment <文件> 显式指定 soundenviron.txt
   --json                     将完整结果写到标准输出
